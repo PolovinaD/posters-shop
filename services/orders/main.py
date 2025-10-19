@@ -23,12 +23,14 @@ from database import Base
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = {"schema": "orders"}
     id = Column(Integer, primary_key=True)
     status = Column(String, nullable=False, default="created")
     customer_email = Column(String, nullable=False)
 
 class OrderItem(Base):
     __tablename__ = "order_items"
+    __table_args__ = {"schema": "orders"}
     id = Column(Integer, primary_key=True)
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
     poster_id = Column(Integer, nullable=False)

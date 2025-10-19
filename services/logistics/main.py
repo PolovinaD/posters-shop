@@ -23,6 +23,7 @@ from database import Base
 
 class Shipment(Base):
     __tablename__ = "shipments"
+    __table_args__ = {"schema": "logistics"}
     id = Column(Integer, primary_key=True)
     order_id = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="preparing")

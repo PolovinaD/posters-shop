@@ -23,6 +23,7 @@ from database import Base
 
 class Poster(Base):
     __tablename__ = "posters"
+    __table_args__ = {"schema": "catalog"}
     id = Column(Integer, primary_key=True)
     title = Column(String, nullable=False)
     image_url = Column(String, nullable=False)
@@ -30,12 +31,14 @@ class Poster(Base):
 
 class Size(Base):
     __tablename__ = "sizes"
+    __table_args__ = {"schema": "catalog"}
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False) # e.g., A3, A2
     price_delta = Column(Numeric(10,2), nullable=False, default=0)
 
 class FrameOption(Base):
     __tablename__ = "frame_options"
+    __table_args__ = {"schema": "catalog"}
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     extra_price = Column(Numeric(10,2), nullable=False, default=0)

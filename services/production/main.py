@@ -23,12 +23,14 @@ from database import Base
 
 class Material(Base):
     __tablename__ = "materials"
+    __table_args__ = {"schema": "production"}
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     stock = Column(Integer, nullable=False, default=0)
 
 class Job(Base):
     __tablename__ = "production_jobs"
+    __table_args__ = {"schema": "production"}
     id = Column(Integer, primary_key=True)
     order_id = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="queued")
