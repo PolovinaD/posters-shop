@@ -6,6 +6,7 @@ on:
 
 jobs:
   build-and-deploy:
+    environment: default
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -16,8 +17,8 @@ jobs:
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-eks-deploy
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-eks-deploy
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
