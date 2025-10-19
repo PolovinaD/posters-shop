@@ -1,0 +1,40 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-eks-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push images
+        run: |
+          for svc in users catalog orders production logistics; do
+            IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}
+            docker build -t $IMAGE:${GITHUB_SHA::7} ./services/$svc
+            docker push $IMAGE:${GITHUB_SHA::7}
+          done
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name shop --region $AWS_REGION
+
+      - name: Helm upgrades
+        run: |
+          for svc in users catalog orders production logistics; do
+            helm upgrade --install $svc deploy/charts/$svc -n shop --create-namespace --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/$svc --set image.tag=${GITHUB_SHA::7}
+          done

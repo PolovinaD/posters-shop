@@ -1,0 +1,64 @@
+{
+  "id": null,
+  "title": "PosterShop Autoscaling Dashboard",
+  "tags": ["autoscaling", "HPA", "EKS"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Production CPU Usage (%)",
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"shop\", pod=~\"production-.*\"}[2m])) by (pod) * 100",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {"mode": "palette-classic"}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Production Replica Count",
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_available{deployment=\"production\", namespace=\"shop\"}",
+          "legendFormat": "Available replicas"
+        },
+        {
+          "expr": "kube_deployment_spec_replicas{deployment=\"production\", namespace=\"shop\"}",
+          "legendFormat": "Desired replicas"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "HPA Target vs Current CPU Utilization",
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_metrics_value{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Current CPU"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_target_metric_value{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Target CPU"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        }
+      }
+    }
+  ]
+}

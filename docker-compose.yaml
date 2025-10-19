@@ -1,0 +1,53 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_USER: shop
+      POSTGRES_DB: shop
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  users:
+    build: ./services/users
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dusers
+      USERS_JWT_SECRET: devsecret
+    depends_on: [postgres]
+    ports: ["8001:8000"]
+
+  catalog:
+    build: ./services/catalog
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dcatalog
+    depends_on: [postgres]
+    ports: ["8002:8000"]
+
+  orders:
+    build: ./services/orders
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dorders
+      AWS_REGION: eu-north-1
+    depends_on: [postgres]
+    ports: ["8003:8000"]
+
+  production:
+    build: ./services/production
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dproduction
+      AWS_REGION: eu-north-1
+    depends_on: [postgres]
+    ports: ["8004:8000"]
+
+  logistics:
+    build: ./services/logistics
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dlogistics
+    depends_on: [postgres]
+    ports: ["8005:8000"]

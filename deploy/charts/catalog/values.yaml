@@ -1,0 +1,29 @@
+image:
+  repository: 553967852170.dkr.ecr.eu-north-1.amazonaws.com/catalog
+  tag: "latest"
+replicaCount: 1
+
+service:
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+envFrom:
+  - secretRef:
+      name: postershop-db
+env:
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: postershop-db
+        key: DATABASE_URL_CATALOG
+
+ingress:
+  enabled: false
