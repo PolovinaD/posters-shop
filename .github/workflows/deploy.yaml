@@ -9,7 +9,6 @@ env:
 
 jobs:
   build-and-deploy:
-    environment: default
     runs-on: ubuntu-latest
     permissions:
       id-token: write
