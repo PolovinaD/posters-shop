@@ -4,15 +4,18 @@ on:
   push:
     branches: [ master ]
 
-env:
-  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-eks-deploy
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-eks-deploy
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,15 +23,18 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build & Push images
         run: |
+          echo "Using AWS Account: $AWS_ACCOUNT_ID"
+          echo "Region: $AWS_REGION"
           for svc in users catalog orders production logistics; do
             IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}
+            echo "Building $IMAGE:${GITHUB_SHA::7}"
             docker build -t $IMAGE:${GITHUB_SHA::7} ./services/$svc
             docker push $IMAGE:${GITHUB_SHA::7}
           done
@@ -39,5 +45,8 @@ jobs:
       - name: Helm upgrades
         run: |
           for svc in users catalog orders production logistics; do
-            helm upgrade --install $svc deploy/charts/$svc -n shop --create-namespace --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/$svc --set image.tag=${GITHUB_SHA::7}
+            helm upgrade --install $svc deploy/charts/$svc \
+              -n shop --create-namespace \
+              --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/$svc \
+              --set image.tag=${GITHUB_SHA::7}
           done
