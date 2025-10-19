@@ -33,8 +33,8 @@ class Shipment(Base):
 from fastapi import Depends, Body
 from sqlalchemy.orm import Session
 from database import get_db
-from __main__ import app
-from __main__ import Shipment
+from main import app
+from main import Shipment
 
 @app.post("/ship")
 def create_shipment(order_id: int = Body(...), db: Session = Depends(get_db)):

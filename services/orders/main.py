@@ -42,8 +42,8 @@ from fastapi import Depends, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from database import get_db
-from __main__ import app
-from __main__ import Order, OrderItem
+from main import app
+from main import Order, OrderItem
 
 @app.post("/orders")
 def create_order(

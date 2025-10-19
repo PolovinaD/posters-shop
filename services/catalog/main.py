@@ -46,8 +46,8 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from database import get_db
-from __main__ import app
-from __main__ import Poster, Size, FrameOption
+from main import app
+from main import Poster, Size, FrameOption
 
 @app.get("/items")
 def list_items(db: Session = Depends(get_db)):

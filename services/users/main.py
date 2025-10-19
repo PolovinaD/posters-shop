@@ -36,8 +36,8 @@ from database import get_db
 from jose import jwt
 import hashlib, os, datetime
 
-from __main__ import app
-from __main__ import User
+from main import app
+from main import User
 
 JWT_SECRET = os.getenv("USERS_JWT_SECRET", "devsecret")
 ALGO = "HS256"
