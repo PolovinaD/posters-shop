@@ -35,8 +35,10 @@ jobs:
           for svc in users catalog orders production logistics; do
             IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}
             echo "Building $IMAGE:${GITHUB_SHA::7}"
-            docker build -t $IMAGE:${GITHUB_SHA::7} ./services/$svc
+            cd services/$svc
+            docker build -t $IMAGE:${GITHUB_SHA::7} .
             docker push $IMAGE:${GITHUB_SHA::7}
+            cd - > /dev/null
           done
 
       - name: Update kubeconfig
