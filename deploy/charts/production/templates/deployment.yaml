@@ -34,6 +34,7 @@ kind: Service
 metadata:
   name: production
 spec:
+  type: LoadBalancer
   selector:
     app: production
   ports:
