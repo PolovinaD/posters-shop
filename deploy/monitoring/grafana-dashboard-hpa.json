@@ -4,7 +4,8 @@
   "tags": ["autoscaling", "HPA", "EKS"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
+  "refresh": "10s",
   "panels": [
     {
       "type": "timeseries",
@@ -20,45 +21,79 @@
           "unit": "percent",
           "color": {"mode": "palette-classic"}
         }
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Production Replica Count",
-      "targets": [
-        {
-          "expr": "kube_deployment_status_replicas_available{deployment=\"production\", namespace=\"shop\"}",
-          "legendFormat": "Available replicas"
-        },
-        {
-          "expr": "kube_deployment_spec_replicas{deployment=\"production\", namespace=\"shop\"}",
-          "legendFormat": "Desired replicas"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"}
-        }
-      }
+      },
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}
     },
     {
       "type": "timeseries",
       "title": "HPA Target vs Current CPU Utilization",
       "targets": [
         {
-          "expr": "kube_horizontalpodautoscaler_status_current_metrics_value{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_status_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", metric_name=\"cpu\"}",
           "legendFormat": "Current CPU"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_spec_target_metric_value{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", metric_name=\"cpu\"}",
           "legendFormat": "Target CPU"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent"
+          "unit": "percent",
+          "color": {"mode": "palette-classic"}
         }
-      }
+      },
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "HPA Current vs Desired Replicas",
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Current replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Desired replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Min replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "legendFormat": "Max replicas"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "none"
+        }
+      },
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "HPA Scaling Conditions",
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", condition=\"ScalingActive\"}",
+          "legendFormat": "Scaling Active"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", condition=\"ScalingLimited\"}",
+          "legendFormat": "Scaling Limited"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}
     }
   ]
 }
