@@ -1,53 +1,84 @@
 version: "3.9"
+
 services:
   postgres:
     image: postgres:16
+    container_name: postershop-db
     environment:
-      POSTGRES_PASSWORD: example
-      POSTGRES_USER: shop
-      POSTGRES_DB: shop
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shop"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   users:
     build: ./services/users
+    container_name: users
     environment:
-      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dusers
-      USERS_JWT_SECRET: devsecret
-    depends_on: [postgres]
-    ports: ["8001:8000"]
+      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${USERS_SCHEMA}
+    depends_on:
+      - postgres
+    ports:
+      - "8001:8000"
 
   catalog:
     build: ./services/catalog
+    container_name: catalog
     environment:
-      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dcatalog
-    depends_on: [postgres]
-    ports: ["8002:8000"]
+      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${CATALOG_SCHEMA}
+    depends_on:
+      - postgres
+    ports:
+      - "8002:8000"
 
   orders:
     build: ./services/orders
+    container_name: orders
     environment:
-      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dorders
-      AWS_REGION: eu-north-1
-    depends_on: [postgres]
-    ports: ["8003:8000"]
+      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${ORDERS_SCHEMA}
+    depends_on:
+      - postgres
+    ports:
+      - "8003:8000"
 
   production:
     build: ./services/production
+    container_name: production
     environment:
-      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dproduction
-      AWS_REGION: eu-north-1
-    depends_on: [postgres]
-    ports: ["8004:8000"]
+      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${PRODUCTION_SCHEMA}
+    depends_on:
+      - postgres
+    ports:
+      - "8004:8000"
 
   logistics:
     build: ./services/logistics
+    container_name: logistics
     environment:
-      DATABASE_URL: postgresql+psycopg2://shop:example@postgres:5432/shop?options=-csearch_path%3Dlogistics
-    depends_on: [postgres]
-    ports: ["8005:8000"]
+      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${LOGISTICS_SCHEMA}
+    depends_on:
+      - postgres
+    ports:
+      - "8005:8000"
+
+# .env example
+# POSTGRES_USER=root
+# POSTGRES_PASSWORD=Example123
+# POSTGRES_DB=posters_shop
+# POSTGRES_HOST=postgres
+# POSTGRES_PORT=5432
+#
+# BASE_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+#
+# USERS_SCHEMA=users
+# CATALOG_SCHEMA=catalog
+# ORDERS_SCHEMA=orders
+# PRODUCTION_SCHEMA=production
+# LOGISTICS_SCHEMA=logistics
