@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from commons import SERVICE_NAME
 from database import get_db
 from models import User
 from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest
@@ -14,8 +15,6 @@ from auth import (
 )
 from init_db import init_db
 from metrics import metrics_endpoint, track_metrics
-
-SERVICE_NAME = "users"
 
 app = FastAPI(title=f"{SERVICE_NAME} service")
 

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String
 from database import Base
-from init_db import SCHEMA_NAME, TABLE_NAME
+from commons import SCHEMA_NAME, TABLE_NAME
 
 
 class User(Base):

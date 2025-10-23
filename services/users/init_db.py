@@ -2,10 +2,7 @@ from sqlalchemy import select
 from database import Base, engine, SessionLocal, init_schema
 from models import User
 from auth import hash_password
-from main import SERVICE_NAME
-
-SCHEMA_NAME = SERVICE_NAME
-TABLE_NAME = SERVICE_NAME
+from commons import SCHEMA_NAME
 
 DEFAULT_OWNER_EMAIL = "admin@postershop.com"
 DEFAULT_OWNER_PASS = "admin1234"

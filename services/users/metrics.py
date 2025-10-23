@@ -1,7 +1,7 @@
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import time
 from starlette.responses import Response
-from main import SERVICE_NAME
+from commons import SERVICE_NAME
 
 REQUEST_COUNT = Counter(
     "http_requests_total",
