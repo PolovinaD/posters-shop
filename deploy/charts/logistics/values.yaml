@@ -24,6 +24,11 @@ env:
       secretKeyRef:
         name: postershop-db
         key: DATABASE_URL_LOGISTICS
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: postershop-jwt
+        key: JWT_SECRET
 
 ingress:
   enabled: false
