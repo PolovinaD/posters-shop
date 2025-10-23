@@ -1,8 +1,7 @@
-fastapi
-uvicorn
-sqlalchemy>=2.0
-psycopg2-binary
-prometheus-client
-python-jose[cryptography]
-pydantic
-boto3
+fastapi==0.119.1
+uvicorn==0.38.0
+SQLAlchemy==2.0.44
+psycopg2-binary==2.9.11
+python-jose==3.5.0
+passlib[bcrypt]==1.7.4
+prometheus-client==0.23.1
