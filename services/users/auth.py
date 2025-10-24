@@ -51,7 +51,7 @@ def get_current_user(
             detail="Invalid token payload (missing 'sub')"
         )
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    user = db.query(User).filter(User.email == str(user_id)).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

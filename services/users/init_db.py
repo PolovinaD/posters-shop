@@ -2,7 +2,7 @@ from sqlalchemy import select
 from database import Base, engine, SessionLocal, init_schema
 from models import User
 from auth import hash_password
-from commons import SCHEMA_NAME
+from commons import SCHEMA_NAME, UserRole
 
 DEFAULT_OWNER_EMAIL = "admin@postershop.com"
 DEFAULT_OWNER_PASS = "admin1234"
@@ -13,12 +13,12 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:
-        owner_exists = db.execute(select(User).where(User.role == "owner")).scalar_one_or_none()
+        owner_exists = db.execute(select(User).where(User.role == UserRole.OWNER)).scalar_one_or_none()
         if not owner_exists:
             owner = User(
                 email=DEFAULT_OWNER_EMAIL,
                 password_hash=hash_password(DEFAULT_OWNER_PASS),
-                role="owner"
+                role=UserRole.OWNER
             )
             db.add(owner)
             db.commit()
