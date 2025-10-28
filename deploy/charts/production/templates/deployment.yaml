@@ -34,7 +34,7 @@ kind: Service
 metadata:
   name: production
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: production
   ports:

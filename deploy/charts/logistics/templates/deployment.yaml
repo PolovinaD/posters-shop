@@ -34,7 +34,7 @@ kind: Service
 metadata:
   name: logistics
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: logistics
   ports:

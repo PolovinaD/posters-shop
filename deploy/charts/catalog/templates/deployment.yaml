@@ -34,7 +34,7 @@ kind: Service
 metadata:
   name: catalog
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: catalog
   ports:
