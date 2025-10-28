@@ -28,11 +28,24 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push images
+      - name: Detect changed services
+        id: changes
         run: |
-          echo "Using AWS Account: $AWS_ACCOUNT_ID"
-          echo "Region: $AWS_REGION"
+          CHANGED_SERVICES=""
           for svc in users catalog orders production logistics; do
+            if git diff --quiet HEAD^ HEAD -- services/$svc deploy/charts/$svc; then
+              echo "No changes in $svc"
+            else
+              echo "Detected changes in $svc"
+              CHANGED_SERVICES="$CHANGED_SERVICES $svc"
+            fi
+          done
+          echo "changed=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+
+      - name: Build & Push changed images
+        if: steps.changes.outputs.changed != ''
+        run: |
+          for svc in ${{ steps.changes.outputs.changed }}; do
             IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}
             echo "Building $IMAGE:${GITHUB_SHA::7}"
             cd services/$svc
@@ -44,9 +57,10 @@ jobs:
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name shop --region $AWS_REGION
 
-      - name: Helm upgrades
+      - name: Helm upgrade changed services
+        if: steps.changes.outputs.changed != ''
         run: |
-          for svc in users catalog orders production logistics; do
+          for svc in ${{ steps.changes.outputs.changed }}; do
             helm upgrade --install $svc deploy/charts/$svc \
               -n shop --create-namespace \
               --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/$svc \
