@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from commons import SERVICE_NAME, UserRole
 from database import get_db
 from models import User
-from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest
+from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser
 from auth import (
     hash_password,
     verify_password,
@@ -111,3 +111,79 @@ def change_user_role(
 @app.get("/admin/ping")
 def admin_ping(_=Depends(require_role(UserRole.OWNER))):
     return {"message": "pong"}
+
+
+# --- Admin User Management ---
+
+@app.get("/admin/users", response_model=list[UserOut])
+def list_users(
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.OWNER)),
+):
+    """List all users (owner only)."""
+    users = db.execute(select(User).order_by(User.id)).scalars().all()
+    return users
+
+
+@app.post("/admin/users", response_model=UserOut, status_code=201)
+def create_user(
+    payload: AdminCreateUser,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.OWNER)),
+):
+    """Create a new user with a specific role (owner only)."""
+    existing = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.delete("/admin/users/{user_id}", status_code=204)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    claims=Depends(require_role(UserRole.OWNER)),
+):
+    """Delete a user (owner only). Cannot delete yourself."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Prevent deleting yourself
+    if user.email == claims.get("sub"):
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    
+    db.delete(user)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/admin/users/{user_id}/reset-password", status_code=200)
+def reset_user_password(
+    user_id: int,
+    new_password: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.OWNER)),
+):
+    """Reset a user's password (owner only)."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    return {"message": "Password reset successfully"}

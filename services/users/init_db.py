@@ -1,15 +1,15 @@
 from sqlalchemy import select
-from database import Base, engine, SessionLocal, init_schema
+from database import Base, engine, SessionLocal
 from models import User
 from auth import hash_password
-from commons import SCHEMA_NAME, UserRole
+from commons import UserRole
 
 DEFAULT_OWNER_EMAIL = "admin@postershop.com"
 DEFAULT_OWNER_PASS = "admin1234"
 
 
 def init_db():
-    init_schema(SCHEMA_NAME)
+    # Schemas are created by db/init.sql - service user only needs to create tables
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:

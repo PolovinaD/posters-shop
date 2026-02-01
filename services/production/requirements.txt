@@ -1,8 +1,7 @@
-fastapi
-uvicorn
+fastapi>=0.100.0
+uvicorn>=0.20.0
 sqlalchemy>=2.0
-psycopg2-binary
-prometheus-client
-python-jose[cryptography]
-pydantic
-boto3
+psycopg2-binary>=2.9
+prometheus-client>=0.15.0
+pydantic>=2.0
+httpx>=0.25.0

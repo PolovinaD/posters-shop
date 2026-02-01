@@ -36,3 +36,12 @@ class ChangePasswordRequest(BaseModel):
 
 class ChangeRoleRequest(BaseModel):
     new_role: UserRole
+
+
+class AdminCreateUser(BaseModel):
+    """Schema for admin to create a new user with a specific role."""
+    email: EmailStr
+    password: str = Field(min_length=PASS_MIN_LENGTH)
+    role: UserRole = UserRole.CUSTOMER
+    first_name: str | None = None
+    last_name: str | None = None

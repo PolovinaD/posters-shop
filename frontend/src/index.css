@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #1e293b;
+  --border: #334155;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Force input text colors to override browser form control styling */
+input, select, textarea {
+  color: inherit;
+  -webkit-text-fill-color: inherit;
+}
+
+/* Admin inputs need explicit colors */
+input:not(.shop-light-mode *),
+select:not(.shop-light-mode *),
+textarea:not(.shop-light-mode *) {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #64748b;
+  -webkit-text-fill-color: #64748b;
+  opacity: 1;
+}
+
+/* Number input spinners for dark theme */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  filter: invert(1);
+}
+
+/* Force button text visibility */
+button {
+  -webkit-text-fill-color: inherit;
+}
+
+/* Shop pages light mode override */
+.shop-light-mode {
+  color-scheme: light;
+}
+
+.shop-light-mode input,
+.shop-light-mode select,
+.shop-light-mode textarea {
+  color: #1c1917;
+}
+
+.shop-light-mode input::placeholder,
+.shop-light-mode textarea::placeholder {
+  color: #a8a29e;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Status badge colors */
+.status-created { background-color: #64748b; }
+.status-reserved { background-color: #f59e0b; }
+.status-paid { background-color: #3b82f6; }
+.status-producing { background-color: #8b5cf6; }
+.status-shipped { background-color: #06b6d4; }
+.status-delivered { background-color: #22c55e; }
+.status-cancelled { background-color: #ef4444; }
+.status-failed { background-color: #dc2626; }
+.status-queued { background-color: #f59e0b; }
+.status-processing { background-color: #8b5cf6; }
+.status-completed { background-color: #22c55e; }
+.status-open { background-color: #3b82f6; }
+.status-complete { background-color: #22c55e; }
+.status-expired { background-color: #64748b; }
+.status-pending { background-color: #f59e0b; }
+.status-dispatched { background-color: #3b82f6; }
+.status-in_transit { background-color: #8b5cf6; }

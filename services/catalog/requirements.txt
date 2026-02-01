@@ -6,3 +6,4 @@ prometheus-client
 python-jose[cryptography]
 pydantic
 boto3
+httpx

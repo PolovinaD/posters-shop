@@ -2,7 +2,7 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 import time
 from starlette.responses import Response
 
-SERVICE_NAME = "orders"
+SERVICE_NAME = "inventory"
 
 REQUEST_COUNT = Counter(
     "http_requests_total",
@@ -16,30 +16,23 @@ REQUEST_LATENCY = Histogram(
     ["service", "path"]
 )
 
-# Orders-specific metrics
-ORDERS_CREATED = Counter(
-    "orders_created_total",
-    "Total orders created",
+# Inventory-specific metrics
+STOCK_LEVEL = Gauge(
+    "inventory_stock_level",
+    "Current stock level per SKU",
+    ["sku"]
+)
+
+ACTIVE_RESERVATIONS = Gauge(
+    "inventory_active_reservations",
+    "Number of active reservations",
     []
 )
 
-ORDERS_BY_STATUS = Gauge(
-    "orders_by_status",
-    "Current orders by status",
-    ["status"]
-)
-
-ORDER_TOTAL_AMOUNT = Histogram(
-    "order_total_amount",
-    "Order total amount distribution",
-    [],
-    buckets=[10, 25, 50, 100, 200, 500, 1000]
-)
-
-INVENTORY_RESERVATION_FAILURES = Counter(
-    "inventory_reservation_failures_total",
-    "Failed inventory reservations",
-    ["reason"]
+RESERVATIONS_EXPIRED = Counter(
+    "inventory_reservations_expired_total",
+    "Total reservations that expired",
+    []
 )
 
 
@@ -66,3 +59,4 @@ async def track_metrics(request, call_next):
     ).observe(duration)
 
     return response
+
