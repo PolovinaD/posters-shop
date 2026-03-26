@@ -1,0 +1,101 @@
+# ============================================================
+# EKS Cluster Configuration - DEVELOPMENT / DEMO
+# ============================================================
+# Cost-optimized configuration for development and demos.
+# Estimated cost: ~$80-100/month
+#
+# Cost savings:
+#   - Spot instances (70% cheaper than on-demand)
+#   - t3.large instances (35 pods each)
+#   - 2 nodes for capacity (70 pods total)
+#   - No NAT Gateway (nodes in public subnets)
+#
+# Pod capacity per instance type:
+#   - t3.small:  ~11 pods (3 ENIs × 4 IPs - 1)
+#   - t3.medium: ~17 pods (3 ENIs × 6 IPs - 1)
+#   - t3.large:  ~35 pods (3 ENIs × 12 IPs - 1)
+#
+# Capacity calculation:
+#   - 9 microservices (frontend, infra, users, catalog, orders, production, logistics, inventory, payments)
+#   - kube-system pods = ~18 pods (aws-node, coredns, ebs-csi, kube-proxy, metrics, alb-controller)
+#   - external-secrets = ~3 pods
+#   - monitoring = ~8 pods
+#   - Total needed: ~38 pods → 2 x t3.large = 70 pods ✓
+#
+# Trade-offs:
+#   - Spot instances can be interrupted (rare, ~5% chance)
+#   - No private networking (less secure)
+#
+# Usage:
+#   eksctl create cluster -f eksctl-cluster-dev.yaml
+# ============================================================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: postershop-dev
+  region: eu-north-1
+  version: "1.29"
+  tags:
+    project: postershop
+    environment: development
+
+iam:
+  withOIDC: true
+  serviceAccounts:
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      wellKnownPolicies:
+        awsLoadBalancerController: true
+
+# VPC - NO NAT Gateway (saves ~$32/month)
+vpc:
+  cidr: 10.0.0.0/16
+  nat:
+    gateway: Disable  # Nodes will be in public subnets
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: false
+
+# SPOT instances - 70% cheaper!
+managedNodeGroups:
+  - name: spot-workers
+    instanceTypes:
+      - t3.large      # 2 vCPU, 8GB RAM - 35 pods max per node (preferred)
+      - t3.medium     # Fallback - 17 pods max per node
+    spot: true        # Use spot instances
+    desiredCapacity: 2  # Start with 2 nodes (70 pods capacity with t3.large)
+    minSize: 2          # Keep minimum 2 for reliability
+    maxSize: 4
+    volumeSize: 20
+    volumeType: gp3
+    # Public subnets (no NAT needed)
+    privateNetworking: false
+    labels:
+      role: worker
+      lifecycle: spot
+    tags:
+      project: postershop
+      environment: dev
+    iam:
+      withAddonPolicies:
+        imageBuilder: true
+        autoScaler: true
+        ebs: true
+
+# Minimal addons
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+
+# No CloudWatch logging (saves a few dollars)
+cloudWatch:
+  clusterLogging:
+    enableTypes: []
+

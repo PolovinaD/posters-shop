@@ -6,3 +6,16 @@ __pycache__/
 .env
 .env.*
 *.log
+
+# eksctl output files (contain account-specific data)
+cluster.yaml
+nodegroup.yaml
+
+# Deployment secrets (contain passwords)
+deploy/.secrets
+deploy/.secrets-*
+
+# Terraform state (if using terraform)
+*.tfstate
+*.tfstate.backup
+.terraform/

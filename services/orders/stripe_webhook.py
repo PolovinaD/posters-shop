@@ -21,6 +21,9 @@ from sqlalchemy.orm import Session
 from models import Order, OrderStatus
 from outbox import emit_event
 import inventory_client
+from logger import get_logger
+
+logger = get_logger("webhook")
 
 # Webhook secret - must match the payment service
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_test_secret_key_12345")
@@ -79,7 +82,7 @@ def verify_stripe_signature(payload: bytes, signature: str, secret: str) -> bool
         return False
     
     if abs(time.time() - timestamp) > TIMESTAMP_TOLERANCE:
-        print(f"[webhook] Timestamp too old: {timestamp}")
+        logger.warning("Webhook timestamp too old", timestamp=timestamp, tolerance_sec=TIMESTAMP_TOLERANCE)
         return False
     
     # Compute expected signature
@@ -146,7 +149,7 @@ async def handle_checkout_session_completed(
     
     # Idempotency check - if already paid, just return success
     if order.status == OrderStatus.PAID:
-        print(f"[webhook] Order {order_id} already paid (idempotent)")
+        logger.info("Order already paid (idempotent)", order_id=order_id)
         return {"status": "already_processed", "order_id": order_id}
     
     # Validate state transition
@@ -161,7 +164,7 @@ async def handle_checkout_session_completed(
     except Exception as e:
         # If inventory commit fails, we need to handle this carefully
         # In production, you might retry or alert
-        print(f"[webhook] Warning: Failed to commit inventory for order {order_id}: {e}")
+        logger.warning("Failed to commit inventory, continuing with payment", order_id=order_id, error=str(e))
         # Continue anyway - the payment succeeded, we need to honor it
     
     # Update order status
@@ -189,7 +192,7 @@ async def handle_checkout_session_completed(
     
     db.commit()
     
-    print(f"[webhook] Order {order_id} marked as paid via webhook")
+    logger.info("Order marked as paid via webhook", order_id=order_id, payment_intent=session.get("payment_intent"))
     
     return {
         "status": "processed",
@@ -229,12 +232,12 @@ async def handle_checkout_session_expired(
         try:
             await inventory_client.release_stock(order_id)
         except Exception as e:
-            print(f"[webhook] Warning: Failed to release inventory for order {order_id}: {e}")
+            logger.warning("Failed to release inventory on checkout expiry", order_id=order_id, error=str(e))
         
         order.status = OrderStatus.CANCELLED
         db.commit()
         
-        print(f"[webhook] Order {order_id} cancelled due to expired checkout")
+        logger.info("Order cancelled due to expired checkout", order_id=order_id)
         return {"status": "cancelled", "order_id": order_id}
     
     return {"status": "no_action", "order_id": order_id, "current_status": order.status}
@@ -268,13 +271,13 @@ async def process_webhook(
     event_type = event["type"]
     event_id = event["id"]
     
-    print(f"[webhook] Received event: {event_type} ({event_id})")
+    logger.info("Webhook event received", event_type=event_type, event_id=event_id)
     
     # Get handler
     handler = EVENT_HANDLERS.get(event_type)
     if not handler:
         # Unknown event type - acknowledge but don't process
-        print(f"[webhook] Ignoring unknown event type: {event_type}")
+        logger.debug("Ignoring unknown event type", event_type=event_type)
         return {"status": "ignored", "event_type": event_type}
     
     # Process event

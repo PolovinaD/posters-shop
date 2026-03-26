@@ -1,7 +1,7 @@
 from enum import Enum
 
 SERVICE_NAME = "users"
-SCHEMA_NAME = SERVICE_NAME
+SCHEMA_NAME = "users_schema"
 TABLE_NAME = SERVICE_NAME
 
 class UserRole(str, Enum):

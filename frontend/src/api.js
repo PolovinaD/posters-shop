@@ -62,6 +62,7 @@ export const inventoryApi = {
     body: JSON.stringify({ quantity }),
   }),
   getReservations: () => fetchJSON(`${API_BASE}/inventory/reservations`),
+  seed: () => fetchJSON(`${API_BASE}/inventory/seed`, { method: 'POST' }),
 };
 
 // ============== Orders API ==============
@@ -119,6 +120,31 @@ export const paymentsApi = {
   }),
 };
 
+// ============== Infrastructure API ==============
+export const infraApi = {
+  getCluster: () => fetchJSON(`${API_BASE}/infra/cluster`),
+  getDeployments: () => fetchJSON(`${API_BASE}/infra/deployments`),
+  getDeployment: (name) => fetchJSON(`${API_BASE}/infra/deployments/${name}`),
+  scaleDeployment: (name, replicas) => fetchJSON(`${API_BASE}/infra/deployments/${name}/scale`, {
+    method: 'POST',
+    body: JSON.stringify({ replicas }),
+  }),
+  restartDeployment: (name) => fetchJSON(`${API_BASE}/infra/deployments/${name}/restart`, {
+    method: 'POST',
+  }),
+  getPods: (deployment) => {
+    const params = deployment ? `?deployment=${deployment}` : '';
+    return fetchJSON(`${API_BASE}/infra/pods${params}`);
+  },
+  deletePod: (name) => fetch(`${API_BASE}/infra/pods/${name}`, { method: 'DELETE' }),
+  getPodLogs: (name, tail = 100) => fetchJSON(`${API_BASE}/infra/pods/${name}/logs?tail=${tail}`),
+  getHPAs: () => fetchJSON(`${API_BASE}/infra/hpa`),
+  updateHPA: (name, data) => fetchJSON(`${API_BASE}/infra/hpa/${name}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+};
+
 // ============== Users API ==============
 export const usersApi = {
   // Auth
@@ -126,10 +152,18 @@ export const usersApi = {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   }),
-  register: (data) => fetchJSON(`${API_BASE}/users/register`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  register: async (data) => {
+    const response = await fetch(`${API_BASE}/users/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Registration failed' }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return { success: true };
+  },
   getMe: (token) => fetchJSON(`${API_BASE}/users/users/me`, {
     headers: { Authorization: `Bearer ${token}` },
   }),

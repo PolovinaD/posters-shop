@@ -1,9 +1,12 @@
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query
+
+ROOT_PATH = os.getenv("ROOT_PATH", "")
 from sqlalchemy import select, update, delete, and_
 from sqlalchemy.orm import Session
 
@@ -20,6 +23,9 @@ from metrics import (
     metrics_endpoint, track_metrics,
     STOCK_LEVEL, ACTIVE_RESERVATIONS, RESERVATIONS_EXPIRED
 )
+from logger import get_logger, LoggingMiddleware
+
+logger = get_logger(__name__)
 
 SERVICE_NAME = "inventory"
 
@@ -64,13 +70,13 @@ async def expire_reservations_worker():
                 if expired_count > 0:
                     db.commit()
                     RESERVATIONS_EXPIRED.inc(expired_count)
-                    print(f"[inventory] Released {expired_count} expired reservations")
+                    logger.info("Released expired reservations", count=expired_count)
                     
                     # Update metrics
                     _update_metrics(db)
                     
         except Exception as e:
-            print(f"[inventory] Error in expire_reservations_worker: {e}")
+            logger.error("Error in expire_reservations_worker", error=str(e))
         
         await asyncio.sleep(30)  # Run every 30 seconds
 
@@ -91,13 +97,12 @@ def _update_metrics(db: Session):
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     # Startup
-    Base.metadata.create_all(bind=engine)
-    print(f"[{SERVICE_NAME}] Database tables created")
+    logger.info("Database migrations managed by Alembic - run 'alembic upgrade head' to apply")
     
     # Start background worker
     global background_task
     background_task = asyncio.create_task(expire_reservations_worker())
-    print(f"[{SERVICE_NAME}] Reservation expiry worker started")
+    logger.info("Reservation expiry worker started")
     
     yield
     
@@ -108,10 +113,11 @@ async def lifespan(app: FastAPI):
             await background_task
         except asyncio.CancelledError:
             pass
-    print(f"[{SERVICE_NAME}] Shutdown complete")
+    logger.info("Shutdown complete")
 
 
-app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan)
+app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan, root_path=ROOT_PATH)
+app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
 
 

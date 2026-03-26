@@ -1,6 +1,9 @@
 """Client for communicating with the orders service."""
 import os
 import httpx
+from logger import get_logger
+
+logger = get_logger("orders_client")
 
 ORDERS_SERVICE_URL = os.getenv("ORDERS_SERVICE_URL", "http://orders:8000")
 LOGISTICS_SERVICE_URL = os.getenv("LOGISTICS_SERVICE_URL", "http://logistics:8000")
@@ -21,10 +24,10 @@ async def notify_order_producing(order_id: int) -> dict:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"[production] Failed to notify order {order_id} producing: {response.status_code}")
+                logger.warning("Failed to notify order producing", order_id=order_id, status_code=response.status_code)
                 return {"error": response.text}
         except httpx.RequestError as e:
-            print(f"[production] Failed to connect to orders service: {e}")
+            logger.error("Failed to connect to orders service", order_id=order_id, error=str(e))
             return {"error": str(e)}
 
 
@@ -40,19 +43,19 @@ async def notify_order_shipped(order_id: int) -> dict:
             
             if ship_response.status_code == 200:
                 shipment = ship_response.json()
-                print(f"[production] Created shipment for order {order_id}: {shipment}")
+                logger.info("Shipment created", order_id=order_id, shipment_id=shipment.get("id"))
             else:
-                print(f"[production] Failed to create shipment: {ship_response.status_code}")
+                logger.warning("Failed to create shipment", order_id=order_id, status_code=ship_response.status_code)
             
             # Then, update order status to shipped
             response = await client.post(f"{ORDERS_SERVICE_URL}/orders/{order_id}/ship")
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"[production] Failed to notify order {order_id} shipped: {response.status_code}")
+                logger.warning("Failed to notify order shipped", order_id=order_id, status_code=response.status_code)
                 return {"error": response.text}
                 
         except httpx.RequestError as e:
-            print(f"[production] Failed to connect to services: {e}")
+            logger.error("Failed to connect to services", order_id=order_id, error=str(e))
             return {"error": str(e)}
 

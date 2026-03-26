@@ -236,13 +236,23 @@ export function HealthIndicator({ status }) {
 }
 
 // Modal
-export function Modal({ open, onClose, title, children }) {
+export function Modal({ open, onClose, title, children, size = 'md' }) {
   if (!open) return null;
+  
+  const sizes = {
+    sm: 'max-w-md',
+    md: 'max-w-lg',
+    lg: 'max-w-2xl',
+    xl: 'max-w-4xl',
+  };
   
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-[#1e293b] border border-[#334155] rounded-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-auto">
+      <div className={clsx(
+        'relative bg-[#1e293b] border border-[#334155] rounded-xl w-full mx-4 max-h-[90vh] overflow-auto',
+        sizes[size]
+      )}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#334155]">
           <h2 className="text-lg font-semibold">{title}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white">

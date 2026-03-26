@@ -12,7 +12,8 @@ import {
   Menu,
   X,
   Store,
-  ExternalLink
+  ExternalLink,
+  Server
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -25,6 +26,7 @@ import Production from './pages/Production';
 import Logistics from './pages/Logistics';
 import Outbox from './pages/Outbox';
 import UsersPage from './pages/Users';
+import Infrastructure from './pages/Infrastructure';
 
 // Shop Pages
 import ShopLayout from './pages/shop/ShopLayout';
@@ -32,9 +34,13 @@ import Catalog from './pages/shop/Catalog';
 import ProductDetail from './pages/shop/ProductDetail';
 import Checkout from './pages/shop/Checkout';
 import OrderTracking from './pages/shop/OrderTracking';
+import Login from './pages/shop/Login';
+import Register from './pages/shop/Register';
+import MyOrders from './pages/shop/MyOrders';
 
 // Context
 import { CartProvider } from './context/CartContext';
+import { AuthProvider } from './context/AuthContext';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -54,6 +60,7 @@ const navigation = [
   { name: 'Logistics', href: '/logistics', icon: Truck },
   { name: 'Outbox', href: '/outbox', icon: Activity },
   { name: 'Users', href: '/users', icon: Users },
+  { name: 'Infrastructure', href: '/infrastructure', icon: Server },
 ];
 
 function Sidebar({ mobile, onClose }) {
@@ -172,30 +179,36 @@ function AdminLayout({ children }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <CartProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Shop Routes (light theme) */}
-            <Route path="/shop" element={<ShopLayout />}>
-              <Route index element={<Catalog />} />
-              <Route path="product/:sku" element={<ProductDetail />} />
-              <Route path="checkout" element={<Checkout />} />
-              <Route path="orders" element={<OrderTracking />} />
-              <Route path="orders/:orderId" element={<OrderTracking />} />
-            </Route>
-            
-            {/* Admin Routes (dark theme) */}
-            <Route path="/" element={<AdminLayout><Dashboard /></AdminLayout>} />
-            <Route path="/catalog" element={<AdminLayout><CatalogPage /></AdminLayout>} />
-            <Route path="/inventory" element={<AdminLayout><Inventory /></AdminLayout>} />
-            <Route path="/orders" element={<AdminLayout><Orders /></AdminLayout>} />
-            <Route path="/production" element={<AdminLayout><Production /></AdminLayout>} />
-            <Route path="/logistics" element={<AdminLayout><Logistics /></AdminLayout>} />
-            <Route path="/outbox" element={<AdminLayout><Outbox /></AdminLayout>} />
-            <Route path="/users" element={<AdminLayout><UsersPage /></AdminLayout>} />
-          </Routes>
-        </BrowserRouter>
-      </CartProvider>
+      <AuthProvider>
+        <CartProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Shop Routes (light theme) */}
+              <Route path="/shop" element={<ShopLayout />}>
+                <Route index element={<Catalog />} />
+                <Route path="product/:sku" element={<ProductDetail />} />
+                <Route path="checkout" element={<Checkout />} />
+                <Route path="orders" element={<OrderTracking />} />
+                <Route path="orders/:orderId" element={<OrderTracking />} />
+                <Route path="login" element={<Login />} />
+                <Route path="register" element={<Register />} />
+                <Route path="my-orders" element={<MyOrders />} />
+              </Route>
+              
+              {/* Admin Routes (dark theme) */}
+              <Route path="/" element={<AdminLayout><Dashboard /></AdminLayout>} />
+              <Route path="/catalog" element={<AdminLayout><CatalogPage /></AdminLayout>} />
+              <Route path="/inventory" element={<AdminLayout><Inventory /></AdminLayout>} />
+              <Route path="/orders" element={<AdminLayout><Orders /></AdminLayout>} />
+              <Route path="/production" element={<AdminLayout><Production /></AdminLayout>} />
+              <Route path="/logistics" element={<AdminLayout><Logistics /></AdminLayout>} />
+              <Route path="/outbox" element={<AdminLayout><Outbox /></AdminLayout>} />
+              <Route path="/users" element={<AdminLayout><UsersPage /></AdminLayout>} />
+              <Route path="/infrastructure" element={<AdminLayout><Infrastructure /></AdminLayout>} />
+            </Routes>
+          </BrowserRouter>
+        </CartProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

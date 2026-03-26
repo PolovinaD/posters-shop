@@ -1,0 +1,38 @@
+image:
+  # Override with: --set image.repository=$ECR_REGISTRY/frontend
+  repository: YOUR_ECR_REGISTRY/frontend
+  tag: "latest"
+replicaCount: 2
+
+service:
+  port: 80
+  targetPort: 80
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# API backend URLs for nginx reverse proxy
+apiConfig:
+  usersUrl: "http://users"
+  catalogUrl: "http://catalog"
+  ordersUrl: "http://orders"
+  productionUrl: "http://production"
+  logisticsUrl: "http://logistics"
+  inventoryUrl: "http://inventory"
+  paymentsUrl: "http://payments"
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  host: ""  # Set to your domain or leave empty for default ALB DNS
+

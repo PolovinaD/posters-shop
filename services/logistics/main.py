@@ -1,23 +1,26 @@
-import logging
+import os
 from fastapi import FastAPI, Depends, Body, HTTPException, BackgroundTasks
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.orm import Session
 from datetime import datetime
 
+from logger import get_logger, LoggingMiddleware
 from database import Base, engine, get_db
 from metrics import metrics_endpoint
 from auth import require_courier_or_admin, optional_auth
 import orders_client
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-app = FastAPI(title="logistics service")
+ROOT_PATH = os.getenv("ROOT_PATH", "")
+app = FastAPI(title="logistics service", root_path=ROOT_PATH)
+
+app.add_middleware(LoggingMiddleware)
 
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    logger.info("Logistics service started. Database migrations managed by Alembic.")
 
 
 @app.get("/healthz")
@@ -34,7 +37,7 @@ def metrics():
 
 class Shipment(Base):
     __tablename__ = "shipments"
-    __table_args__ = {"schema": "logistics"}
+    __table_args__ = {"schema": "logistics_schema"}
     id = Column(Integer, primary_key=True)
     order_id = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="preparing")

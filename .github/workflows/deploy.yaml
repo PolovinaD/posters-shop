@@ -1,68 +1,139 @@
-name: Build & Deploy
+# ============================================================
+# Deploy to Kubernetes (EKS)
+# ============================================================
+# Deploys services to EKS cluster after build completes.
+# Uses OIDC for passwordless AWS authentication.
+# ============================================================
+
+name: Deploy to EKS
 
 on:
-  push:
-    branches: [ master ]
+  workflow_run:
+    workflows: ["Build and Push"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: 'Service to deploy (or "all")'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - users
+          - catalog
+          - orders
+          - production
+          - logistics
+          - inventory
+          - payments
+          - infra
+          - frontend
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER: ${{ vars.EKS_CLUSTER || 'postershop' }}
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  build-and-deploy:
+  deploy:
+    # Only run if build succeeded (for workflow_run trigger)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-eks-deploy
-
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS (OIDC)
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
 
-      - name: Detect changed services
-        id: changes
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.13.0'
+
+      - name: Configure kubectl for EKS
         run: |
-          CHANGED_SERVICES=""
-          for svc in users catalog orders production logistics; do
-            if git diff --quiet HEAD^ HEAD -- services/$svc deploy/charts/$svc; then
-              echo "No changes in $svc"
-            else
-              echo "Detected changes in $svc"
-              CHANGED_SERVICES="$CHANGED_SERVICES $svc"
-            fi
-          done
-          echo "changed=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }}
 
-      - name: Build & Push changed images
-        if: steps.changes.outputs.changed != ''
+      - name: Set namespace
+        id: namespace
         run: |
-          for svc in ${{ steps.changes.outputs.changed }}; do
-            IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}
-            echo "Building $IMAGE:${GITHUB_SHA::7}"
-            cd services/$svc
-            docker build -t $IMAGE:${GITHUB_SHA::7} .
-            docker push $IMAGE:${GITHUB_SHA::7}
-            cd - > /dev/null
-          done
+          ENV="${{ github.event.inputs.environment || 'staging' }}"
+          if [ "$ENV" == "production" ]; then
+            echo "namespace=postershop" >> $GITHUB_OUTPUT
+          else
+            echo "namespace=postershop-staging" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name shop --region $AWS_REGION
-
-      - name: Helm upgrade changed services
-        if: steps.changes.outputs.changed != ''
+      - name: Deploy services
         run: |
-          for svc in ${{ steps.changes.outputs.changed }}; do
-            helm upgrade --install $svc deploy/charts/$svc \
-              -n shop --create-namespace \
-              --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/$svc \
-              --set image.tag=${GITHUB_SHA::7}
+          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
+          SERVICE="${{ github.event.inputs.service || 'all' }}"
+          
+          # Create namespace if needed
+          kubectl get namespace "$NAMESPACE" || kubectl create namespace "$NAMESPACE"
+          
+          if [ "$SERVICE" == "all" ]; then
+            SERVICES="inventory payments users catalog logistics production orders infra frontend"
+          else
+            SERVICES="$SERVICE"
+          fi
+          
+          ECR_REGISTRY="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          
+          for svc in $SERVICES; do
+            echo "🚀 Deploying $svc..."
+            helm upgrade --install "$svc" ./deploy/charts/"$svc" \
+              --namespace "$NAMESPACE" \
+              --set image.repository="${ECR_REGISTRY}/${svc}" \
+              --set image.tag=${{ github.sha }} \
+              --wait \
+              --timeout 5m
+            echo "✅ $svc deployed"
           done
+
+      - name: Get deployment status
+        run: |
+          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
+          echo "### 📊 Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Ready | Available |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+          
+          for deploy in $(kubectl get deployments -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
+            READY=$(kubectl get deployment "$deploy" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
+            AVAIL=$(kubectl get deployment "$deploy" -n "$NAMESPACE" -o jsonpath='{.status.availableReplicas}')
+            echo "| $deploy | ${READY:-0} | ${AVAIL:-0} |" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Get Ingress URL
+        run: |
+          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
+          URL=$(kubectl get ingress frontend -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 Application URL" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Frontend: http://$URL" >> $GITHUB_STEP_SUMMARY

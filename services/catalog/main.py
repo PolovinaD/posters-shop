@@ -7,18 +7,24 @@ from sqlalchemy import Column, Integer, String, Numeric, Boolean, Text, select
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 
+from logger import get_logger, LoggingMiddleware
 from database import Base, engine, get_db
 from metrics import metrics_endpoint
 
+logger = get_logger(__name__)
+
 SERVICE_NAME = "catalog"
 INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://inventory:8000")
+ROOT_PATH = os.getenv("ROOT_PATH", "")
 
-app = FastAPI(title=f"{SERVICE_NAME} service")
+app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
+
+app.add_middleware(LoggingMiddleware)
 
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    logger.info("Catalog service started. Database migrations managed by Alembic.")
 
 
 @app.get("/healthz")
@@ -35,7 +41,7 @@ def metrics():
 
 class Product(Base):
     __tablename__ = "products"
-    __table_args__ = {"schema": "catalog"}
+    __table_args__ = {"schema": "catalog_schema"}
     id = Column(Integer, primary_key=True)
     sku = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=False)
@@ -49,7 +55,7 @@ class Product(Base):
 
 class Size(Base):
     __tablename__ = "sizes"
-    __table_args__ = {"schema": "catalog"}
+    __table_args__ = {"schema": "catalog_schema"}
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     price_delta = Column(Numeric(10, 2), nullable=False, default=0)
@@ -57,7 +63,7 @@ class Size(Base):
 
 class FrameOption(Base):
     __tablename__ = "frame_options"
-    __table_args__ = {"schema": "catalog"}
+    __table_args__ = {"schema": "catalog_schema"}
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     extra_price = Column(Numeric(10, 2), nullable=False, default=0)
@@ -136,7 +142,7 @@ async def get_stock_levels(skus: list[str]) -> dict[str, dict]:
                 data = response.json()
                 return {item["sku"]: item for item in data.get("items", [])}
     except Exception as e:
-        print(f"[catalog] Failed to fetch stock levels: {e}")
+        logger.error("Failed to fetch stock levels", error=str(e), skus=skus)
     
     return {}
 

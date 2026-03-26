@@ -1,0 +1,77 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host }}
+      {{- end }}
+      http:
+        paths:
+          # Frontend static files
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+          # API routes - proxied to backend services
+          - path: /api/users
+            pathType: Prefix
+            backend:
+              service:
+                name: users
+                port:
+                  number: 80
+          - path: /api/catalog
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog
+                port:
+                  number: 80
+          - path: /api/orders
+            pathType: Prefix
+            backend:
+              service:
+                name: orders
+                port:
+                  number: 80
+          - path: /api/production
+            pathType: Prefix
+            backend:
+              service:
+                name: production
+                port:
+                  number: 80
+          - path: /api/logistics
+            pathType: Prefix
+            backend:
+              service:
+                name: logistics
+                port:
+                  number: 80
+          - path: /api/inventory
+            pathType: Prefix
+            backend:
+              service:
+                name: inventory
+                port:
+                  number: 80
+          - path: /api/payments
+            pathType: Prefix
+            backend:
+              service:
+                name: payments
+                port:
+                  number: 80
+{{- end }}
+

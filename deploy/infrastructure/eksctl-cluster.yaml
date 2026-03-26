@@ -1,0 +1,94 @@
+# ============================================================
+# EKS Cluster Configuration for PosterShop
+# ============================================================
+# Creates a minimal but production-ready EKS cluster.
+#
+# Usage:
+#   eksctl create cluster -f eksctl-cluster.yaml
+#
+# To delete:
+#   eksctl delete cluster -f eksctl-cluster.yaml
+# ============================================================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: postershop
+  region: eu-north-1
+  version: "1.29"
+  tags:
+    project: postershop
+    environment: production
+
+# IAM OIDC provider for service accounts (required for ALB controller, etc.)
+iam:
+  withOIDC: true
+  serviceAccounts:
+    # AWS Load Balancer Controller
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      wellKnownPolicies:
+        awsLoadBalancerController: true
+    # External DNS (optional)
+    - metadata:
+        name: external-dns
+        namespace: kube-system
+      wellKnownPolicies:
+        externalDNS: true
+
+# VPC configuration - create new VPC
+vpc:
+  cidr: 10.0.0.0/16
+  nat:
+    gateway: Single  # Use HighlyAvailable for production
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+# Node groups
+# Pod capacity per instance type:
+#   t3.small: ~11 pods, t3.medium: ~17 pods, t3.large: ~35 pods
+managedNodeGroups:
+  # Main worker nodes
+  - name: workers
+    instanceType: t3.large
+    desiredCapacity: 2
+    minSize: 1
+    maxSize: 5
+    volumeSize: 30
+    volumeType: gp3
+    privateNetworking: true
+    labels:
+      role: worker
+    tags:
+      project: postershop
+    iam:
+      withAddonPolicies:
+        imageBuilder: true
+        autoScaler: true
+        ebs: true
+        cloudWatch: true
+
+# Addons
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    wellKnownPolicies:
+      ebsCSIController: true
+
+# CloudWatch logging
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api
+      - audit
+      - authenticator
+

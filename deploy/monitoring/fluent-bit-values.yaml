@@ -1,0 +1,137 @@
+# ============================================================
+# Fluent Bit Helm Values for PosterShop
+# ============================================================
+# Collects container logs and ships to Loki.
+# 
+# Install:
+#   helm repo add fluent https://fluent.github.io/helm-charts
+#   helm install fluent-bit fluent/fluent-bit -n monitoring -f fluent-bit-values.yaml
+# ============================================================
+
+# Run as DaemonSet on all nodes
+kind: DaemonSet
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Tolerations to run on all nodes
+tolerations:
+  - operator: Exists
+
+# Configuration
+config:
+  # Service configuration
+  service: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        Parsers_File /fluent-bit/etc/parsers.conf
+        HTTP_Server On
+        HTTP_Listen 0.0.0.0
+        HTTP_Port 2020
+        Health_Check On
+
+  # Input: Read container logs
+  inputs: |
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*_postershop_*.log
+        multiline.parser docker, cri
+        Tag kube.*
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+        Refresh_Interval 10
+
+  # Filters: Parse and enrich logs
+  filters: |
+    [FILTER]
+        Name kubernetes
+        Match kube.*
+        Merge_Log On
+        Merge_Log_Key log_parsed
+        K8S-Logging.Parser On
+        K8S-Logging.Exclude Off
+        Labels On
+        Annotations Off
+    
+    [FILTER]
+        Name parser
+        Match kube.*
+        Key_Name log
+        Parser json
+        Reserve_Data On
+        Preserve_Key Off
+
+    [FILTER]
+        Name modify
+        Match kube.*
+        Rename log message
+        Rename kubernetes.pod_name pod
+        Rename kubernetes.container_name container
+        Rename kubernetes.namespace_name namespace
+        Remove kubernetes.container_hash
+        Remove kubernetes.pod_id
+        Remove kubernetes.host
+        Remove kubernetes.docker_id
+
+    [FILTER]
+        Name nest
+        Match kube.*
+        Operation lift
+        Nested_under log_parsed
+
+  # Output: Send to Loki
+  outputs: |
+    [OUTPUT]
+        Name loki
+        Match kube.*
+        Host loki-gateway.monitoring.svc.cluster.local
+        Port 80
+        Labels job=postershop, namespace=$namespace, pod=$pod, container=$container
+        Label_Keys level, service, correlation_id
+        Remove_Keys stream, logtag
+        Auto_Kubernetes_Labels Off
+        Line_Format json
+
+  # Custom parsers
+  customParsers: |
+    [PARSER]
+        Name json
+        Format json
+        Time_Key timestamp
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep On
+
+# Volume mounts for log access
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+
+# Service for health checks
+service:
+  type: ClusterIP
+  port: 2020
+
+# Pod annotations for Prometheus scraping
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "2020"
+  prometheus.io/path: "/api/v1/metrics/prometheus"

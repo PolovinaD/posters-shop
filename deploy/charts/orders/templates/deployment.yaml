@@ -15,7 +15,7 @@ spec:
       containers:
         - name: orders
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:
@@ -26,6 +26,12 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
           resources:
 {{ toYaml .Values.resources | indent 12 }}
 ---
@@ -33,10 +39,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: orders
+  labels:
+    app: orders
 spec:
   type: ClusterIP
   selector:
     app: orders
   ports:
-    - port: {{ .Values.service.port }}
+    - name: http
+      port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}

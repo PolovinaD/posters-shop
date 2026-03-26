@@ -89,7 +89,7 @@ function LoginForm({ onLogin }) {
         <div className="mt-4 p-3 bg-slate-800 rounded-lg text-sm text-slate-400">
           <p className="font-medium text-slate-300 mb-1">Demo credentials:</p>
           <p>Email: admin@postershop.com</p>
-          <p>Password: admin123</p>
+          <p>Password: admin1234</p>
         </div>
       </CardContent>
     </Card>

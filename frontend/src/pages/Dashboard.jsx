@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { 
   Package, 
   ShoppingCart, 
@@ -7,7 +8,10 @@ import {
   Activity,
   CheckCircle2,
   XCircle,
-  Clock
+  Clock,
+  Sparkles,
+  Layers,
+  Loader2
 } from 'lucide-react';
 import { 
   Card, 
@@ -26,9 +30,13 @@ import {
   StatusBadge,
   HealthIndicator
 } from '../components/ui';
-import { ordersApi, productionApi, inventoryApi, healthApi } from '../api';
+import { ordersApi, productionApi, inventoryApi, catalogApi, healthApi } from '../api';
 
 export default function Dashboard() {
+  const queryClient = useQueryClient();
+  const [seedingCatalog, setSeedingCatalog] = useState(false);
+  const [seedingInventory, setSeedingInventory] = useState(false);
+  
   const { data: orderStats, isLoading: ordersLoading } = useQuery({
     queryKey: ['orderStats'],
     queryFn: ordersApi.getOrderStats,
@@ -42,6 +50,11 @@ export default function Dashboard() {
   const { data: stock, isLoading: stockLoading } = useQuery({
     queryKey: ['stock'],
     queryFn: inventoryApi.getStock,
+  });
+  
+  const { data: products, isLoading: productsLoading } = useQuery({
+    queryKey: ['products'],
+    queryFn: catalogApi.getProducts,
   });
   
   const { data: outbox } = useQuery({
@@ -60,9 +73,37 @@ export default function Dashboard() {
     queryFn: () => ordersApi.getOrders({ limit: 5 }),
   });
   
-  if (ordersLoading || jobsLoading || stockLoading) {
+  const handleSeedCatalog = async () => {
+    setSeedingCatalog(true);
+    try {
+      await catalogApi.seed();
+      queryClient.invalidateQueries(['products']);
+    } catch (e) {
+      console.error('Failed to seed catalog:', e);
+    } finally {
+      setSeedingCatalog(false);
+    }
+  };
+  
+  const handleSeedInventory = async () => {
+    setSeedingInventory(true);
+    try {
+      await inventoryApi.seed();
+      queryClient.invalidateQueries(['stock']);
+    } catch (e) {
+      console.error('Failed to seed inventory:', e);
+    } finally {
+      setSeedingInventory(false);
+    }
+  };
+  
+  if (ordersLoading || jobsLoading || stockLoading || productsLoading) {
     return <Loading />;
   }
+  
+  const catalogEmpty = !products || products.length === 0;
+  const inventoryEmpty = !stock || stock.length === 0;
+  const needsSetup = catalogEmpty || inventoryEmpty;
   
   // Calculate stats
   const totalOrders = Object.values(orderStats || {}).reduce((a, b) => a + b, 0);
@@ -83,6 +124,53 @@ export default function Dashboard() {
           Auto-refreshes every 5 seconds
         </div>
       </div>
+      
+      {/* Quick Setup Card - Shows when data needs seeding */}
+      {needsSetup && (
+        <Card className="border-amber-500/30 bg-amber-500/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-amber-400">
+              <Sparkles className="w-5 h-5" />
+              Quick Setup
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-slate-400 mb-4">
+              Your platform needs some initial data. Click the buttons below to seed sample data for testing.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {catalogEmpty && (
+                <button
+                  onClick={handleSeedCatalog}
+                  disabled={seedingCatalog}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-blue-500/50 rounded-lg font-medium transition-colors"
+                >
+                  {seedingCatalog ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Layers className="w-4 h-4" />
+                  )}
+                  {seedingCatalog ? 'Seeding...' : 'Seed Catalog'}
+                </button>
+              )}
+              {inventoryEmpty && (
+                <button
+                  onClick={handleSeedInventory}
+                  disabled={seedingInventory}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-green-500/50 rounded-lg font-medium transition-colors"
+                >
+                  {seedingInventory ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Package className="w-4 h-4" />
+                  )}
+                  {seedingInventory ? 'Seeding...' : 'Seed Inventory'}
+                </button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
       
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

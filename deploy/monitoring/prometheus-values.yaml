@@ -1,0 +1,148 @@
+# ============================================================
+# kube-prometheus-stack Helm Values
+# ============================================================
+# Install with:
+#   helm install prometheus prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace -f prometheus-values.yaml
+# ============================================================
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    # Scrape interval
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    
+    # Resource limits
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    
+    # Retention
+    retention: 15d
+    retentionSize: 10GB
+    
+    # Storage
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+    
+    # ServiceMonitor selector - watch all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    
+    # PodMonitor selector
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+    
+    # PrometheusRule selector
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+# Grafana configuration
+grafana:
+  enabled: true
+  
+  # Admin credentials (change in production!)
+  adminUser: admin
+  adminPassword: postershop-monitoring
+  
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  
+  # Default dashboards
+  defaultDashboardsEnabled: true
+  defaultDashboardsTimezone: utc
+  
+  # Sidecar for loading dashboards from ConfigMaps
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      labelValue: "1"
+  
+  # Ingress (optional - uncomment for production)
+  # ingress:
+  #   enabled: true
+  #   ingressClassName: alb
+  #   annotations:
+  #     kubernetes.io/ingress.class: alb
+  #     alb.ingress.kubernetes.io/scheme: internet-facing
+  #   hosts:
+  #     - grafana.your-domain.com
+
+# Alertmanager configuration
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+  
+  # Configure alerting channels (Slack, PagerDuty, etc.)
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace', 'service']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical'
+    receivers:
+      - name: 'default'
+        # Add webhook, Slack, etc. configuration here
+      - name: 'critical'
+        # Add critical alerting channel
+
+# Node exporter (for host metrics)
+nodeExporter:
+  enabled: true
+
+# kube-state-metrics (for K8s object metrics)
+kubeStateMetrics:
+  enabled: true
+
+# Disable components not needed for this setup
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+

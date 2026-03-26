@@ -1,0 +1,85 @@
+# ============================================================
+# Loki Helm Values for PosterShop
+# ============================================================
+# Lightweight log aggregation with Grafana Loki.
+# 
+# Install:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm install loki grafana/loki -n monitoring -f loki-values.yaml
+# ============================================================
+
+# Single binary mode (simplest deployment)
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  
+  commonConfig:
+    replication_factor: 1
+  
+  storage:
+    type: filesystem
+  
+  schemaConfig:
+    configs:
+      - from: 2024-01-01
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  limits_config:
+    retention_period: 168h  # 7 days
+    ingestion_rate_mb: 10
+    ingestion_burst_size_mb: 20
+    max_query_series: 5000
+    max_entries_limit_per_query: 10000
+
+  query_scheduler:
+    max_outstanding_requests_per_tenant: 2048
+
+singleBinary:
+  replicas: 1
+  
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: gp2
+
+# Disable components not needed in single binary mode
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+gateway:
+  enabled: true
+  replicas: 1
+  
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Monitoring
+monitoring:
+  selfMonitoring:
+    enabled: false
+  lokiCanary:
+    enabled: false
+
+# Test disabled
+test:
+  enabled: false

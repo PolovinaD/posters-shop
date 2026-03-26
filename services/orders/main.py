@@ -1,9 +1,12 @@
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
+
+ROOT_PATH = os.getenv("ROOT_PATH", "")
 from pydantic import BaseModel
 from sqlalchemy import select, func as sql_func
 from sqlalchemy.orm import Session
@@ -30,6 +33,9 @@ from outbox import (
 import payment_client
 from payment_client import PaymentServiceError
 from stripe_webhook import process_webhook, WebhookError
+from logger import get_logger, LoggingMiddleware
+
+logger = get_logger(__name__)
 
 
 # Pydantic models for payment endpoints
@@ -46,14 +52,13 @@ outbox_task = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
-    # Startup
-    Base.metadata.create_all(bind=engine)
-    print(f"[{SERVICE_NAME}] Database tables created (including outbox)")
+    # Startup - migrations should be run via 'alembic upgrade head' before starting
+    logger.info("Service starting", note="Ensure migrations are applied via 'alembic upgrade head'")
     
     # Start outbox worker
     global outbox_task
     outbox_task = asyncio.create_task(outbox_worker(poll_interval=2.0))
-    print(f"[{SERVICE_NAME}] Outbox worker started")
+    logger.info("Outbox worker started", poll_interval=2.0)
     
     yield
     
@@ -64,10 +69,11 @@ async def lifespan(app: FastAPI):
             await outbox_task
         except asyncio.CancelledError:
             pass
-    print(f"[{SERVICE_NAME}] Shutdown complete")
+    logger.info("Shutdown complete")
 
 
-app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan)
+app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan, root_path=ROOT_PATH)
+app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
 
 
@@ -284,7 +290,7 @@ async def pay_order(order_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(order)
         
-        print(f"[orders] Order {order_id} paid - ORDER_PAID event emitted to outbox")
+        logger.info("Order paid - event emitted to outbox", order_id=order_id, event_type="ORDER_PAID")
         
         return order
         
@@ -465,7 +471,7 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db)):
         order.checkout_session_id = session["id"]
         db.commit()
         
-        print(f"[orders] Created checkout session {session['id']} for order {order_id}")
+        logger.info("Checkout session created", order_id=order_id, session_id=session["id"])
         
         return CheckoutSessionResponse(
             checkout_session_id=session["id"],

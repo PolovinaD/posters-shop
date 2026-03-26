@@ -21,8 +21,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from database import Base, SessionLocal
+from logger import get_logger
 
-SCHEMA_NAME = "orders"
+logger = get_logger("outbox")
+
+SCHEMA_NAME = "orders_schema"
 
 # Event subscriber URLs - which services listen to which events
 EVENT_SUBSCRIBERS = {
@@ -153,7 +156,7 @@ async def process_outbox_events(db: Session) -> int:
         
         if success:
             event.delivered_at = now
-            print(f"[outbox] Delivered event {event.id} ({event.event_type})")
+            logger.info("Event delivered", event_id=event.id, event_type=event.event_type, aggregate_id=event.aggregate_id)
         else:
             event.retry_count += 1
             event.last_error = error
@@ -161,9 +164,9 @@ async def process_outbox_events(db: Session) -> int:
             if event.retry_count < MAX_RETRIES:
                 delay = RETRY_DELAYS[min(event.retry_count - 1, len(RETRY_DELAYS) - 1)]
                 event.retry_after = now + timedelta(seconds=delay)
-                print(f"[outbox] Event {event.id} failed, retry in {delay}s: {error}")
+                logger.warning("Event delivery failed, will retry", event_id=event.id, retry_count=event.retry_count, retry_delay_sec=delay, error=error)
             else:
-                print(f"[outbox] Event {event.id} failed permanently after {MAX_RETRIES} retries")
+                logger.error("Event delivery failed permanently", event_id=event.id, retry_count=event.retry_count, error=error)
         
         processed += 1
     
@@ -180,16 +183,16 @@ async def outbox_worker(poll_interval: float = 2.0):
     Args:
         poll_interval: How often to poll for new events (seconds)
     """
-    print("[outbox] Worker started")
+    logger.info("Worker started", poll_interval=poll_interval)
     
     while True:
         try:
             with SessionLocal() as db:
                 processed = await process_outbox_events(db)
                 if processed > 0:
-                    print(f"[outbox] Processed {processed} events")
+                    logger.debug("Batch processed", events_count=processed)
         except Exception as e:
-            print(f"[outbox] Worker error: {e}")
+            logger.error("Worker error", error=str(e), exc_info=True)
         
         await asyncio.sleep(poll_interval)
 

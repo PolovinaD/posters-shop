@@ -1,0 +1,7 @@
+apiVersion: v2
+name: frontend
+description: Frontend service chart - React admin dashboard and shop
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+

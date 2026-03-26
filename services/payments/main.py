@@ -23,7 +23,10 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
+from logger import get_logger, LoggingMiddleware
+
 SERVICE_NAME = "payments"
+logger = get_logger(__name__)
 
 # Webhook secret - in production this would be from Stripe dashboard
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_test_secret_key_12345")
@@ -75,8 +78,9 @@ class CompleteSessionRequest(BaseModel):
 # In-memory storage (in production, this would be Stripe's infrastructure)
 sessions: dict[str, CheckoutSession] = {}
 
-
-app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Mock)")
+ROOT_PATH = os.getenv("ROOT_PATH", "")
+app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Mock)", root_path=ROOT_PATH)
+app.add_middleware(LoggingMiddleware)
 
 
 def generate_session_id() -> str:
@@ -129,8 +133,7 @@ async def send_webhook(event_type: str, data: dict):
     timestamp = int(time.time())
     signature = generate_webhook_signature(payload, WEBHOOK_SECRET, timestamp)
     
-    print(f"[{SERVICE_NAME}] Sending webhook: {event_type}")
-    print(f"[{SERVICE_NAME}] Webhook URL: {ORDERS_WEBHOOK_URL}")
+    logger.info("Sending webhook", event_type=event_type, webhook_url=ORDERS_WEBHOOK_URL)
     
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -143,11 +146,11 @@ async def send_webhook(event_type: str, data: dict):
                 }
             )
             if response.status_code == 200:
-                print(f"[{SERVICE_NAME}] Webhook delivered successfully")
+                logger.info("Webhook delivered successfully", event_type=event_type)
             else:
-                print(f"[{SERVICE_NAME}] Webhook failed: {response.status_code} - {response.text}")
+                logger.warning("Webhook delivery failed", status_code=response.status_code, response=response.text)
         except Exception as e:
-            print(f"[{SERVICE_NAME}] Webhook error: {e}")
+            logger.error("Webhook error", error=str(e), event_type=event_type)
 
 
 # ============== Health ==============
@@ -194,8 +197,7 @@ def create_checkout_session(payload: CreateSessionRequest):
     
     sessions[session_id] = session
     
-    print(f"[{SERVICE_NAME}] Created session {session_id} for order {payload.order_id}")
-    print(f"[{SERVICE_NAME}] Checkout URL: {session.checkout_url}")
+    logger.info("Created checkout session", session_id=session_id, order_id=payload.order_id, checkout_url=session.checkout_url)
     
     return session
 
@@ -260,8 +262,7 @@ async def complete_session(session_id: str, payment: CompleteSessionRequest = No
     session.payment_intent_id = generate_payment_intent_id()
     session.status = SessionStatus.COMPLETE
     
-    print(f"[{SERVICE_NAME}] Payment completed for session {session_id}")
-    print(f"[{SERVICE_NAME}] Amount: ${session.amount_total / 100:.2f}")
+    logger.info("Payment completed", session_id=session_id, amount_cents=session.amount_total, order_id=session.order_id)
     
     # Send webhook (async, like Stripe does)
     # In production, Stripe sends this automatically

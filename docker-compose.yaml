@@ -3,15 +3,16 @@ services:
     image: postgres:16
     container_name: postershop-db
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rootpass}
+      POSTGRES_DB: ${POSTGRES_DB:-postershop}
     ports:
       - "5432:5432"
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-root} -d ${POSTGRES_DB:-postershop}"]
       interval: 2s
       timeout: 5s
       retries: 10
@@ -20,7 +21,8 @@ services:
     build: ./services/users
     container_name: users
     environment:
-      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${USERS_SCHEMA}
+      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dusers
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,10 +33,13 @@ services:
     build: ./services/catalog
     container_name: catalog
     environment:
-      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${CATALOG_SCHEMA}
+      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dcatalog
+      INVENTORY_SERVICE_URL: http://inventory:8000
     depends_on:
       postgres:
         condition: service_healthy
+      inventory:
+        condition: service_started
     ports:
       - "8002:8000"
 
@@ -42,10 +47,18 @@ services:
     build: ./services/orders
     container_name: orders
     environment:
-      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${ORDERS_SCHEMA}
+      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dorders
+      INVENTORY_SERVICE_URL: http://inventory:8000
+      PRODUCTION_SERVICE_URL: http://production:8000
+      PAYMENT_SERVICE_URL: http://payments:8000
+      STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
     depends_on:
       postgres:
         condition: service_healthy
+      inventory:
+        condition: service_started
+      payments:
+        condition: service_started
     ports:
       - "8003:8000"
 
@@ -53,10 +66,14 @@ services:
     build: ./services/production
     container_name: production
     environment:
-      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${PRODUCTION_SCHEMA}
+      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dproduction
+      ORDERS_SERVICE_URL: http://orders:8000
+      LOGISTICS_SERVICE_URL: http://logistics:8000
     depends_on:
       postgres:
         condition: service_healthy
+      logistics:
+        condition: service_started
     ports:
       - "8004:8000"
 
@@ -64,24 +81,64 @@ services:
     build: ./services/logistics
     container_name: logistics
     environment:
-      DATABASE_URL: ${BASE_DB_URL}?options=-csearch_path=${LOGISTICS_SCHEMA}
+      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dlogistics
+      ORDERS_SERVICE_URL: http://orders:8000
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "8005:8000"
 
-# .env example
-# POSTGRES_USER=root
-# POSTGRES_PASSWORD=Example123
-# POSTGRES_DB=posters_shop
-# POSTGRES_HOST=postgres
-# POSTGRES_PORT=5432
-#
-# BASE_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-#
-# USERS_SCHEMA=users
-# CATALOG_SCHEMA=catalog
-# ORDERS_SCHEMA=orders
-# PRODUCTION_SCHEMA=production
-# LOGISTICS_SCHEMA=logistics
+  inventory:
+    build: ./services/inventory
+    container_name: inventory
+    environment:
+      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8006:8000"
+
+  payments:
+    build: ./services/payments
+    container_name: payments
+    environment:
+      STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
+      ORDERS_WEBHOOK_URL: http://orders:8000/webhooks/stripe
+    ports:
+      - "8007:8000"
+
+  infra:
+    build: ./services/infra
+    container_name: infra
+    environment:
+      NAMESPACE: postershop
+    ports:
+      - "8008:8000"
+
+  # ============================================
+  # Frontend - Admin Dashboard
+  # ============================================
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - users
+      - catalog
+      - orders
+      - production
+      - logistics
+      - inventory
+      - payments
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  pgdata:

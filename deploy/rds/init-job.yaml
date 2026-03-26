@@ -1,0 +1,130 @@
+# ============================================================
+# Kubernetes Job for RDS Initialization
+# ============================================================
+# Run database initialization from within the cluster.
+#
+# Prerequisites:
+#   1. Create ConfigMap with SQL scripts:
+#      kubectl create configmap rds-init-scripts \
+#        --from-file=01-create-schemas.sql \
+#        --from-file=02-create-users.sql \
+#        --from-file=03-grant-permissions.sql \
+#        -n postershop
+#
+#   2. Create Secret with passwords:
+#      kubectl create secret generic rds-init-creds \
+#        --from-literal=master_password=xxx \
+#        --from-literal=users_pass=xxx \
+#        --from-literal=catalog_pass=xxx \
+#        --from-literal=orders_pass=xxx \
+#        --from-literal=production_pass=xxx \
+#        --from-literal=logistics_pass=xxx \
+#        --from-literal=inventory_pass=xxx \
+#        -n postershop
+#
+# Usage:
+#   kubectl apply -f init-job.yaml -n postershop
+#   kubectl logs -f job/rds-init -n postershop
+# ============================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rds-init
+  namespace: postershop
+spec:
+  ttlSecondsAfterFinished: 3600  # Auto-delete after 1 hour
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          env:
+            # RDS connection (set these via values or ConfigMap)
+            - name: PGHOST
+              value: "YOUR_RDS_ENDPOINT"  # Replace with actual endpoint
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: "postershop"
+            - name: PGUSER
+              value: "postgres"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: master_password
+            - name: PGSSLMODE
+              value: "require"
+            # Service passwords
+            - name: USERS_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: users_pass
+            - name: CATALOG_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: catalog_pass
+            - name: ORDERS_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: orders_pass
+            - name: PRODUCTION_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: production_pass
+            - name: LOGISTICS_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: logistics_pass
+            - name: INVENTORY_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rds-init-creds
+                  key: inventory_pass
+          volumeMounts:
+            - name: sql-scripts
+              mountPath: /scripts
+              readOnly: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "=== Starting RDS initialization ==="
+              echo "Host: $PGHOST"
+              echo "Database: $PGDATABASE"
+              
+              echo ""
+              echo ">>> Step 1: Creating schemas..."
+              psql -f /scripts/01-create-schemas.sql
+              
+              echo ""
+              echo ">>> Step 2: Creating users..."
+              psql \
+                -v users_pass="$USERS_PASS" \
+                -v catalog_pass="$CATALOG_PASS" \
+                -v orders_pass="$ORDERS_PASS" \
+                -v production_pass="$PRODUCTION_PASS" \
+                -v logistics_pass="$LOGISTICS_PASS" \
+                -v inventory_pass="$INVENTORY_PASS" \
+                -f /scripts/02-create-users.sql
+              
+              echo ""
+              echo ">>> Step 3: Granting permissions..."
+              psql -f /scripts/03-grant-permissions.sql
+              
+              echo ""
+              echo "=== RDS initialization complete! ==="
+      volumes:
+        - name: sql-scripts
+          configMap:
+            name: rds-init-scripts
+

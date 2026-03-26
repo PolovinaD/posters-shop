@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
 
-SCHEMA_NAME = "orders"
+SCHEMA_NAME = "orders_schema"
 
 
 class OrderStatus:

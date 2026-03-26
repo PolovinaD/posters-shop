@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, DateTime, Index
 from sqlalchemy.sql import func
 from database import Base
 
-SCHEMA_NAME = "inventory"
+SCHEMA_NAME = "inventory_schema"
 
 
 class Stock(Base):

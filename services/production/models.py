@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, DateTime, Text, Index
 from sqlalchemy.sql import func
 from database import Base
 
-SCHEMA_NAME = "production"
+SCHEMA_NAME = "production_schema"
 
 
 class JobStatus:

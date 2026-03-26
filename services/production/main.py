@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import time
@@ -6,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
+
+ROOT_PATH = os.getenv("ROOT_PATH", "")
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -13,6 +16,9 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db, SessionLocal
 from models import Job, JobStatus, SCHEMA_NAME
 from schemas import JobCreate, JobOut, JobSummary, ProcessResult
+from logger import get_logger, LoggingMiddleware
+
+logger = get_logger(__name__)
 
 
 class OutboxEventPayload(BaseModel):
@@ -80,7 +86,7 @@ async def process_job(job: Job, db: Session) -> bool:
         JOBS_COMPLETED.labels(status="completed").inc()
         JOB_PROCESSING_TIME.observe(processing_time / 1000)
         
-        print(f"[production] Job {job.id} completed in {processing_time}ms for order {job.order_id}")
+        logger.info("Job completed", job_id=job.id, order_id=job.order_id, processing_time_ms=processing_time)
         
         # Notify orders service and create shipment
         await orders_client.notify_order_shipped(job.order_id)
@@ -94,14 +100,14 @@ async def process_job(job: Job, db: Session) -> bool:
         db.commit()
         
         JOBS_COMPLETED.labels(status="failed").inc()
-        print(f"[production] Job {job.id} failed: {e}")
+        logger.error("Job failed", job_id=job.id, order_id=job.order_id, error=str(e), exc_info=True)
         
         return False
 
 
 async def job_worker():
     """Background worker that processes queued jobs."""
-    print(f"[{SERVICE_NAME}] Job worker started")
+    logger.info("Job worker started", poll_interval=WORKER_POLL_INTERVAL)
     
     while True:
         try:
@@ -124,7 +130,7 @@ async def job_worker():
                     JOBS_IN_QUEUE.set(len(queue_count))
                     
         except Exception as e:
-            print(f"[{SERVICE_NAME}] Worker error: {e}")
+            logger.error("Worker error", error=str(e), exc_info=True)
         
         await asyncio.sleep(WORKER_POLL_INTERVAL)
 
@@ -132,9 +138,8 @@ async def job_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
-    # Startup
-    Base.metadata.create_all(bind=engine)
-    print(f"[{SERVICE_NAME}] Database tables created")
+    # Startup - migrations are handled by Alembic
+    logger.info("Production service starting, migrations managed by Alembic")
     
     # Start background worker
     global background_task
@@ -149,10 +154,11 @@ async def lifespan(app: FastAPI):
             await background_task
         except asyncio.CancelledError:
             pass
-    print(f"[{SERVICE_NAME}] Shutdown complete")
+    logger.info("Shutdown complete")
 
 
-app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan)
+app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan, root_path=ROOT_PATH)
+app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
 
 
@@ -203,7 +209,7 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
     JOBS_CREATED.inc()
     JOBS_IN_QUEUE.inc()
     
-    print(f"[{SERVICE_NAME}] Created job {job.id} for order {payload.order_id}")
+    logger.info("Job created", job_id=job.id, order_id=payload.order_id)
     
     return job
 
@@ -284,7 +290,7 @@ def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db)):
     This endpoint is called by the orders outbox worker when an order is paid.
     It creates a production job for the order.
     """
-    print(f"[{SERVICE_NAME}] Received ORDER_PAID event: {event.event_id}")
+    logger.info("Received ORDER_PAID event", event_id=event.event_id, aggregate_id=event.aggregate_id)
     
     order_id = event.payload.get("order_id")
     items = event.payload.get("items", [])
@@ -298,7 +304,7 @@ def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     
     if existing:
-        print(f"[{SERVICE_NAME}] Job already exists for order {order_id}, skipping (idempotent)")
+        logger.info("Job already exists, skipping (idempotent)", order_id=order_id, job_id=existing.id)
         return {"status": "already_exists", "job_id": existing.id}
     
     # Create the production job
@@ -317,7 +323,7 @@ def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db)):
     JOBS_CREATED.inc()
     JOBS_IN_QUEUE.inc()
     
-    print(f"[{SERVICE_NAME}] Created job {job.id} for order {order_id} via outbox event")
+    logger.info("Job created via outbox event", job_id=job.id, order_id=order_id, event_id=event.event_id)
     
     return {"status": "created", "job_id": job.id}
 
@@ -329,7 +335,7 @@ def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_
     
     If a job exists and hasn't started, cancel it.
     """
-    print(f"[{SERVICE_NAME}] Received ORDER_CANCELLED event: {event.event_id}")
+    logger.info("Received ORDER_CANCELLED event", event_id=event.event_id, aggregate_id=event.aggregate_id)
     
     order_id = event.payload.get("order_id")
     
@@ -342,7 +348,7 @@ def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_
     ).scalar_one_or_none()
     
     if not job:
-        print(f"[{SERVICE_NAME}] No job found for cancelled order {order_id}")
+        logger.debug("No job found for cancelled order", order_id=order_id)
         return {"status": "no_job"}
     
     if job.status == JobStatus.QUEUED:
@@ -350,10 +356,10 @@ def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_
         job.error_message = "Order cancelled"
         db.commit()
         JOBS_IN_QUEUE.dec()
-        print(f"[{SERVICE_NAME}] Cancelled job {job.id} for order {order_id}")
+        logger.info("Job cancelled", job_id=job.id, order_id=order_id)
         return {"status": "cancelled", "job_id": job.id}
     else:
-        print(f"[{SERVICE_NAME}] Job {job.id} already in status {job.status}, cannot cancel")
+        logger.info("Job already processing, cannot cancel", job_id=job.id, order_id=order_id, status=job.status)
         return {"status": "already_processing", "job_id": job.id}
 
 

@@ -1,0 +1,154 @@
+# ============================================================
+# ServiceMonitors for PosterShop Services
+# ============================================================
+# These tell Prometheus how to scrape metrics from each service.
+# Apply with: kubectl apply -f servicemonitors.yaml -n postershop
+# ============================================================
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: users
+  namespace: postershop
+  labels:
+    app: users
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: users
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: catalog
+  namespace: postershop
+  labels:
+    app: catalog
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: catalog
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: orders
+  namespace: postershop
+  labels:
+    app: orders
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: production
+  namespace: postershop
+  labels:
+    app: production
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: production
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: logistics
+  namespace: postershop
+  labels:
+    app: logistics
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: logistics
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: inventory
+  namespace: postershop
+  labels:
+    app: inventory
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: inventory
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: payments
+  namespace: postershop
+  labels:
+    app: payments
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: payments
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+

@@ -1,8 +1,12 @@
+import os
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from logger import get_logger, LoggingMiddleware
 from commons import SERVICE_NAME, UserRole
+
+logger = get_logger(__name__)
 from database import get_db
 from models import User
 from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser
@@ -17,8 +21,10 @@ from auth import (
 from init_db import init_db
 from metrics import metrics_endpoint, track_metrics
 
-app = FastAPI(title=f"{SERVICE_NAME} service")
+ROOT_PATH = os.getenv("ROOT_PATH", "")
+app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
 
+app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
 
 @app.on_event("startup")

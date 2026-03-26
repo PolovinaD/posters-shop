@@ -1,0 +1,34 @@
+replicaCount: 1
+
+image:
+  # Override with: --set image.repository=$ECR_REGISTRY/infra
+  repository: YOUR_ECR_REGISTRY/infra
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+env:
+  SERVICE_NAME: "infra"
+  LOG_LEVEL: "INFO"
+  ROOT_PATH: ""
+  NAMESPACE: postershop
+
+# Service account with RBAC for Kubernetes API access
+serviceAccount:
+  create: true
+  name: infra-sa
+
+rbac:
+  create: true
+

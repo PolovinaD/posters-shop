@@ -1,0 +1,191 @@
+# ============================================================
+# AWS CloudFormation Template - RDS PostgreSQL for PosterShop
+# ============================================================
+# Creates a PostgreSQL RDS instance with proper security.
+#
+# Usage:
+#   aws cloudformation create-stack \
+#     --stack-name postershop-rds \
+#     --template-body file://rds.yaml \
+#     --parameters \
+#       ParameterKey=VpcId,ParameterValue=vpc-xxx \
+#       ParameterKey=SubnetIds,ParameterValue='subnet-a,subnet-b' \
+#       ParameterKey=EKSSecurityGroupId,ParameterValue=sg-xxx \
+#       ParameterKey=MasterPassword,ParameterValue=xxx
+# ============================================================
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RDS PostgreSQL for PosterShop microservices'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+      - development
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where EKS cluster runs
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for RDS (at least 2 AZs)
+
+  EKSSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: EKS cluster security group (for DB access)
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+      - db.t3.large
+      - db.r5.large
+    Description: RDS instance type
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+    Description: Storage in GB
+
+  MasterUsername:
+    Type: String
+    Default: postgres
+    Description: Master database username
+
+  MasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master database password
+
+  DatabaseName:
+    Type: String
+    Default: postershop
+    Description: Initial database name
+
+Resources:
+  # Security Group for RDS
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${Environment}-postershop-rds-sg'
+      GroupDescription: Security group for PosterShop RDS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow access from EKS nodes
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EKSSecurityGroupId
+          Description: EKS cluster access
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-postershop-rds-sg'
+        - Key: Project
+          Value: postershop
+
+  # DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${Environment}-postershop-subnet-group'
+      DBSubnetGroupDescription: Subnet group for PosterShop RDS
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Project
+          Value: postershop
+
+  # Parameter Group (performance tuning)
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: postgres16
+      Description: PosterShop PostgreSQL parameters
+      Parameters:
+        log_statement: all
+        log_min_duration_statement: 1000  # Log queries > 1s
+        shared_preload_libraries: pg_stat_statements
+      Tags:
+        - Key: Project
+          Value: postershop
+
+  # RDS Instance
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${Environment}-postershop-db'
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      EngineVersion: '16.12'
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterPassword
+      DBName: !Ref DatabaseName
+      
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBParameterGroupName: !Ref DBParameterGroup
+      
+      PubliclyAccessible: false
+      MultiAZ: false  # Set to true for production HA
+      
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false  # Set to true for production
+      
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      
+      EnableCloudwatchLogsExports:
+        - postgresql
+        - upgrade
+      
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-postershop-db'
+        - Key: Project
+          Value: postershop
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  DBEndpoint:
+    Description: RDS endpoint
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${Environment}-postershop-db-endpoint'
+
+  DBPort:
+    Description: RDS port
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${Environment}-postershop-db-port'
+
+  DBSecurityGroupId:
+    Description: RDS security group ID
+    Value: !Ref DBSecurityGroup
+    Export:
+      Name: !Sub '${Environment}-postershop-db-sg'
+
+  ConnectionString:
+    Description: Connection string template (add password)
+    Value: !Sub 'postgresql://${MasterUsername}:PASSWORD@${DBInstance.Endpoint.Address}:${DBInstance.Endpoint.Port}/${DatabaseName}'
+

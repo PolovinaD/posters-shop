@@ -1,16 +1,18 @@
 from sqlalchemy import select
-from database import Base, engine, SessionLocal
+from database import SessionLocal
 from models import User
 from auth import hash_password
 from commons import UserRole
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 DEFAULT_OWNER_EMAIL = "admin@postershop.com"
 DEFAULT_OWNER_PASS = "admin1234"
 
 
 def init_db():
-    # Schemas are created by db/init.sql - service user only needs to create tables
-    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables managed by Alembic migrations")
 
     with SessionLocal() as db:
         owner_exists = db.execute(select(User).where(User.role == UserRole.OWNER)).scalar_one_or_none()

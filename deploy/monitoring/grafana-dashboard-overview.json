@@ -1,0 +1,308 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Overview",
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Services Up",
+      "targets": [
+        {
+          "expr": "count(up{job=~\".*postershop.*\"} == 1)",
+          "legendFormat": "Up"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 5},
+              {"color": "green", "value": 7}
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "gridPos": {"x": 0, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Total Requests (5m)",
+      "targets": [
+        {
+          "expr": "sum(increase(http_requests_total[5m]))",
+          "legendFormat": "Requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 4, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Error Rate",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+          "legendFormat": "Error %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {"x": 8, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Avg Latency (P95)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 500},
+              {"color": "red", "value": 2000}
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": {"x": 12, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Orders Today",
+      "targets": [
+        {
+          "expr": "sum(increase(orders_created_total[24h]))",
+          "legendFormat": "Orders"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 16, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Active Reservations",
+      "targets": [
+        {
+          "expr": "inventory_active_reservations",
+          "legendFormat": "Active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 50},
+              {"color": "red", "value": 100}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 20, "y": 1, "w": 4, "h": 4}
+    },
+    {
+      "type": "row",
+      "title": "Request Metrics",
+      "gridPos": {"x": 0, "y": 5, "w": 24, "h": 1},
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests per Second by Service",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m])) by (service)",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate by Service",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service) * 100",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "percent",
+          "min": 0
+        }
+      },
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Latency P95 by Service",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)) * 1000",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "ms"
+        }
+      },
+      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 8}
+    },
+    {
+      "type": "heatmap",
+      "title": "Request Latency Heatmap",
+      "targets": [
+        {
+          "expr": "sum(increase(http_request_duration_seconds_bucket[1m])) by (le)",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 8}
+    },
+    {
+      "type": "row",
+      "title": "Business Metrics",
+      "gridPos": {"x": 0, "y": 22, "w": 24, "h": 1},
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Orders by Status",
+      "targets": [
+        {
+          "expr": "orders_by_status",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 0, "y": 23, "w": 8, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Stock Levels (Top 10)",
+      "targets": [
+        {
+          "expr": "topk(10, inventory_stock_level)",
+          "legendFormat": "{{sku}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"x": 8, "y": 23, "w": 8, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Low Stock Items",
+      "targets": [
+        {
+          "expr": "inventory_stock_level < 20",
+          "legendFormat": "{{sku}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 5},
+              {"color": "green", "value": 10}
+            ]
+          }
+        }
+      },
+      "gridPos": {"x": 16, "y": 23, "w": 8, "h": 8}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["postershop", "overview"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "PosterShop Overview",
+  "uid": "postershop-overview",
+  "version": 1
+}
+

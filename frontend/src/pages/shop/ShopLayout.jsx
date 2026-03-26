@@ -1,13 +1,27 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { ShoppingCart, Package, Menu, X, User } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { ShoppingCart, Package, Menu, X, User, LogOut, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
 import { useCart } from '../../context/CartContext';
+import { useAuth } from '../../context/AuthContext';
 import CartDrawer from './CartDrawer';
 
 export default function ShopLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef(null);
   const { itemCount, toggleCart } = useCart();
+  const { user, isAuthenticated, logout } = useAuth();
   const location = useLocation();
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setUserMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   
   // Update page title for shop pages
   useEffect(() => {
@@ -52,16 +66,29 @@ export default function ShopLayout() {
               >
                 Shop
               </Link>
-              <Link 
-                to="/shop/orders" 
-                className={`text-sm font-medium transition-colors ${
-                  location.pathname.startsWith('/shop/orders')
-                    ? 'text-orange-600' 
-                    : 'text-stone-600 hover:text-stone-900'
-                }`}
-              >
-                Track Order
-              </Link>
+              {isAuthenticated ? (
+                <Link 
+                  to="/shop/my-orders" 
+                  className={`text-sm font-medium transition-colors ${
+                    location.pathname === '/shop/my-orders'
+                      ? 'text-orange-600' 
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  My Orders
+                </Link>
+              ) : (
+                <Link 
+                  to="/shop/orders" 
+                  className={`text-sm font-medium transition-colors ${
+                    location.pathname.startsWith('/shop/orders')
+                      ? 'text-orange-600' 
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  Track Order
+                </Link>
+              )}
               <Link 
                 to="/" 
                 className="text-sm font-medium text-stone-400 hover:text-stone-600 transition-colors"
@@ -71,7 +98,58 @@ export default function ShopLayout() {
             </nav>
             
             {/* Actions */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              {/* User menu */}
+              {isAuthenticated ? (
+                <div className="relative hidden md:block" ref={userMenuRef}>
+                  <button
+                    onClick={() => setUserMenuOpen(!userMenuOpen)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-stone-600 hover:bg-stone-100 transition-colors"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center text-white text-sm font-medium">
+                      {user?.name?.[0]?.toUpperCase() || 'U'}
+                    </div>
+                    <span className="text-sm font-medium">{user?.name?.split(' ')[0]}</span>
+                    <ChevronDown className={`w-4 h-4 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {userMenuOpen && (
+                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-stone-200 py-2 z-50">
+                      <div className="px-4 py-2 border-b border-stone-100">
+                        <p className="text-sm font-medium text-stone-900">{user?.name}</p>
+                        <p className="text-xs text-stone-500 truncate">{user?.email}</p>
+                      </div>
+                      <Link
+                        to="/shop/my-orders"
+                        onClick={() => setUserMenuOpen(false)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm text-stone-600 hover:bg-stone-50"
+                      >
+                        <Package className="w-4 h-4" />
+                        My Orders
+                      </Link>
+                      <button
+                        onClick={() => {
+                          logout();
+                          setUserMenuOpen(false);
+                        }}
+                        className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Sign Out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  to="/shop/login"
+                  className="hidden md:flex items-center gap-2 px-4 py-2 text-sm font-medium text-stone-600 hover:text-stone-900 transition-colors"
+                >
+                  <User className="w-4 h-4" />
+                  Sign In
+                </Link>
+              )}
+
               <button
                 onClick={toggleCart}
                 className="relative p-2 text-stone-600 hover:text-stone-900 transition-colors"
@@ -99,6 +177,12 @@ export default function ShopLayout() {
         {mobileMenuOpen && (
           <div className="md:hidden border-t border-stone-200 bg-white">
             <nav className="px-4 py-4 space-y-2">
+              {isAuthenticated && (
+                <div className="px-4 py-3 mb-2 bg-stone-50 rounded-lg">
+                  <p className="text-sm font-medium text-stone-900">{user?.name}</p>
+                  <p className="text-xs text-stone-500">{user?.email}</p>
+                </div>
+              )}
               <Link 
                 to="/shop"
                 onClick={() => setMobileMenuOpen(false)}
@@ -106,13 +190,23 @@ export default function ShopLayout() {
               >
                 Shop
               </Link>
-              <Link 
-                to="/shop/orders"
-                onClick={() => setMobileMenuOpen(false)}
-                className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"
-              >
-                Track Order
-              </Link>
+              {isAuthenticated ? (
+                <Link 
+                  to="/shop/my-orders"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"
+                >
+                  My Orders
+                </Link>
+              ) : (
+                <Link 
+                  to="/shop/orders"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"
+                >
+                  Track Order
+                </Link>
+              )}
               <Link 
                 to="/"
                 onClick={() => setMobileMenuOpen(false)}
@@ -120,6 +214,36 @@ export default function ShopLayout() {
               >
                 Admin Dashboard
               </Link>
+              <div className="border-t border-stone-200 pt-2 mt-2">
+                {isAuthenticated ? (
+                  <button
+                    onClick={() => {
+                      logout();
+                      setMobileMenuOpen(false);
+                    }}
+                    className="block w-full text-left px-4 py-2 rounded-lg text-red-600 hover:bg-red-50"
+                  >
+                    Sign Out
+                  </button>
+                ) : (
+                  <>
+                    <Link 
+                      to="/shop/login"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="block px-4 py-2 rounded-lg text-orange-600 hover:bg-orange-50"
+                    >
+                      Sign In
+                    </Link>
+                    <Link 
+                      to="/shop/register"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"
+                    >
+                      Create Account
+                    </Link>
+                  </>
+                )}
+              </div>
             </nav>
           </div>
         )}

@@ -1,17 +1,25 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, CreditCard, Lock, Loader2, CheckCircle } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
+import { useAuth } from '../../context/AuthContext';
 import { ordersApi, paymentsApi } from '../../api';
 
 export default function Checkout() {
   const navigate = useNavigate();
   const { items, total, clearCart } = useCart();
+  const { user, isAuthenticated } = useAuth();
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [step, setStep] = useState('details'); // details, processing, complete
   const [orderId, setOrderId] = useState(null);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (isAuthenticated && user?.email) {
+      setEmail(user.email);
+    }
+  }, [isAuthenticated, user]);
   
   if (items.length === 0 && step === 'details') {
     return (
@@ -140,10 +148,16 @@ export default function Checkout() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="your@email.com"
                 required
-                className="w-full px-4 py-3 rounded-xl border border-stone-200 bg-white text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                readOnly={isAuthenticated}
+                className={`w-full px-4 py-3 rounded-xl border border-stone-200 text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${
+                  isAuthenticated ? 'bg-stone-50' : 'bg-white'
+                }`}
               />
               <p className="text-sm text-stone-500 mt-1">
-                We'll send order confirmation and tracking info here
+                {isAuthenticated 
+                  ? 'Using your account email' 
+                  : 'We\'ll send order confirmation and tracking info here'
+                }
               </p>
             </div>
             

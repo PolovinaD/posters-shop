@@ -7,3 +7,4 @@ python-jose[cryptography]
 pydantic
 boto3
 httpx
+alembic>=1.13.0
