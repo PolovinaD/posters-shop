@@ -59,16 +59,19 @@ async def track_metrics(request, call_next):
     response = await call_next(request)
     duration = time.time() - start_time
 
+    route = request.scope.get("route")
+    path = getattr(route, "path", "unknown")
+
     REQUEST_COUNT.labels(
         service=SERVICE_NAME,
         method=request.method,
-        path=request.url.path,
+        path=path,
         status=response.status_code
     ).inc()
 
     REQUEST_LATENCY.labels(
         service=SERVICE_NAME,
-        path=request.url.path
+        path=path
     ).observe(duration)
 
     return response
