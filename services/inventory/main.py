@@ -8,7 +8,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
-from sqlalchemy import select, update, delete, and_
+from sqlalchemy import select, update, delete, and_, text
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db, SessionLocal
@@ -138,6 +138,16 @@ app.add_middleware(
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": SERVICE_NAME}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/metrics")

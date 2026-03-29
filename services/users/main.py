@@ -3,7 +3,7 @@ import hashlib
 from datetime import datetime, UTC
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from sqlalchemy.orm import Session
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -13,7 +13,7 @@ from logger import get_logger, LoggingMiddleware
 from commons import SERVICE_NAME, UserRole
 
 logger = get_logger(__name__)
-from database import get_db
+from database import get_db, engine
 from models import User, RefreshToken
 from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser, RefreshIn
 from auth import (
@@ -57,6 +57,16 @@ def startup():
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": SERVICE_NAME}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/metrics")

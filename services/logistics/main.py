@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, Depends, Body, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, text
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -38,6 +38,16 @@ def on_startup():
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": "logistics"}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/metrics")

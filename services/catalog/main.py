@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, Text, select
+from sqlalchemy import Column, Integer, String, Numeric, Boolean, Text, select, text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 
@@ -42,6 +42,16 @@ def on_startup():
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": SERVICE_NAME}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/metrics")
