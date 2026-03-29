@@ -21,6 +21,7 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from logger import get_logger, LoggingMiddleware
@@ -81,6 +82,17 @@ sessions: dict[str, CheckoutSession] = {}
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Mock)", root_path=ROOT_PATH)
 app.add_middleware(LoggingMiddleware)
+
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
+
+# CORS must be added after LoggingMiddleware so it wraps the outside (runs first)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 def generate_session_id() -> str:

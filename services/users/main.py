@@ -1,7 +1,11 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from logger import get_logger, LoggingMiddleware
 from commons import SERVICE_NAME, UserRole
@@ -24,8 +28,23 @@ from metrics import metrics_endpoint, track_metrics
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
+
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
+
+# CORS must be added after LoggingMiddleware so it wraps the outside (runs first)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 def startup():
@@ -43,7 +62,8 @@ def metrics():
 
 
 @app.post("/register", status_code=200)
-def register(payload: RegisterIn, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def register(request: Request, payload: RegisterIn, db: Session = Depends(get_db)):
     existing = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -60,7 +80,8 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
 
 
 @app.post("/login", response_model=TokenOut)
-def login(payload: LoginIn, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")

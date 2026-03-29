@@ -119,14 +119,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Infrastructure Service", lifespan=lifespan, root_path=ROOT_PATH)
 
+app.add_middleware(LoggingMiddleware)
+
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
+
+# CORS must be added after LoggingMiddleware so it wraps the outside (runs first)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-app.add_middleware(LoggingMiddleware)
 
 
 # ============== Health ==============

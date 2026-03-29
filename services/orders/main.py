@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 from pydantic import BaseModel
@@ -75,6 +76,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan, root_path=ROOT_PATH)
 app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
+
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
+
+# CORS must be added after LoggingMiddleware so it wraps the outside (runs first)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 # ============== Health & Metrics ==============
