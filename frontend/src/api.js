@@ -12,12 +12,89 @@ async function fetchJSON(url, options = {}) {
     },
     ...options,
   });
-  
+
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    throw new Error(retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.');
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
-  
+
+  return response.json();
+}
+
+let refreshPromise = null;
+
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem('shop_refresh_token');
+  if (!refreshToken) {
+    throw new Error('No refresh token');
+  }
+
+  const response = await fetch(`${API_BASE}/users/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Refresh failed');
+  }
+
+  const data = await response.json();
+  localStorage.setItem('shop_token', data.access_token);
+  localStorage.setItem('shop_refresh_token', data.refresh_token);
+  return data.access_token;
+}
+
+export async function authFetchJSON(url, options = {}) {
+  const token = localStorage.getItem('shop_token');
+  const headers = {
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  let response = await fetch(url, { ...options, headers });
+
+  // Handle rate limiting (D-12)
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    const waitMsg = retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.';
+    throw new Error(waitMsg);
+  }
+
+  // Handle 401 with refresh (D-05, D-06)
+  if (response.status === 401 && localStorage.getItem('shop_refresh_token')) {
+    try {
+      if (!refreshPromise) {
+        refreshPromise = refreshAccessToken().finally(() => {
+          refreshPromise = null;
+        });
+      }
+      const newToken = await refreshPromise;
+      headers['Authorization'] = `Bearer ${newToken}`;
+      response = await fetch(url, { ...options, headers });
+    } catch {
+      // Refresh failed -- silent redirect to login (D-04)
+      localStorage.removeItem('shop_token');
+      localStorage.removeItem('shop_refresh_token');
+      localStorage.removeItem('shop_user');
+      window.location.href = '/login';
+      throw new Error('Session expired');
+    }
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
   return response.json();
 }
 
@@ -147,7 +224,7 @@ export const infraApi = {
 
 // ============== Users API ==============
 export const usersApi = {
-  // Auth
+  // Auth (unauthenticated -- use fetchJSON)
   login: (email, password) => fetchJSON(`${API_BASE}/users/login`, {
     method: 'POST',
     body: JSON.stringify({ email, password }),
@@ -159,31 +236,40 @@ export const usersApi = {
       body: JSON.stringify(data),
     });
     if (!response.ok) {
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        throw new Error(retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.');
+      }
       const error = await response.json().catch(() => ({ detail: 'Registration failed' }));
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
-    return { success: true };
+    return response.json();  // Returns { access_token, refresh_token, token_type }
   },
-  getMe: (token) => fetchJSON(`${API_BASE}/users/users/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  }),
-  
-  // Admin endpoints (require owner token)
-  getUsers: (token) => fetchJSON(`${API_BASE}/users/admin/users`, {
-    headers: { Authorization: `Bearer ${token}` },
-  }),
-  createUser: (token, data) => fetchJSON(`${API_BASE}/users/admin/users`, {
+
+  // Authenticated endpoints -- use authFetchJSON (no manual token param)
+  getMe: () => authFetchJSON(`${API_BASE}/users/users/me`),
+
+  // Logout endpoints
+  logout: (refreshToken) => authFetchJSON(`${API_BASE}/users/auth/logout`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  }),
+  logoutAll: () => authFetchJSON(`${API_BASE}/users/auth/logout-all`, {
+    method: 'POST',
+  }),
+
+  // Admin endpoints -- use authFetchJSON (no manual token param)
+  getUsers: () => authFetchJSON(`${API_BASE}/users/admin/users`),
+  createUser: (data) => authFetchJSON(`${API_BASE}/users/admin/users`, {
+    method: 'POST',
     body: JSON.stringify(data),
   }),
-  deleteUser: (token, id) => fetch(`${API_BASE}/users/admin/users/${id}`, {
+  deleteUser: (id) => fetch(`${API_BASE}/users/admin/users/${id}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('shop_token')}` },
   }).then(r => { if (!r.ok) throw new Error('Failed to delete'); return r; }),
-  changeUserRole: (token, id, newRole) => fetchJSON(`${API_BASE}/users/users/${id}/role`, {
+  changeUserRole: (id, newRole) => authFetchJSON(`${API_BASE}/users/users/${id}/role`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ new_role: newRole }),
   }),
 };
