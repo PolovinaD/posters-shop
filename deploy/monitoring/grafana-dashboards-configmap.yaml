@@ -78,3 +78,376 @@ data:
       ]
     }
 
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-postershop-hpa-comparison
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "PosterShop"
+data:
+  postershop-hpa-comparison.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Production \u2014 CPU Utilization % (HPA Signal)",
+          "description": "CPU usage driving the production CPU-based HPA. Target: 50% average utilization.",
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"postershop\", pod=~\"production-.*\"}[2m])) by (pod) / sum(kube_pod_container_resource_limits{namespace=\"postershop\", pod=~\"production-.*\", resource=\"cpu\"}) by (pod) * 100",
+              "legendFormat": "{{pod}} CPU %"
+            },
+            {
+              "expr": "scalar(kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", metric_name=\"cpu\"})",
+              "legendFormat": "HPA Target (50%)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Production \u2014 Replica Count (CPU HPA Response)",
+          "description": "How the CPU-based HPA adjusts production replicas in response to CPU load.",
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Current Replicas"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Min Replicas"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Max Replicas"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0,
+              "decimals": 0
+            }
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Orders \u2014 Request Rate req/s (HPA Signal)",
+          "description": "HTTP request rate to orders service driving the custom metric HPA. Target: 5 req/s per pod.",
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{service=\"orders\"}[2m]))",
+              "legendFormat": "Total req/s"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 12,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Orders \u2014 Replica Count (Request-Rate HPA Response)",
+          "description": "How the request-rate HPA adjusts orders replicas in response to HTTP load.",
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Current Replicas"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Min Replicas"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+              "legendFormat": "Max Replicas"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0,
+              "decimals": 0
+            }
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 10,
+            "w": 12,
+            "h": 10
+          }
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "tags": [
+        "postershop",
+        "autoscaling",
+        "HPA",
+        "comparison"
+      ],
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "timezone": "browser",
+      "title": "PosterShop HPA Comparison: CPU vs Request-Rate",
+      "uid": "postershop-hpa-comparison",
+      "version": 1
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-postershop-circuit-breaker
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "PosterShop"
+data:
+  postershop-circuit-breaker.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Circuit Breaker State Transitions \u2014 Rate (transitions/min)",
+          "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed\u2192open means failures tripped the breaker; open\u2192half_open means recovery probe started; half_open\u2192closed means service recovered.",
+          "targets": [
+            {
+              "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (from_state, to_state) * 60",
+              "legendFormat": "{{from_state}} \u2192 {{to_state}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Circuit Breaker Cumulative Transitions (Total Count)",
+          "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session.",
+          "targets": [
+            {
+              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (from_state, to_state)",
+              "legendFormat": "{{from_state}} \u2192 {{to_state}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 12,
+            "h": 10
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Total Opens (closed \u2192 open)",
+          "description": "How many times the circuit has opened due to failures.",
+          "targets": [
+            {
+              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"closed\", to_state=\"open\"})",
+              "legendFormat": "Opens"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              }
+            }
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Total Recoveries (half_open \u2192 closed)",
+          "description": "How many times the circuit has recovered and closed after probing.",
+          "targets": [
+            {
+              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"half_open\", to_state=\"closed\"})",
+              "legendFormat": "Recoveries"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          },
+          "gridPos": {
+            "x": 18,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Total Re-opens (half_open \u2192 open)",
+          "description": "How many times the probe failed and the circuit re-opened.",
+          "targets": [
+            {
+              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"half_open\", to_state=\"open\"})",
+              "legendFormat": "Re-opens"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 1
+                  }
+                ]
+              }
+            }
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 15,
+            "w": 12,
+            "h": 5
+          }
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "tags": [
+        "postershop",
+        "resilience",
+        "circuit-breaker"
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timezone": "browser",
+      "title": "PosterShop Circuit Breaker State Transitions",
+      "uid": "postershop-circuit-breaker",
+      "version": 1
+    }

@@ -1,0 +1,137 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Circuit Breaker State Transitions — Rate (transitions/min)",
+      "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed→open means failures tripped the breaker; open→half_open means recovery probe started; half_open→closed means service recovered.",
+      "targets": [
+        {
+          "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (from_state, to_state) * 60",
+          "legendFormat": "{{from_state}} → {{to_state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "palette-classic"},
+          "min": 0
+        }
+      },
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 10}
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit Breaker Cumulative Transitions (Total Count)",
+      "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session.",
+      "targets": [
+        {
+          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (from_state, to_state)",
+          "legendFormat": "{{from_state}} → {{to_state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "palette-classic"},
+          "min": 0
+        }
+      },
+      "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
+    },
+    {
+      "type": "stat",
+      "title": "Total Opens (closed → open)",
+      "description": "How many times the circuit has opened due to failures.",
+      "targets": [
+        {
+          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"closed\", to_state=\"open\"})",
+          "legendFormat": "Opens"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        }
+      },
+      "gridPos": {"x": 12, "y": 10, "w": 6, "h": 5}
+    },
+    {
+      "type": "stat",
+      "title": "Total Recoveries (half_open → closed)",
+      "description": "How many times the circuit has recovered and closed after probing.",
+      "targets": [
+        {
+          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"half_open\", to_state=\"closed\"})",
+          "legendFormat": "Recoveries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          }
+        }
+      },
+      "gridPos": {"x": 18, "y": 10, "w": 6, "h": 5}
+    },
+    {
+      "type": "stat",
+      "title": "Total Re-opens (half_open → open)",
+      "description": "How many times the probe failed and the circuit re-opened.",
+      "targets": [
+        {
+          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\", from_state=\"half_open\", to_state=\"open\"})",
+          "legendFormat": "Re-opens"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1}
+            ]
+          }
+        }
+      },
+      "gridPos": {"x": 12, "y": 15, "w": 12, "h": 5}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["postershop", "resilience", "circuit-breaker"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "PosterShop Circuit Breaker State Transitions",
+  "uid": "postershop-circuit-breaker",
+  "version": 1
+}

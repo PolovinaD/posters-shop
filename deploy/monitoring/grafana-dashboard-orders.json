@@ -164,6 +164,36 @@
         "defaults": {"color": {"mode": "palette-classic"}, "unit": "ms"}
       },
       "gridPos": {"x": 12, "y": 26, "w": 12, "h": 8}
+    },
+    {
+      "type": "row",
+      "title": "Logs (Loki)",
+      "gridPos": {"x": 0, "y": 34, "w": 24, "h": 1},
+      "collapsed": false
+    },
+    {
+      "type": "logs",
+      "title": "Orders Logs (filter by correlation_id in Loki Explore)",
+      "description": "Structured log lines from the orders service. To filter by a specific request: use Loki Explore with query {namespace=\"postershop\", app=\"orders\"} | json | correlation_id=\"<your-id>\"",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "{namespace=\"postershop\", app=\"orders\"} | json | line_format \"{{.message}}\"",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false
+      },
+      "gridPos": {"x": 0, "y": 35, "w": 24, "h": 10}
     }
   ],
   "refresh": "10s",
@@ -173,6 +203,6 @@
   "timezone": "browser",
   "title": "PosterShop Orders",
   "uid": "postershop-orders",
-  "version": 1
+  "version": 2
 }
 
