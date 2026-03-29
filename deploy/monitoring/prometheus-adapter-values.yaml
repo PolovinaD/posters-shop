@@ -1,0 +1,33 @@
+# ============================================================
+# Prometheus Adapter Helm Values
+# ============================================================
+# Chart: prometheus-community/prometheus-adapter
+# Chart version: 5.3.0 / App version: v0.12.0
+#
+# Exposes http_requests_per_second as a pod-level custom metric
+# in the custom.metrics.k8s.io API for use by the orders HPA.
+#
+# Install:
+#   helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+#     --namespace monitoring \
+#     -f deploy/monitoring/prometheus-adapter-values.yaml
+# ============================================================
+
+# CRITICAL: Use the kube-prometheus-stack service name, not "prometheus"
+# Wrong URL causes silent empty metrics (HPA shows <unknown>)
+prometheus:
+  url: http://prometheus-kube-prometheus-prometheus.monitoring.svc
+  port: 9090
+
+rules:
+  default: false   # Disable default rules to avoid metric conflicts
+  custom:
+    - seriesQuery: 'http_requests_total{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)_total$"
+        as: "${1}_per_second"
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
