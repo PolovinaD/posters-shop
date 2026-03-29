@@ -7,7 +7,7 @@ from datetime import datetime
 
 from logger import get_logger, LoggingMiddleware
 from database import Base, engine, get_db
-from metrics import metrics_endpoint
+from metrics import metrics_endpoint, track_metrics
 from auth import require_courier_or_admin, optional_auth
 import orders_client
 
@@ -17,6 +17,7 @@ ROOT_PATH = os.getenv("ROOT_PATH", "")
 app = FastAPI(title="logistics service", root_path=ROOT_PATH)
 
 app.add_middleware(LoggingMiddleware)
+app.middleware("http")(track_metrics)
 
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
 

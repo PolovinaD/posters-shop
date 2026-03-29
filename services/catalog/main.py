@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from logger import get_logger, LoggingMiddleware
 from database import Base, engine, get_db
-from metrics import metrics_endpoint
+from metrics import metrics_endpoint, track_metrics
 
 logger = get_logger(__name__)
 
@@ -21,6 +21,7 @@ ROOT_PATH = os.getenv("ROOT_PATH", "")
 app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
 
 app.add_middleware(LoggingMiddleware)
+app.middleware("http")(track_metrics)
 
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
 
