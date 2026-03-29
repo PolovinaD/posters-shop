@@ -451,3 +451,223 @@ data:
       "uid": "postershop-circuit-breaker",
       "version": 1
     }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-postershop-orders
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "PosterShop"
+data:
+  postershop-orders.json: |
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "type": "row",
+          "title": "Order Overview",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "type": "stat",
+          "title": "Orders Created (24h)",
+          "targets": [
+            {"expr": "sum(increase(orders_created_total[24h]))", "legendFormat": "Orders"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
+          },
+          "gridPos": {"x": 0, "y": 1, "w": 6, "h": 4}
+        },
+        {
+          "type": "stat",
+          "title": "Pending Orders",
+          "targets": [
+            {"expr": "orders_by_status{status=\"created\"}", "legendFormat": "Pending"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 10},
+                  {"color": "red", "value": 50}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"x": 6, "y": 1, "w": 6, "h": 4}
+        },
+        {
+          "type": "stat",
+          "title": "Paid Orders",
+          "targets": [
+            {"expr": "orders_by_status{status=\"paid\"}", "legendFormat": "Paid"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
+          },
+          "gridPos": {"x": 12, "y": 1, "w": 6, "h": 4}
+        },
+        {
+          "type": "stat",
+          "title": "Reservation Failures (1h)",
+          "targets": [
+            {"expr": "sum(increase(inventory_reservation_failures_total[1h]))", "legendFormat": "Failures"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 5},
+                  {"color": "red", "value": 20}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"x": 18, "y": 1, "w": 6, "h": 4}
+        },
+        {
+          "type": "row",
+          "title": "Order Flow",
+          "gridPos": {"x": 0, "y": 5, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "type": "timeseries",
+          "title": "Orders by Status Over Time",
+          "targets": [
+            {"expr": "orders_by_status", "legendFormat": "{{status}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
+          },
+          "options": {"legend": {"displayMode": "table", "placement": "right"}},
+          "gridPos": {"x": 0, "y": 6, "w": 12, "h": 10}
+        },
+        {
+          "type": "timeseries",
+          "title": "Order Creation Rate",
+          "targets": [
+            {"expr": "rate(orders_created_total[5m]) * 60", "legendFormat": "Orders/min"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "opm"}
+          },
+          "gridPos": {"x": 12, "y": 6, "w": 12, "h": 10}
+        },
+        {
+          "type": "row",
+          "title": "Order Values",
+          "gridPos": {"x": 0, "y": 16, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "type": "histogram",
+          "title": "Order Amount Distribution",
+          "targets": [
+            {"expr": "sum(increase(order_total_amount_bucket[1h])) by (le)", "legendFormat": "{{le}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "currencyUSD"}
+          },
+          "gridPos": {"x": 0, "y": 17, "w": 12, "h": 8}
+        },
+        {
+          "type": "timeseries",
+          "title": "Reservation Failures by Reason",
+          "targets": [
+            {"expr": "rate(inventory_reservation_failures_total[5m]) * 60", "legendFormat": "{{reason}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
+          },
+          "gridPos": {"x": 12, "y": 17, "w": 12, "h": 8}
+        },
+        {
+          "type": "row",
+          "title": "Service Performance",
+          "gridPos": {"x": 0, "y": 25, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "type": "timeseries",
+          "title": "Orders Service Request Rate",
+          "targets": [
+            {"expr": "sum(rate(http_requests_total{service=\"orders\"}[5m])) by (path)", "legendFormat": "{{path}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps"}
+          },
+          "gridPos": {"x": 0, "y": 26, "w": 12, "h": 8}
+        },
+        {
+          "type": "timeseries",
+          "title": "Orders Service Latency",
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{service=\"orders\"}[5m])) by (le)) * 1000", "legendFormat": "P50"},
+            {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"orders\"}[5m])) by (le)) * 1000", "legendFormat": "P95"},
+            {"expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=\"orders\"}[5m])) by (le)) * 1000", "legendFormat": "P99"}
+          ],
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "unit": "ms"}
+          },
+          "gridPos": {"x": 12, "y": 26, "w": 12, "h": 8}
+        },
+        {
+          "type": "row",
+          "title": "Logs (Loki)",
+          "gridPos": {"x": 0, "y": 34, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "type": "logs",
+          "title": "Orders Logs (filter by correlation_id in Loki Explore)",
+          "description": "Structured log lines from the orders service. To filter by a specific request: use Loki Explore with query {namespace=\"postershop\", app=\"orders\"} | json | correlation_id=\"<your-id>\"",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "datasource": {"type": "loki", "uid": "loki"},
+              "expr": "{namespace=\"postershop\", app=\"orders\"} | json | line_format \"{{.message}}\"",
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true,
+            "enableLogDetails": true,
+            "prettifyLogMessage": false
+          },
+          "gridPos": {"x": 0, "y": 35, "w": 24, "h": 10}
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "tags": ["postershop", "orders"],
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "title": "PosterShop Orders",
+      "uid": "postershop-orders",
+      "version": 2
+    }
