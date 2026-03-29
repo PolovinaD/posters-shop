@@ -754,6 +754,9 @@ if [ "$DRY_RUN" = false ]; then
     export CB_FAILURE_THRESHOLD="${CB_FAILURE_THRESHOLD:-5}"
     export CB_RECOVERY_TIMEOUT="${CB_RECOVERY_TIMEOUT:-30}"
 
+    # NOTE: Production CPU HPA (K8S-04) is deployed via Helm chart deploy/charts/production/templates/hpa.yaml
+    # Orders request-rate HPA (K8S-05) is deployed via deploy/charts/orders/templates/hpa.yaml
+    # Verify both after deploy: kubectl describe hpa -n postershop
     "$SCRIPT_DIR/deploy.sh" "$NAMESPACE"
 
     # Retrieve ALB URL post-deploy and update CORS_ORIGINS in all services
@@ -794,7 +797,19 @@ if [ "$SKIP_MONITORING" = false ]; then
         kubectl apply -f "$SCRIPT_DIR/monitoring/servicemonitors.yaml" -n "$NAMESPACE"
         kubectl apply -f "$SCRIPT_DIR/monitoring/alertrules.yaml" -n "$NAMESPACE"
         kubectl apply -f "$SCRIPT_DIR/monitoring/grafana-dashboards-configmap.yaml" -n "$MONITORING_NAMESPACE"
-        
+
+        # Apply Loki datasource ConfigMap (enables Loki panels in Grafana)
+        kubectl apply -f "$SCRIPT_DIR/monitoring/loki-datasource-configmap.yaml" -n "$MONITORING_NAMESPACE" 2>/dev/null || log_warn "loki-datasource-configmap.yaml not found — apply manually after creating it"
+
+        # Install Prometheus Adapter (exposes http_requests_per_second for orders HPA)
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+        helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+            --namespace "$MONITORING_NAMESPACE" \
+            --version 5.3.0 \
+            -f "$SCRIPT_DIR/monitoring/prometheus-adapter-values.yaml" \
+            --wait --timeout 5m
+        log_success "Prometheus Adapter installed"
+
         log_success "Monitoring stack installed"
     fi
 else
