@@ -44,6 +44,8 @@ env:
       secretKeyRef:
         name: postershop-stripe
         key: WEBHOOK_SECRET
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false

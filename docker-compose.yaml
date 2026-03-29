@@ -23,6 +23,7 @@ services:
     environment:
       DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dusers
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,6 +36,7 @@ services:
     environment:
       DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dcatalog
       INVENTORY_SERVICE_URL: http://inventory:8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +54,7 @@ services:
       PRODUCTION_SERVICE_URL: http://production:8000
       PAYMENT_SERVICE_URL: http://payments:8000
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +72,7 @@ services:
       DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dproduction
       ORDERS_SERVICE_URL: http://orders:8000
       LOGISTICS_SERVICE_URL: http://logistics:8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +88,7 @@ services:
       DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dlogistics
       ORDERS_SERVICE_URL: http://orders:8000
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,6 +100,7 @@ services:
     container_name: inventory
     environment:
       DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,6 +113,7 @@ services:
     environment:
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
       ORDERS_WEBHOOK_URL: http://orders:8000/webhooks/stripe
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "8007:8000"
 
@@ -115,6 +122,7 @@ services:
     container_name: infra
     environment:
       NAMESPACE: postershop
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "8008:8000"
 

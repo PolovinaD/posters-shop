@@ -32,6 +32,8 @@ env:
     value: "http://orders"
   - name: LOGISTICS_SERVICE_URL
     value: "http://logistics"
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false

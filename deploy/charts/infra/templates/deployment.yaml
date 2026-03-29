@@ -28,6 +28,8 @@ spec:
               value: "{{ .Values.env.NAMESPACE }}"
             - name: ROOT_PATH
               value: "{{ .Values.env.ROOT_PATH }}"
+            - name: CORS_ORIGINS
+              value: "{{ .Values.env.CORS_ORIGINS }}"
           livenessProbe:
             httpGet:
               path: /healthz

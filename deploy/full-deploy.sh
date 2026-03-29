@@ -739,7 +739,31 @@ echo ""
 log_info "Step 9: Deploying services..."
 
 if [ "$DRY_RUN" = false ]; then
+    # Get ALB domain if already exists (re-deploy scenario)
+    EXISTING_ALB=$(kubectl get ingress frontend -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+    if [ -n "$EXISTING_ALB" ]; then
+        export CORS_ORIGINS="https://${EXISTING_ALB}"
+        log_info "Setting CORS_ORIGINS to existing ALB: $CORS_ORIGINS"
+    else
+        # First deploy: ALB not yet known; default allows local testing.
+        # After first deploy, retrieve ALB URL and re-run with CORS_ORIGINS set.
+        export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:3000}"
+        log_warn "ALB domain not yet known. CORS_ORIGINS set to: $CORS_ORIGINS"
+        log_warn "After deploy, re-run with: CORS_ORIGINS=https://<alb-hostname> ./full-deploy.sh --skip-cluster --skip-rds"
+    fi
+
     "$SCRIPT_DIR/deploy.sh" "$NAMESPACE"
+
+    # Retrieve ALB URL post-deploy and update CORS_ORIGINS in all services
+    sleep 30  # Wait for ALB to provision
+    ALB_HOSTNAME=$(kubectl get ingress frontend -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+    if [ -n "$ALB_HOSTNAME" ] && [ "$CORS_ORIGINS" = "http://localhost:3000" ]; then
+        export CORS_ORIGINS="https://${ALB_HOSTNAME}"
+        log_info "ALB provisioned. Updating CORS_ORIGINS to: $CORS_ORIGINS"
+        # Re-deploy services with correct CORS_ORIGINS
+        "$SCRIPT_DIR/deploy.sh" "$NAMESPACE"
+    fi
+
     log_success "Services deployed"
 fi
 echo ""

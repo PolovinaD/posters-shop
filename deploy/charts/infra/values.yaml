@@ -23,6 +23,7 @@ env:
   LOG_LEVEL: "INFO"
   ROOT_PATH: ""
   NAMESPACE: postershop
+  CORS_ORIGINS: "http://localhost:3000"
 
 # Service account with RBAC for Kubernetes API access
 serviceAccount:

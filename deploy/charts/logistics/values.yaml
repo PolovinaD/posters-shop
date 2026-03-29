@@ -35,6 +35,8 @@ env:
         key: JWT_SECRET
   - name: ORDERS_SERVICE_URL
     value: "http://orders"
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false

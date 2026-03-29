@@ -28,6 +28,8 @@ env:
       secretKeyRef:
         name: postershop-db
         key: DATABASE_URL_INVENTORY
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false

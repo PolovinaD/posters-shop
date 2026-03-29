@@ -36,6 +36,8 @@ env:
       secretKeyRef:
         name: postershop-jwt
         key: JWT_SECRET
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false

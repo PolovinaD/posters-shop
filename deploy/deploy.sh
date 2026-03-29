@@ -88,13 +88,21 @@ echo ""
 echo "📦 Deploying services..."
 for service in "${SERVICES[@]}"; do
     CHART_PATH="$CHARTS_DIR/$service"
-    
+
     if [ -d "$CHART_PATH" ]; then
         echo ""
         echo "   🔄 Deploying: $service"
+
+        # Build CORS_ORIGINS override argument for infra service (dict-format env)
+        CORS_SET_ARG=""
+        if [ -n "${CORS_ORIGINS:-}" ] && [ "$service" = "infra" ]; then
+            CORS_SET_ARG="--set env.CORS_ORIGINS=${CORS_ORIGINS}"
+        fi
+
         helm upgrade --install "$service" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --set image.repository="${ECR_REGISTRY}/${service}" \
+            ${CORS_SET_ARG} \
             --wait \
             --timeout 5m \
             $DRY_RUN

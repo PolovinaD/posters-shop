@@ -30,6 +30,8 @@ env:
         key: DATABASE_URL_CATALOG
   - name: INVENTORY_SERVICE_URL
     value: "http://inventory"
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
 
 ingress:
   enabled: false
