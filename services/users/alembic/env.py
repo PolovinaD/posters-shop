@@ -12,7 +12,7 @@ from alembic import context
 
 # Import models to ensure they're registered with Base.metadata
 from database import Base
-from models import User
+from models import User, RefreshToken
 from commons import SCHEMA_NAME
 
 # Alembic Config object
