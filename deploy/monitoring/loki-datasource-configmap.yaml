@@ -1,0 +1,29 @@
+# ============================================================
+# Grafana Loki Datasource ConfigMap
+# ============================================================
+# Provisioned automatically by Grafana's datasource sidecar.
+# The label 'grafana_datasource: "1"' triggers auto-import.
+#
+# Apply with: kubectl apply -f loki-datasource-configmap.yaml -n monitoring
+#
+# NOTE: This ConfigMap was documented in LOGGING.md but never applied.
+# It is a prerequisite for any Loki panel in Grafana dashboards.
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-loki
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-datasource.yaml: |-
+    apiVersion: 1
+    datasources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      jsonData:
+        maxLines: 1000

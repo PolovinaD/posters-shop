@@ -4,6 +4,15 @@
 # These tell Prometheus how to scrape metrics from each service.
 # Apply with: kubectl apply -f servicemonitors.yaml -n postershop
 # ============================================================
+#
+# ============================================================
+# ServiceMonitor Coverage Status (MON-01)
+# ============================================================
+# Monitors defined: users, catalog, orders, production, logistics, inventory, payments
+# Missing: infra — infra service gains /metrics endpoint in phase 4 but ServiceMonitor
+#          is deferred to phase 6 deployment to keep scope focused.
+#          To add: kubectl apply a ServiceMonitor for app: infra after full-deploy.sh.
+# ============================================================
 
 ---
 apiVersion: monitoring.coreos.com/v1
