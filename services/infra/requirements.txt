@@ -1,6 +1,5 @@
-fastapi
-uvicorn
-pydantic
-kubernetes
-websockets
-
+fastapi==0.119.1
+uvicorn==0.38.0
+pydantic==2.12.3
+kubernetes==35.0.0
+websockets==16.0
