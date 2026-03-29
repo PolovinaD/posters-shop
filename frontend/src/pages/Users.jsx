@@ -107,7 +107,7 @@ function CreateUserModal({ open, onClose, token }) {
   });
   
   const mutation = useMutation({
-    mutationFn: (data) => usersApi.createUser(token, data),
+    mutationFn: (data) => usersApi.createUser(data),
     onSuccess: () => {
       queryClient.invalidateQueries(['users']);
       onClose();
@@ -192,7 +192,7 @@ function ChangeRoleModal({ open, onClose, user, token }) {
   const [role, setRole] = useState(user?.role || 'customer');
   
   const mutation = useMutation({
-    mutationFn: (newRole) => usersApi.changeUserRole(token, user.id, newRole),
+    mutationFn: (newRole) => usersApi.changeUserRole(user.id, newRole),
     onSuccess: () => {
       queryClient.invalidateQueries(['users']);
       onClose();
@@ -254,7 +254,7 @@ function UserManagement({ token, onLogout }) {
   
   const { data: users, isLoading, error, refetch } = useQuery({
     queryKey: ['users', token],
-    queryFn: () => usersApi.getUsers(token),
+    queryFn: () => usersApi.getUsers(),
     retry: false,
     onError: (err) => {
       if (err.message.includes('401') || err.message.includes('403')) {
@@ -265,7 +265,7 @@ function UserManagement({ token, onLogout }) {
   });
   
   const deleteMutation = useMutation({
-    mutationFn: (id) => usersApi.deleteUser(token, id),
+    mutationFn: (id) => usersApi.deleteUser(id),
     onSuccess: () => {
       queryClient.invalidateQueries(['users']);
     },
