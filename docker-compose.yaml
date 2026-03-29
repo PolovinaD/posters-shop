@@ -55,6 +55,8 @@ services:
       PAYMENT_SERVICE_URL: http://payments:8000
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RECOVERY_TIMEOUT: ${CB_RECOVERY_TIMEOUT:-30}
     depends_on:
       postgres:
         condition: service_healthy

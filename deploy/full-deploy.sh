@@ -751,6 +751,8 @@ if [ "$DRY_RUN" = false ]; then
         log_warn "ALB domain not yet known. CORS_ORIGINS set to: $CORS_ORIGINS"
         log_warn "After deploy, re-run with: CORS_ORIGINS=https://<alb-hostname> ./full-deploy.sh --skip-cluster --skip-rds"
     fi
+    export CB_FAILURE_THRESHOLD="${CB_FAILURE_THRESHOLD:-5}"
+    export CB_RECOVERY_TIMEOUT="${CB_RECOVERY_TIMEOUT:-30}"
 
     "$SCRIPT_DIR/deploy.sh" "$NAMESPACE"
 
