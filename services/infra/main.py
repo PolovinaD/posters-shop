@@ -140,6 +140,11 @@ def healthz():
     return {"status": "ok", "service": "infra", "in_cluster": IN_CLUSTER}
 
 
+@app.get("/readyz")
+def readyz():
+    return {"status": "ready"}
+
+
 # ============== Deployments ==============
 
 @app.get("/deployments", response_model=List[DeploymentInfo])

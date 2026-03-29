@@ -172,6 +172,11 @@ def healthz():
     return {"status": "ok", "service": SERVICE_NAME}
 
 
+@app.get("/readyz")
+def readyz():
+    return {"status": "ready"}
+
+
 # ============== Checkout Sessions ==============
 
 @app.post("/v1/checkout/sessions", response_model=CheckoutSession)
