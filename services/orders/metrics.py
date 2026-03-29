@@ -42,6 +42,12 @@ INVENTORY_RESERVATION_FAILURES = Counter(
     ["reason"]
 )
 
+CIRCUIT_BREAKER_STATE_TRANSITIONS = Counter(
+    "circuit_breaker_state_transitions_total",
+    "Circuit breaker state transitions",
+    ["service", "from_state", "to_state"]
+)
+
 
 def metrics_endpoint():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
