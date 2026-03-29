@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from logger import get_logger, LoggingMiddleware
+from metrics import track_metrics, metrics_endpoint
 
 SERVICE_NAME = "payments"
 logger = get_logger(__name__)
@@ -93,6 +94,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+app.middleware("http")(track_metrics)
+
+
+@app.get("/metrics")
+def metrics():
+    return metrics_endpoint()
 
 
 def generate_session_id() -> str:

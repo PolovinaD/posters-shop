@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from logger import get_logger, LoggingMiddleware
+from metrics import track_metrics, metrics_endpoint
 
 logger = get_logger(__name__)
 
@@ -131,6 +132,15 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+app.middleware("http")(track_metrics)
+
+
+# ============== Metrics ==============
+
+@app.get("/metrics")
+def prometheus_metrics():
+    # Prometheus scrape endpoint — distinct from /api/infra/metrics (pod resource metrics)
+    return metrics_endpoint()
 
 
 # ============== Health ==============

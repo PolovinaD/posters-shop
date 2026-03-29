@@ -2,10 +2,18 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 import time
 from starlette.responses import Response
 
-SERVICE_NAME = "catalog"
+SERVICE_NAME = "infra"
 
-REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["service", "method", "path", "status"])
-REQUEST_LATENCY = Histogram("http_request_duration_seconds", "Latency", ["service", "path"])
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["service", "method", "path", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "Request latency in seconds",
+    ["service", "path"]
+)
 
 
 def metrics_endpoint():
