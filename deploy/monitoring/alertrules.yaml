@@ -32,12 +32,12 @@ spec:
             /
             sum(rate(http_requests_total[5m])) by (service)
             > 0.05
-          for: 5m
+          for: 2m
           labels:
             severity: warning
           annotations:
             summary: "High error rate on {{ $labels.service }}"
-            description: "Service {{ $labels.service }} has error rate > 5% for 5 minutes. Current: {{ $value | humanizePercentage }}"
+            description: "Service {{ $labels.service }} has error rate > 5% for 2 minutes. Current: {{ $value | humanizePercentage }}"
 
         - alert: CriticalErrorRate
           expr: |
@@ -192,13 +192,12 @@ spec:
             summary: "High memory on {{ $labels.pod }}"
             description: "Pod {{ $labels.pod }} memory usage > 90% for 10 minutes."
 
-        - alert: PodRestartingFrequently
-          expr: |
-            increase(kube_pod_container_status_restarts_total{namespace="postershop"}[1h]) > 3
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total{namespace="postershop"}[15m]) > 0
           for: 5m
           labels:
-            severity: warning
+            severity: critical
           annotations:
-            summary: "Pod {{ $labels.pod }} restarting frequently"
-            description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last hour."
+            summary: "Pod {{ $labels.pod }} is crash-looping"
+            description: "Pod {{ $labels.pod }} has been restarting continuously for 5 minutes."
 
