@@ -1,7 +1,9 @@
 import os
+import hashlib
+from datetime import datetime, UTC
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -12,12 +14,13 @@ from commons import SERVICE_NAME, UserRole
 
 logger = get_logger(__name__)
 from database import get_db
-from models import User
-from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser
+from models import User, RefreshToken
+from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser, RefreshIn
 from auth import (
     hash_password,
     verify_password,
     create_access_token,
+    create_refresh_token,
     get_current_user,
     get_current_user_claims,
     require_role,
@@ -61,7 +64,7 @@ def metrics():
     return metrics_endpoint()
 
 
-@app.post("/register", status_code=200)
+@app.post("/register", response_model=TokenOut)
 @limiter.limit("10/minute")
 def register(request: Request, payload: RegisterIn, db: Session = Depends(get_db)):
     existing = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
@@ -71,12 +74,17 @@ def register(request: Request, payload: RegisterIn, db: Session = Depends(get_db
     user = User(
         email=payload.email,
         password_hash=hash_password(payload.password),
-        role="customer"
+        role="customer",
+        first_name=payload.first_name,
+        last_name=payload.last_name,
     )
     db.add(user)
+    db.flush()  # flush to get user.id for FK
+
+    access_token = create_access_token(sub=user.email, role=user.role)
+    refresh_token = create_refresh_token(user.id, db)
     db.commit()
-    db.refresh(user)
-    return Response(status_code=status.HTTP_200_OK)
+    return TokenOut(access_token=access_token, refresh_token=refresh_token)
 
 
 @app.post("/login", response_model=TokenOut)
@@ -86,8 +94,66 @@ def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    token = create_access_token(sub=user.email, role=user.role)
-    return TokenOut(access_token=token)
+    access_token = create_access_token(sub=user.email, role=user.role)
+    refresh_token = create_refresh_token(user.id, db)
+    db.commit()
+    return TokenOut(access_token=access_token, refresh_token=refresh_token)
+
+
+@app.post("/auth/refresh", response_model=TokenOut)
+def refresh_token(payload: RefreshIn, db: Session = Depends(get_db)):
+    token_hash = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+
+    # SELECT FOR UPDATE to prevent concurrent rotation race
+    stmt = select(RefreshToken).where(
+        RefreshToken.token_hash == token_hash
+    ).with_for_update()
+    db_token = db.execute(stmt).scalar_one_or_none()
+
+    if not db_token or db_token.expires_at < datetime.now(UTC):
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    user = db.get(User, db_token.user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Rotate: delete old, create new (token rotation)
+    db.delete(db_token)
+    new_raw_token = create_refresh_token(user.id, db)
+    new_access_token = create_access_token(sub=user.email, role=user.role)
+    db.commit()
+    return TokenOut(access_token=new_access_token, refresh_token=new_raw_token)
+
+
+@app.post("/auth/logout", status_code=200)
+def logout(
+    payload: RefreshIn,
+    db: Session = Depends(get_db),
+    _claims=Depends(get_current_user_claims),
+):
+    token_hash = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+    db_token = db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    ).scalar_one_or_none()
+
+    if db_token:
+        db.delete(db_token)
+        db.commit()
+    return {"message": "Logged out"}
+
+
+@app.post("/auth/logout-all", status_code=200)
+def logout_all(
+    db: Session = Depends(get_db),
+    claims=Depends(get_current_user_claims),
+):
+    user = db.execute(select(User).where(User.email == claims["sub"])).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    db.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
+    db.commit()
+    return {"message": "All sessions revoked"}
 
 
 @app.post("/users/me/password", status_code=200)
