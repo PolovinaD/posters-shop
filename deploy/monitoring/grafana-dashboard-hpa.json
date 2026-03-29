@@ -12,7 +12,7 @@
       "title": "Production CPU Usage (%)",
       "targets": [
         {
-          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"shop\", pod=~\"production-.*\"}[2m])) by (pod) * 100",
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"postershop\", pod=~\"production-.*\"}[2m])) by (pod) * 100",
           "legendFormat": "{{pod}}"
         }
       ],
@@ -29,11 +29,11 @@
       "title": "HPA Target vs Current CPU Utilization",
       "targets": [
         {
-          "expr": "kube_horizontalpodautoscaler_status_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", metric_name=\"cpu\"}",
+          "expr": "kube_horizontalpodautoscaler_status_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", metric_name=\"cpu\"}",
           "legendFormat": "Current CPU"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", metric_name=\"cpu\"}",
+          "expr": "kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", metric_name=\"cpu\"}",
           "legendFormat": "Target CPU"
         }
       ],
@@ -50,19 +50,19 @@
       "title": "HPA Current vs Desired Replicas",
       "targets": [
         {
-          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
           "legendFormat": "Current replicas"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
           "legendFormat": "Desired replicas"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
           "legendFormat": "Min replicas"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\"}",
+          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
           "legendFormat": "Max replicas"
         }
       ],
@@ -79,11 +79,11 @@
       "title": "HPA Scaling Conditions",
       "targets": [
         {
-          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", condition=\"ScalingActive\"}",
+          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", condition=\"ScalingActive\"}",
           "legendFormat": "Scaling Active"
         },
         {
-          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"shop\", condition=\"ScalingLimited\"}",
+          "expr": "kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", condition=\"ScalingLimited\"}",
           "legendFormat": "Scaling Limited"
         }
       ],

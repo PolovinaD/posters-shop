@@ -1,0 +1,116 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Production — CPU Utilization % (HPA Signal)",
+      "description": "CPU usage driving the production CPU-based HPA. Target: 50% average utilization.",
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"postershop\", pod=~\"production-.*\"}[2m])) by (pod) / sum(kube_pod_container_resource_limits{namespace=\"postershop\", pod=~\"production-.*\", resource=\"cpu\"}) by (pod) * 100",
+          "legendFormat": "{{pod}} CPU %"
+        },
+        {
+          "expr": "scalar(kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\", metric_name=\"cpu\"})",
+          "legendFormat": "HPA Target (50%)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {"mode": "palette-classic"},
+          "min": 0
+        }
+      },
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 10}
+    },
+    {
+      "type": "timeseries",
+      "title": "Production — Replica Count (CPU HPA Response)",
+      "description": "How the CPU-based HPA adjusts production replicas in response to CPU load.",
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Current Replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Min Replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"production-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Max Replicas"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "palette-classic"},
+          "min": 0,
+          "decimals": 0
+        }
+      },
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 10}
+    },
+    {
+      "type": "timeseries",
+      "title": "Orders — Request Rate req/s (HPA Signal)",
+      "description": "HTTP request rate to orders service driving the custom metric HPA. Target: 5 req/s per pod.",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{service=\"orders\"}[2m]))",
+          "legendFormat": "Total req/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {"mode": "palette-classic"},
+          "min": 0
+        }
+      },
+      "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
+    },
+    {
+      "type": "timeseries",
+      "title": "Orders — Replica Count (Request-Rate HPA Response)",
+      "description": "How the request-rate HPA adjusts orders replicas in response to HTTP load.",
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Current Replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Min Replicas"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=\"orders-hpa\", namespace=\"postershop\"}",
+          "legendFormat": "Max Replicas"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "palette-classic"},
+          "min": 0,
+          "decimals": 0
+        }
+      },
+      "gridPos": {"x": 12, "y": 10, "w": 12, "h": 10}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["postershop", "autoscaling", "HPA", "comparison"],
+  "time": {"from": "now-30m", "to": "now"},
+  "timezone": "browser",
+  "title": "PosterShop HPA Comparison: CPU vs Request-Rate",
+  "uid": "postershop-hpa-comparison",
+  "version": 1
+}
