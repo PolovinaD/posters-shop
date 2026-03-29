@@ -33,6 +33,7 @@ from outbox import (
 )
 import payment_client
 from payment_client import PaymentServiceError
+from circuit_breaker import CircuitOpenError
 from stripe_webhook import process_webhook, WebhookError
 from logger import get_logger, LoggingMiddleware
 
@@ -202,6 +203,20 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db)):
             detail=f"SKU not found: {e.sku}"
         )
         
+    except CircuitOpenError:
+        # Release any reservations we made
+        for sku in reserved_items:
+            try:
+                await inventory_client.release_stock(order.id, sku)
+            except Exception:
+                pass
+        INVENTORY_RESERVATION_FAILURES.labels(reason="circuit_open").inc()
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="inventory service unavailable — circuit open"
+        )
+
     except InventoryServiceError as e:
         # Release any reservations we made
         for sku in reserved_items:
@@ -209,7 +224,7 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db)):
                 await inventory_client.release_stock(order.id, sku)
             except InventoryServiceError:
                 pass
-        
+
         INVENTORY_RESERVATION_FAILURES.labels(reason="service_error").inc()
         db.rollback()
         raise HTTPException(
@@ -316,6 +331,13 @@ async def pay_order(order_id: int, db: Session = Depends(get_db)):
         
         return order
         
+    except CircuitOpenError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="inventory service unavailable — circuit open"
+        )
+
     except InventoryServiceError as e:
         db.rollback()
         raise HTTPException(
@@ -502,6 +524,12 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db)):
             amount_total=session["amount_total"]
         )
         
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="payments service unavailable — circuit open"
+        )
+
     except PaymentServiceError as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -535,6 +563,12 @@ async def get_checkout_status(order_id: int, db: Session = Depends(get_db)):
                 "payment_intent_id": session.get("payment_intent_id")
             }
         }
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="payments service unavailable — circuit open"
+        )
+
     except PaymentServiceError as e:
         return {
             "order_id": order_id,
