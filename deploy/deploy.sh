@@ -93,10 +93,20 @@ for service in "${SERVICES[@]}"; do
         echo ""
         echo "   🔄 Deploying: $service"
 
-        # Build CORS_ORIGINS override argument for infra service (dict-format env)
+        # Build CORS_ORIGINS override argument
+        # infra uses dict-format env (env.CORS_ORIGINS); others use list-format (env[N].value)
         CORS_SET_ARG=""
-        if [ -n "${CORS_ORIGINS:-}" ] && [ "$service" = "infra" ]; then
-            CORS_SET_ARG="--set env.CORS_ORIGINS=${CORS_ORIGINS}"
+        if [ -n "${CORS_ORIGINS:-}" ]; then
+            case "$service" in
+                infra)       CORS_SET_ARG="--set env.CORS_ORIGINS=${CORS_ORIGINS}" ;;
+                users)       CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
+                catalog)     CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
+                orders)      CORS_SET_ARG="--set env[9].value=${CORS_ORIGINS}" ;;
+                production)  CORS_SET_ARG="--set env[6].value=${CORS_ORIGINS}" ;;
+                logistics)   CORS_SET_ARG="--set env[6].value=${CORS_ORIGINS}" ;;
+                inventory)   CORS_SET_ARG="--set env[4].value=${CORS_ORIGINS}" ;;
+                payments)    CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
+            esac
         fi
 
         helm upgrade --install "$service" "$CHART_PATH" \
