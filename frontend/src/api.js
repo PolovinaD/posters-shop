@@ -199,27 +199,34 @@ export const paymentsApi = {
 
 // ============== Infrastructure API ==============
 export const infraApi = {
-  getCluster: () => fetchJSON(`${API_BASE}/infra/cluster`),
-  getDeployments: () => fetchJSON(`${API_BASE}/infra/deployments`),
-  getDeployment: (name) => fetchJSON(`${API_BASE}/infra/deployments/${name}`),
-  scaleDeployment: (name, replicas) => fetchJSON(`${API_BASE}/infra/deployments/${name}/scale`, {
+  getCluster: () => authFetchJSON(`${API_BASE}/infra/cluster`),
+  getDeployments: () => authFetchJSON(`${API_BASE}/infra/deployments`),
+  getDeployment: (name) => authFetchJSON(`${API_BASE}/infra/deployments/${name}`),
+  scaleDeployment: (name, replicas) => authFetchJSON(`${API_BASE}/infra/deployments/${name}/scale`, {
     method: 'POST',
     body: JSON.stringify({ replicas }),
   }),
-  restartDeployment: (name) => fetchJSON(`${API_BASE}/infra/deployments/${name}/restart`, {
+  restartDeployment: (name) => authFetchJSON(`${API_BASE}/infra/deployments/${name}/restart`, {
     method: 'POST',
   }),
   getPods: (deployment) => {
     const params = deployment ? `?deployment=${deployment}` : '';
-    return fetchJSON(`${API_BASE}/infra/pods${params}`);
+    return authFetchJSON(`${API_BASE}/infra/pods${params}`);
   },
   deletePod: (name) => fetch(`${API_BASE}/infra/pods/${name}`, { method: 'DELETE' }),
-  getPodLogs: (name, tail = 100) => fetchJSON(`${API_BASE}/infra/pods/${name}/logs?tail=${tail}`),
-  getHPAs: () => fetchJSON(`${API_BASE}/infra/hpa`),
-  updateHPA: (name, data) => fetchJSON(`${API_BASE}/infra/hpa/${name}`, {
+  getPodLogs: (name, tail = 100) => authFetchJSON(`${API_BASE}/infra/pods/${name}/logs?tail=${tail}`),
+  getHPAs: () => authFetchJSON(`${API_BASE}/infra/hpa`),
+  updateHPA: (name, data) => authFetchJSON(`${API_BASE}/infra/hpa/${name}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
+  queryLogs: (service, correlationId, range) => {
+    const params = new URLSearchParams({ service, range: range || '1h' });
+    if (correlationId && correlationId.trim()) {
+      params.set('correlation_id', correlationId.trim());
+    }
+    return authFetchJSON(`${API_BASE}/infra/logs/query?${params}`);
+  },
 };
 
 // ============== Users API ==============
