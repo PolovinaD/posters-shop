@@ -33,8 +33,10 @@ spec:
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: shop-secrets
-                  key: jwt-secret
+                  name: postershop-jwt
+                  key: JWT_SECRET
+            - name: LOKI_URL
+              value: "{{ .Values.env.LOKI_URL }}"
           livenessProbe:
             httpGet:
               path: /healthz
