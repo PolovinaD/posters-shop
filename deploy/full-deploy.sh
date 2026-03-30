@@ -810,6 +810,34 @@ if [ "$SKIP_MONITORING" = false ]; then
             --wait --timeout 5m
         log_success "Prometheus Adapter installed"
 
+        # Install Loki (log aggregation backend)
+        helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+        helm repo update
+        if ! helm status loki -n "$MONITORING_NAMESPACE" &> /dev/null; then
+            log_info "Installing Loki..."
+            helm install loki grafana/loki \
+                --namespace "$MONITORING_NAMESPACE" \
+                -f "$SCRIPT_DIR/monitoring/loki-values.yaml" \
+                --wait --timeout 5m
+            log_success "Loki installed"
+        else
+            log_warn "Loki already installed"
+        fi
+
+        # Install Fluent Bit (log shipper: pods → Loki)
+        helm repo add fluent https://fluent.github.io/helm-charts 2>/dev/null || true
+        helm repo update
+        if ! helm status fluent-bit -n "$MONITORING_NAMESPACE" &> /dev/null; then
+            log_info "Installing Fluent Bit..."
+            helm install fluent-bit fluent/fluent-bit \
+                --namespace "$MONITORING_NAMESPACE" \
+                -f "$SCRIPT_DIR/monitoring/fluent-bit-values.yaml" \
+                --wait --timeout 5m
+            log_success "Fluent Bit installed"
+        else
+            log_warn "Fluent Bit already installed"
+        fi
+
         log_success "Monitoring stack installed"
     fi
 else
