@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, APIRouter, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from logger import get_logger, LoggingMiddleware
 from metrics import track_metrics, metrics_endpoint
+from auth import require_role, decode_token
 
 logger = get_logger(__name__)
 
@@ -79,6 +80,8 @@ class HPAInfo(BaseModel):
     current_replicas: int
     target_cpu: int
     current_cpu: Optional[int] = None
+    metric_type: str = "cpu_percent"              # "cpu_percent" or "requests_per_second"
+    current_metric_value: Optional[float] = None  # current observed value (typed)
 
 
 class ScaleRequest(BaseModel):
@@ -105,7 +108,14 @@ MOCK_DEPLOYMENTS = {
 }
 
 MOCK_HPA = {
-    "production": {"min": 1, "max": 5, "current": 2, "target_cpu": 70, "current_cpu": 60},
+    "production": {
+        "min": 1, "max": 5, "current": 2, "target_cpu": 70, "current_cpu": 60,
+        "metric_type": "cpu_percent", "current_metric_value": 60.0,
+    },
+    "orders": {
+        "min": 1, "max": 3, "current": 1, "target_cpu": 5, "current_cpu": None,
+        "metric_type": "requests_per_second", "current_metric_value": 12.0,
+    },
 }
 
 
@@ -134,6 +144,9 @@ app.add_middleware(
 )
 app.middleware("http")(track_metrics)
 
+# Protected router — all operational endpoints require owner-role JWT
+protected_router = APIRouter(dependencies=[Depends(require_role("owner"))])
+
 
 # ============== Metrics ==============
 
@@ -157,7 +170,7 @@ def readyz():
 
 # ============== Deployments ==============
 
-@app.get("/deployments", response_model=List[DeploymentInfo])
+@protected_router.get("/deployments", response_model=List[DeploymentInfo])
 def list_deployments():
     """List all deployments with status and resource usage."""
     if not IN_CLUSTER:
@@ -179,14 +192,14 @@ def list_deployments():
                 created_at=datetime.now(timezone.utc).isoformat(),
             ))
         return result
-    
+
     # Real Kubernetes API
     deployments = k8s_apps_v1.list_namespaced_deployment(namespace=NAMESPACE)
-    
+
     # Fetch pod metrics and group by deployment
     pod_metrics = get_pod_metrics()
     pods = k8s_core_v1.list_namespaced_pod(namespace=NAMESPACE)
-    
+
     # Map pods to deployments and aggregate metrics
     deployment_metrics = {}
     for pod in pods.items:
@@ -195,39 +208,39 @@ def list_deployments():
         dep_name = labels.get("app")
         if not dep_name:
             continue
-        
+
         if dep_name not in deployment_metrics:
             deployment_metrics[dep_name] = {"cpu": 0, "memory": 0}
-        
+
         metrics = pod_metrics.get(pod.metadata.name, {})
         deployment_metrics[dep_name]["cpu"] += metrics.get("cpu", 0)
         deployment_metrics[dep_name]["memory"] += metrics.get("memory", 0)
-    
+
     result = []
-    
+
     for dep in deployments.items:
         spec = dep.spec
         status = dep.status
-        
+
         available = status.available_replicas or 0
         ready = status.ready_replicas or 0
         replicas = spec.replicas or 1
-        
+
         if available == replicas:
             health = "healthy"
         elif available > 0:
             health = "degraded"
         else:
             health = "unhealthy"
-        
+
         # Get image from first container
         image = None
         if spec.template.spec.containers:
             image = spec.template.spec.containers[0].image
-        
+
         # Get aggregated metrics for this deployment
         metrics = deployment_metrics.get(dep.metadata.name, {})
-        
+
         result.append(DeploymentInfo(
             name=dep.metadata.name,
             replicas=replicas,
@@ -239,11 +252,11 @@ def list_deployments():
             image=image,
             created_at=dep.metadata.creation_timestamp.isoformat() if dep.metadata.creation_timestamp else None,
         ))
-    
+
     return result
 
 
-@app.get("/deployments/{name}", response_model=DeploymentInfo)
+@protected_router.get("/deployments/{name}", response_model=DeploymentInfo)
 def get_deployment(name: str):
     """Get details for a specific deployment."""
     deployments = list_deployments()
@@ -253,12 +266,12 @@ def get_deployment(name: str):
     raise HTTPException(status_code=404, detail=f"Deployment '{name}' not found")
 
 
-@app.post("/deployments/{name}/scale")
+@protected_router.post("/deployments/{name}/scale")
 def scale_deployment(name: str, req: ScaleRequest):
     """Scale a deployment to the specified number of replicas."""
     if req.replicas < 0 or req.replicas > 10:
         raise HTTPException(status_code=400, detail="Replicas must be between 0 and 10")
-    
+
     if not IN_CLUSTER:
         # Mock scaling
         if name not in MOCK_DEPLOYMENTS:
@@ -266,7 +279,7 @@ def scale_deployment(name: str, req: ScaleRequest):
         MOCK_DEPLOYMENTS[name]["replicas"] = req.replicas
         MOCK_DEPLOYMENTS[name]["available"] = req.replicas
         return {"message": f"Scaled {name} to {req.replicas} replicas", "replicas": req.replicas}
-    
+
     # Real Kubernetes API
     try:
         k8s_apps_v1.patch_namespaced_deployment_scale(
@@ -281,7 +294,7 @@ def scale_deployment(name: str, req: ScaleRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/deployments/{name}/restart")
+@protected_router.post("/deployments/{name}/restart")
 def restart_deployment(name: str):
     """Restart a deployment by triggering a rollout."""
     if not IN_CLUSTER:
@@ -289,7 +302,7 @@ def restart_deployment(name: str):
         if name not in MOCK_DEPLOYMENTS:
             raise HTTPException(status_code=404, detail=f"Deployment '{name}' not found")
         return {"message": f"Restarted {name}", "status": "rolling"}
-    
+
     # Real Kubernetes API - patch with annotation to trigger rollout
     try:
         now = datetime.now(timezone.utc).isoformat()
@@ -321,7 +334,7 @@ def get_pod_metrics() -> dict:
     """Fetch pod metrics from the metrics API."""
     if not IN_CLUSTER or not k8s_custom_api:
         return {}
-    
+
     try:
         metrics = k8s_custom_api.list_namespaced_custom_object(
             group="metrics.k8s.io",
@@ -329,17 +342,17 @@ def get_pod_metrics() -> dict:
             namespace=NAMESPACE,
             plural="pods"
         )
-        
+
         result = {}
         for item in metrics.get("items", []):
             pod_name = item["metadata"]["name"]
             cpu_total = 0
             memory_total = 0
-            
+
             for container in item.get("containers", []):
                 cpu_str = container.get("usage", {}).get("cpu", "0")
                 mem_str = container.get("usage", {}).get("memory", "0")
-                
+
                 # Parse CPU (e.g., "100m" = 100 millicores, "1" = 1000 millicores)
                 if cpu_str.endswith("n"):
                     cpu_total += int(cpu_str[:-1]) / 1_000_000  # nanocores to millicores
@@ -347,7 +360,7 @@ def get_pod_metrics() -> dict:
                     cpu_total += int(cpu_str[:-1])
                 else:
                     cpu_total += int(cpu_str) * 1000
-                
+
                 # Parse memory (e.g., "128Mi", "1Gi", "1000Ki")
                 if mem_str.endswith("Ki"):
                     memory_total += int(mem_str[:-2]) / 1024  # KiB to MiB
@@ -357,9 +370,9 @@ def get_pod_metrics() -> dict:
                     memory_total += int(mem_str[:-2]) * 1024
                 else:
                     memory_total += int(mem_str) / (1024 * 1024)  # bytes to MiB
-            
+
             result[pod_name] = {"cpu": round(cpu_total, 1), "memory": round(memory_total, 1)}
-        
+
         return result
     except Exception as e:
         logger.warning("Failed to fetch pod metrics", error=str(e))
@@ -368,7 +381,7 @@ def get_pod_metrics() -> dict:
 
 # ============== Pods ==============
 
-@app.get("/pods", response_model=List[PodInfo])
+@protected_router.get("/pods", response_model=List[PodInfo])
 def list_pods(deployment: Optional[str] = None):
     """List all pods, optionally filtered by deployment."""
     if not IN_CLUSTER:
@@ -389,18 +402,18 @@ def list_pods(deployment: Optional[str] = None):
                     memory_usage=data["memory"] / data["replicas"],
                 ))
         return result
-    
+
     # Real Kubernetes API
     label_selector = f"app={deployment}" if deployment else None
     pods = k8s_core_v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=label_selector)
-    
+
     # Fetch metrics
     pod_metrics = get_pod_metrics()
-    
+
     result = []
     for pod in pods.items:
         status = pod.status
-        
+
         # Calculate age
         if pod.metadata.creation_timestamp:
             age_delta = datetime.now(timezone.utc) - pod.metadata.creation_timestamp.replace(tzinfo=timezone.utc)
@@ -412,7 +425,7 @@ def list_pods(deployment: Optional[str] = None):
                 age = f"{age_delta.seconds // 60}m"
         else:
             age = "unknown"
-        
+
         # Check if ready
         ready = False
         if status.conditions:
@@ -420,16 +433,16 @@ def list_pods(deployment: Optional[str] = None):
                 if cond.type == "Ready" and cond.status == "True":
                     ready = True
                     break
-        
+
         # Count restarts
         restarts = 0
         if status.container_statuses:
             for cs in status.container_statuses:
                 restarts += cs.restart_count
-        
+
         # Get metrics for this pod
         metrics = pod_metrics.get(pod.metadata.name, {})
-        
+
         result.append(PodInfo(
             name=pod.metadata.name,
             status=status.phase,
@@ -440,16 +453,16 @@ def list_pods(deployment: Optional[str] = None):
             cpu_usage=metrics.get("cpu"),
             memory_usage=metrics.get("memory"),
         ))
-    
+
     return result
 
 
-@app.delete("/pods/{name}")
+@protected_router.delete("/pods/{name}")
 def delete_pod(name: str):
     """Delete a pod (it will be recreated by the deployment)."""
     if not IN_CLUSTER:
         return {"message": f"Deleted pod {name}"}
-    
+
     try:
         k8s_core_v1.delete_namespaced_pod(name=name, namespace=NAMESPACE)
         return {"message": f"Deleted pod {name}"}
@@ -459,7 +472,7 @@ def delete_pod(name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/pods/{name}/logs")
+@protected_router.get("/pods/{name}/logs")
 def get_pod_logs(
     name: str,
     tail: int = Query(100, ge=1, le=1000),
@@ -474,7 +487,7 @@ def get_pod_logs(
             f"[{datetime.now().isoformat()}] INFO: Response 200 in 5ms",
         ] * (tail // 3 + 1)
         return {"logs": "\n".join(lines[:tail])}
-    
+
     try:
         logs = k8s_core_v1.read_namespaced_pod_log(
             name=name,
@@ -491,7 +504,7 @@ def get_pod_logs(
 
 # ============== HPA ==============
 
-@app.get("/hpa", response_model=List[HPAInfo])
+@protected_router.get("/hpa", response_model=List[HPAInfo])
 def list_hpa():
     """List all HorizontalPodAutoscalers."""
     if not IN_CLUSTER:
@@ -504,19 +517,21 @@ def list_hpa():
                 current_replicas=data["current"],
                 target_cpu=data["target_cpu"],
                 current_cpu=data["current_cpu"],
+                metric_type=data["metric_type"],
+                current_metric_value=data["current_metric_value"],
             )
             for name, data in MOCK_HPA.items()
         ]
-    
+
     # Real Kubernetes API
     hpas = k8s_autoscaling_v1.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE)
     result = []
-    
+
     for hpa in hpas.items:
         current_cpu = None
         if hpa.status.current_cpu_utilization_percentage:
             current_cpu = hpa.status.current_cpu_utilization_percentage
-        
+
         result.append(HPAInfo(
             name=hpa.metadata.name,
             min_replicas=hpa.spec.min_replicas or 1,
@@ -525,11 +540,11 @@ def list_hpa():
             target_cpu=hpa.spec.target_cpu_utilization_percentage or 80,
             current_cpu=current_cpu,
         ))
-    
+
     return result
 
 
-@app.patch("/hpa/{name}")
+@protected_router.patch("/hpa/{name}")
 def update_hpa(name: str, req: HPAUpdateRequest):
     """Update HPA settings."""
     if not IN_CLUSTER:
@@ -542,7 +557,7 @@ def update_hpa(name: str, req: HPAUpdateRequest):
         if req.target_cpu is not None:
             MOCK_HPA[name]["target_cpu"] = req.target_cpu
         return {"message": f"Updated HPA {name}", "settings": MOCK_HPA[name]}
-    
+
     # Build patch
     patch = {"spec": {}}
     if req.min_replicas is not None:
@@ -551,7 +566,7 @@ def update_hpa(name: str, req: HPAUpdateRequest):
         patch["spec"]["maxReplicas"] = req.max_replicas
     if req.target_cpu is not None:
         patch["spec"]["targetCPUUtilizationPercentage"] = req.target_cpu
-    
+
     try:
         k8s_autoscaling_v1.patch_namespaced_horizontal_pod_autoscaler(
             name=name,
@@ -567,7 +582,7 @@ def update_hpa(name: str, req: HPAUpdateRequest):
 
 # ============== Cluster Info ==============
 
-@app.get("/cluster")
+@protected_router.get("/cluster")
 def get_cluster_info():
     """Get cluster overview information."""
     if not IN_CLUSTER:
@@ -579,16 +594,16 @@ def get_cluster_info():
             "total_deployments": len(MOCK_DEPLOYMENTS),
             "mode": "local-development",
         }
-    
+
     # Get node count
     nodes = k8s_core_v1.list_node()
-    
+
     # Get pod count
     pods = k8s_core_v1.list_namespaced_pod(namespace=NAMESPACE)
-    
+
     # Get deployment count
     deployments = k8s_apps_v1.list_namespaced_deployment(namespace=NAMESPACE)
-    
+
     return {
         "namespace": NAMESPACE,
         "in_cluster": True,
@@ -602,10 +617,23 @@ def get_cluster_info():
 # ============== WebSocket for live logs ==============
 
 @app.websocket("/ws/logs/{pod_name}")
-async def websocket_logs(websocket: WebSocket, pod_name: str):
-    """Stream logs from a pod via WebSocket."""
+async def websocket_logs(websocket: WebSocket, pod_name: str, token: str = Query(None)):
+    """Stream logs from a pod via WebSocket. Requires valid owner JWT via ?token= query param."""
+    # Validate before accepting connection
+    if not token:
+        await websocket.close(code=1008)
+        return
+    try:
+        claims = decode_token(token)
+        if claims.get("role") != "owner":
+            await websocket.close(code=1008)
+            return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
-    
+
     if not IN_CLUSTER:
         # Mock streaming logs
         try:
@@ -617,7 +645,7 @@ async def websocket_logs(websocket: WebSocket, pod_name: str):
         except WebSocketDisconnect:
             pass
         return
-    
+
     # Real log streaming would use watch API
     try:
         # For simplicity, poll every second
@@ -637,3 +665,6 @@ async def websocket_logs(websocket: WebSocket, pod_name: str):
     except WebSocketDisconnect:
         pass
 
+
+# Wire protected router into app
+app.include_router(protected_router)
