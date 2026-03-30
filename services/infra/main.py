@@ -13,9 +13,11 @@ In cluster, uses the Kubernetes Python client.
 
 import os
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
+
+import httpx
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, APIRouter, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +32,11 @@ logger = get_logger(__name__)
 IN_CLUSTER = os.path.exists('/var/run/secrets/kubernetes.io/serviceaccount/token')
 NAMESPACE = os.getenv('NAMESPACE', 'postershop')
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+
+LOKI_URL = os.getenv("LOKI_URL", "http://loki-gateway.monitoring.svc.cluster.local")
+# Label that Fluent Bit uses for the service name in Loki.
+# Confirmed from deploy/monitoring/fluent-bit-values.yaml Label_Keys: service
+LOKI_SERVICE_LABEL = os.getenv("LOKI_SERVICE_LABEL", "service")
 
 # Kubernetes client (only import if in cluster)
 k8s_client = None
@@ -664,6 +671,57 @@ async def websocket_logs(websocket: WebSocket, pod_name: str, token: str = Query
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
+
+
+# ============== Loki Log Proxy ==============
+
+@protected_router.get("/logs/query")
+async def query_logs(
+    service: str = Query(..., description="Service name (e.g. orders, catalog)"),
+    correlation_id: Optional[str] = Query(None),
+    range: str = Query("1h", pattern="^(15m|1h|6h)$"),
+):
+    """
+    Proxy log query to Loki. Returns last 200 lines as a flat list.
+    Returns empty list gracefully when Loki is unavailable (local dev).
+    """
+    # Build LogQL query
+    logql = f'{{{LOKI_SERVICE_LABEL}="{service}"}}'
+    if correlation_id and correlation_id.strip():
+        logql += f' |= "{correlation_id.strip()}"'
+
+    # Calculate time range in nanoseconds
+    now = datetime.now(timezone.utc)
+    delta_map = {"15m": timedelta(minutes=15), "1h": timedelta(hours=1), "6h": timedelta(hours=6)}
+    start_dt = now - delta_map[range]
+    start_ns = int(start_dt.timestamp() * 1e9)
+    end_ns = int(now.timestamp() * 1e9)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{LOKI_URL}/loki/api/v1/query_range",
+                params={
+                    "query": logql,
+                    "start": start_ns,
+                    "end": end_ns,
+                    "limit": 200,
+                    "direction": "forward",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        # Loki unavailable (local dev, network error, timeout) — return empty gracefully
+        return {"lines": [], "loki_unavailable": True}
+
+    # Flatten Loki result streams to a list of log line strings
+    lines = []
+    for stream in data.get("data", {}).get("result", []):
+        for _ts, line in stream.get("values", []):
+            lines.append(line)
+
+    return {"lines": lines, "loki_unavailable": False}
 
 
 # Wire protected router into app
