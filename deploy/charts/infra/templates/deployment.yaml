@@ -30,6 +30,11 @@ spec:
               value: "{{ .Values.env.ROOT_PATH }}"
             - name: CORS_ORIGINS
               value: "{{ .Values.env.CORS_ORIGINS }}"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: shop-secrets
+                  key: jwt-secret
           livenessProbe:
             httpGet:
               path: /healthz

@@ -125,6 +125,7 @@ services:
     environment:
       NAMESPACE: postershop
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
     ports:
       - "8008:8000"
 
