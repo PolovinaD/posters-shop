@@ -93,29 +93,20 @@ for service in "${SERVICES[@]}"; do
         echo ""
         echo "   🔄 Deploying: $service"
 
-        # Build CORS_ORIGINS override argument
-        # infra uses dict-format env (env.CORS_ORIGINS); others use list-format (env[N].value)
-        CORS_SET_ARG=""
-        if [ -n "${CORS_ORIGINS:-}" ]; then
-            case "$service" in
-                infra)       CORS_SET_ARG="--set env.CORS_ORIGINS=${CORS_ORIGINS}" ;;
-                users)       CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
-                catalog)     CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
-                orders)      CORS_SET_ARG="--set env[9].value=${CORS_ORIGINS}" ;;
-                production)  CORS_SET_ARG="--set env[6].value=${CORS_ORIGINS}" ;;
-                logistics)   CORS_SET_ARG="--set env[6].value=${CORS_ORIGINS}" ;;
-                inventory)   CORS_SET_ARG="--set env[4].value=${CORS_ORIGINS}" ;;
-                payments)    CORS_SET_ARG="--set env[5].value=${CORS_ORIGINS}" ;;
-            esac
-        fi
-
         helm upgrade --install "$service" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --set image.repository="${ECR_REGISTRY}/${service}" \
-            ${CORS_SET_ARG} \
             --wait \
             --timeout 5m \
             $DRY_RUN
+
+        # Patch CORS_ORIGINS via kubectl after deploy — avoids Helm list --set replacing
+        # the entire env array and stripping name: fields from all other env vars.
+        # infra uses dict-format env in its chart (safe to --set); all others patched here.
+        if [ -n "${CORS_ORIGINS:-}" ] && [ "$service" != "infra" ] && [ "$DRY_RUN" != "--dry-run" ]; then
+            kubectl set env deployment/"$service" -n "$NAMESPACE" CORS_ORIGINS="${CORS_ORIGINS}" 2>/dev/null || true
+        fi
+
         echo "   ✅ $service deployed"
     else
         echo "   ⚠️  Chart not found: $CHART_PATH"
