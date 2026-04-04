@@ -207,7 +207,7 @@ kind: ClusterConfig
 metadata:
   name: $CLUSTER_NAME
   region: $AWS_REGION
-  version: "1.29"
+  version: "1.32"
   tags:
     project: postershop
     environment: dev
