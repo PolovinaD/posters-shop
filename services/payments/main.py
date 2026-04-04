@@ -1,25 +1,22 @@
 """
-Payment Service Mock - Simulates Stripe's Checkout Flow
+Payment Service — Real Stripe Hosted Checkout
 
-This service mimics Stripe's behavior:
-1. Create checkout sessions (like Stripe's /v1/checkout/sessions)
-2. Simulate payment completion
-3. Send signed webhooks to the orders service
+Integrates with the Stripe Hosted Checkout:
+1. Creates checkout sessions via stripe.checkout.Session.create()
+2. Returns the Stripe-hosted checkout URL to the caller
+3. On payment, Stripe sends checkout.session.completed webhook to orders service directly
 
-In production, you'd use the actual Stripe SDK and receive real webhooks.
+In production:
+- STRIPE_SECRET_KEY must be set (live or test key from Stripe Dashboard)
+- Register webhook URL in Stripe Dashboard: https://<ALB>/api/orders/webhooks/stripe
+- STRIPE_WEBHOOK_SECRET must match the Stripe Dashboard webhook signing secret
 """
-import asyncio
-import hashlib
-import hmac
-import json
 import os
-import secrets
-import time
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Optional
 
-import httpx
+import stripe
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -30,9 +27,11 @@ from metrics import track_metrics, metrics_endpoint
 SERVICE_NAME = "payments"
 logger = get_logger(__name__)
 
-# Webhook secret - in production this would be from Stripe dashboard
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_test_secret_key_12345")
-ORDERS_WEBHOOK_URL = os.getenv("ORDERS_WEBHOOK_URL", "http://orders:8000/webhooks/stripe")
+
+# Set Stripe API key immediately — AuthenticationError on startup if key is missing/invalid
+stripe.api_key = STRIPE_SECRET_KEY
 
 
 class SessionStatus(str, Enum):
@@ -69,19 +68,8 @@ class CheckoutSession(BaseModel):
     payment_intent_id: Optional[str] = None
 
 
-class CompleteSessionRequest(BaseModel):
-    """Simulate card payment details (for testing)"""
-    card_number: str = "4242424242424242"
-    exp_month: int = 12
-    exp_year: int = 2025
-    cvc: str = "123"
-
-
-# In-memory storage (in production, this would be Stripe's infrastructure)
-sessions: dict[str, CheckoutSession] = {}
-
 ROOT_PATH = os.getenv("ROOT_PATH", "")
-app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Mock)", root_path=ROOT_PATH)
+app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Hosted Checkout)", root_path=ROOT_PATH)
 app.add_middleware(LoggingMiddleware)
 
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
@@ -102,76 +90,6 @@ def metrics():
     return metrics_endpoint()
 
 
-def generate_session_id() -> str:
-    """Generate Stripe-like session ID."""
-    return f"cs_test_{secrets.token_hex(16)}"
-
-
-def generate_payment_intent_id() -> str:
-    """Generate Stripe-like payment intent ID."""
-    return f"pi_test_{secrets.token_hex(16)}"
-
-
-def generate_webhook_signature(payload: str, secret: str, timestamp: int) -> str:
-    """
-    Generate Stripe webhook signature.
-    
-    Stripe uses this format: t=timestamp,v1=signature
-    The signature is HMAC-SHA256 of "timestamp.payload" with the webhook secret.
-    """
-    signed_payload = f"{timestamp}.{payload}"
-    signature = hmac.new(
-        secret.encode(),
-        signed_payload.encode(),
-        hashlib.sha256
-    ).hexdigest()
-    return f"t={timestamp},v1={signature}"
-
-
-async def send_webhook(event_type: str, data: dict):
-    """
-    Send a signed webhook to the orders service.
-    
-    This mimics exactly what Stripe does:
-    1. Create the event payload
-    2. Sign it with the webhook secret
-    3. POST to the configured endpoint
-    """
-    event = {
-        "id": f"evt_test_{secrets.token_hex(8)}",
-        "object": "event",
-        "api_version": "2023-10-16",
-        "created": int(time.time()),
-        "type": event_type,
-        "data": {
-            "object": data
-        }
-    }
-    
-    payload = json.dumps(event, separators=(',', ':'))
-    timestamp = int(time.time())
-    signature = generate_webhook_signature(payload, WEBHOOK_SECRET, timestamp)
-    
-    logger.info("Sending webhook", event_type=event_type, webhook_url=ORDERS_WEBHOOK_URL)
-    
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.post(
-                ORDERS_WEBHOOK_URL,
-                content=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Stripe-Signature": signature
-                }
-            )
-            if response.status_code == 200:
-                logger.info("Webhook delivered successfully", event_type=event_type)
-            else:
-                logger.warning("Webhook delivery failed", status_code=response.status_code, response=response.text)
-        except Exception as e:
-            logger.error("Webhook error", error=str(e), event_type=event_type)
-
-
 # ============== Health ==============
 
 @app.get("/healthz")
@@ -189,220 +107,126 @@ def readyz():
 @app.post("/v1/checkout/sessions", response_model=CheckoutSession)
 def create_checkout_session(payload: CreateSessionRequest):
     """
-    Create a checkout session (mimics Stripe's API).
-    
-    In production with real Stripe:
-    ```python
-    session = stripe.checkout.Session.create(
-        mode='payment',
-        line_items=[...],
-        success_url='...',
-        cancel_url='...',
-    )
-    ```
+    Create a real Stripe Hosted Checkout session.
+    The customer is redirected to Stripe's hosted page to enter card details.
+    On payment, Stripe sends checkout.session.completed webhook to orders service directly.
     """
-    session_id = generate_session_id()
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {"name": item.name},
+                        "unit_amount": item.unit_amount,  # already in cents
+                    },
+                    "quantity": item.quantity,
+                }
+                for item in payload.line_items
+            ],
+            success_url=payload.success_url,
+            cancel_url=payload.cancel_url,
+            metadata={"order_id": str(payload.order_id)},
+            customer_email=payload.customer_email,
+        )
+    except stripe.error.AuthenticationError as e:
+        logger.error("Stripe authentication failed — check STRIPE_SECRET_KEY", error=str(e))
+        raise HTTPException(status_code=503, detail="Payment service unavailable")
+    except stripe.error.StripeError as e:
+        logger.error("Stripe API error", error=str(e))
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)}")
+
     now = datetime.now(timezone.utc)
-    
-    # Calculate total
-    amount_total = sum(item.unit_amount * item.quantity for item in payload.line_items)
-    
-    session = CheckoutSession(
-        id=session_id,
+
+    # Map session.url → checkout_url to preserve API surface consumed by orders service
+    result = CheckoutSession(
+        id=session.id,
         order_id=payload.order_id,
         customer_email=payload.customer_email,
         status=SessionStatus.OPEN,
-        amount_total=amount_total,
+        amount_total=session.amount_total or sum(
+            item.unit_amount * item.quantity for item in payload.line_items
+        ),
         line_items=payload.line_items,
-        checkout_url=f"http://localhost:8007/checkout/{session_id}",
+        checkout_url=session.url,   # CRITICAL: Stripe uses .url not .checkout_url
         created_at=now,
-        expires_at=now + timedelta(hours=24)  # 24h expiry
+        expires_at=now + timedelta(hours=24),
     )
-    
-    sessions[session_id] = session
-    
-    logger.info("Created checkout session", session_id=session_id, order_id=payload.order_id, checkout_url=session.checkout_url)
-    
-    return session
+
+    logger.info("Created Stripe checkout session",
+                session_id=session.id,
+                order_id=payload.order_id,
+                checkout_url=session.url)
+    return result
+
+
+@app.get("/v1/checkout/sessions", response_model=list[CheckoutSession])
+def list_sessions():
+    """
+    List sessions endpoint — kept for API compatibility.
+    In production with real Stripe, session listing requires Stripe API calls.
+    Returns empty list as sessions are managed by Stripe.
+    """
+    return []
 
 
 @app.get("/v1/checkout/sessions/{session_id}", response_model=CheckoutSession)
 def get_session(session_id: str):
-    """Get checkout session by ID."""
-    if session_id not in sessions:
+    """
+    Get checkout session by ID — fetches from Stripe API.
+    """
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.error.InvalidRequestError:
         raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)}")
+
+    now = datetime.now(timezone.utc)
+    return CheckoutSession(
+        id=session.id,
+        order_id=int(session.metadata.get("order_id", 0)),
+        customer_email=session.customer_email or "",
+        status=SessionStatus(session.status) if session.status in SessionStatus._value2member_map_ else SessionStatus.OPEN,
+        amount_total=session.amount_total or 0,
+        line_items=[],
+        checkout_url=session.url or "",
+        created_at=now,
+        expires_at=now + timedelta(hours=24),
+    )
 
 
-@app.get("/v1/checkout/sessions", response_model=list[CheckoutSession])
-def list_sessions(
-    order_id: Optional[int] = None,
-    status: Optional[SessionStatus] = None
-):
-    """List checkout sessions with optional filters."""
-    result = list(sessions.values())
-    
-    if order_id:
-        result = [s for s in result if s.order_id == order_id]
-    if status:
-        result = [s for s in result if s.status == status]
-    
-    return result
-
-
-# ============== Payment Simulation ==============
+# ============== Dev/Test Convenience Endpoints ==============
 
 @app.post("/v1/checkout/sessions/{session_id}/complete")
-async def complete_session(session_id: str, payment: CompleteSessionRequest = None):
+async def complete_session(session_id: str):
     """
-    Simulate a successful payment.
-    
-    In production, this would be Stripe's internal process after the customer
-    submits their card details on Stripe's hosted checkout page.
-    
-    This endpoint:
-    1. Validates the session
-    2. Creates a payment intent
-    3. Marks session as complete
-    4. Sends webhook to the orders service
+    Dev/test only: simulate payment completion for local dev without real Stripe.
+    In production, Stripe sends checkout.session.completed webhook to orders service directly.
+    Register webhook URL in Stripe Dashboard: https://<ALB>/api/orders/webhooks/stripe
     """
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    
-    if session.status != SessionStatus.OPEN:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Session is already {session.status}"
-        )
-    
-    # Simulate card validation (always succeeds with test card)
-    if payment and payment.card_number.startswith("4000000000000002"):
-        # Decline card number for testing failures
-        raise HTTPException(status_code=402, detail="Card declined")
-    
-    # Create payment intent
-    session.payment_intent_id = generate_payment_intent_id()
-    session.status = SessionStatus.COMPLETE
-    
-    logger.info("Payment completed", session_id=session_id, amount_cents=session.amount_total, order_id=session.order_id)
-    
-    # Send webhook (async, like Stripe does)
-    # In production, Stripe sends this automatically
-    asyncio.create_task(
-        send_webhook(
-            "checkout.session.completed",
-            {
-                "id": session.id,
-                "object": "checkout.session",
-                "mode": "payment",
-                "payment_status": "paid",
-                "payment_intent": session.payment_intent_id,
-                "amount_total": session.amount_total,
-                "currency": session.currency,
-                "customer_email": session.customer_email,
-                "metadata": {
-                    "order_id": str(session.order_id)
-                }
-            }
-        )
-    )
-    
+    logger.warning("complete_session called — dev/test only endpoint",
+                   session_id=session_id)
     return {
-        "status": "success",
+        "status": "dev_only",
+        "message": "In production, Stripe sends webhooks directly to orders service. "
+                   "Register https://<ALB>/api/orders/webhooks/stripe in Stripe Dashboard.",
         "session_id": session_id,
-        "payment_intent_id": session.payment_intent_id,
-        "amount": session.amount_total,
-        "message": "Payment successful. Webhook sent to orders service."
     }
 
 
 @app.post("/v1/checkout/sessions/{session_id}/expire")
 async def expire_session(session_id: str):
     """
-    Simulate session expiration.
-    
-    Sends checkout.session.expired webhook.
+    Dev/test only: simulate session expiration.
+    In production, Stripe handles this automatically after 24 hours.
     """
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    
-    if session.status != SessionStatus.OPEN:
-        raise HTTPException(status_code=400, detail=f"Session is {session.status}")
-    
-    session.status = SessionStatus.EXPIRED
-    
-    # Send expiration webhook
-    asyncio.create_task(
-        send_webhook(
-            "checkout.session.expired",
-            {
-                "id": session.id,
-                "object": "checkout.session",
-                "payment_status": "unpaid",
-                "metadata": {
-                    "order_id": str(session.order_id)
-                }
-            }
-        )
-    )
-    
-    return {"status": "expired", "session_id": session_id}
-
-
-# ============== Mock Checkout Page ==============
-
-@app.get("/checkout/{session_id}")
-def checkout_page(session_id: str):
-    """
-    Mock checkout page HTML.
-    
-    In production, this is Stripe's hosted checkout page.
-    The customer never sees your backend - they interact directly with Stripe.
-    """
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    
-    if session.status != SessionStatus.OPEN:
-        return {
-            "status": session.status,
-            "message": f"This checkout session is {session.status}"
-        }
-    
+    logger.warning("expire_session called — dev/test only endpoint",
+                   session_id=session_id)
     return {
-        "checkout_session": session_id,
-        "order_id": session.order_id,
-        "customer_email": session.customer_email,
-        "amount": f"${session.amount_total / 100:.2f}",
-        "items": [
-            f"{item.quantity}x {item.name} (${item.unit_amount / 100:.2f})"
-            for item in session.line_items
-        ],
-        "instructions": "To complete payment, POST to /v1/checkout/sessions/{session_id}/complete",
-        "test_cards": {
-            "success": "4242424242424242",
-            "decline": "4000000000000002"
-        }
+        "status": "dev_only",
+        "message": "In production, Stripe expires sessions automatically. "
+                   "checkout.session.expired webhook is sent to orders service.",
+        "session_id": session_id,
     }
-
-
-# ============== Webhook Secret (for testing) ==============
-
-@app.get("/webhook-secret")
-def get_webhook_secret():
-    """
-    Get the webhook secret for testing.
-    
-    In production, you'd get this from Stripe dashboard.
-    NEVER expose this in production!
-    """
-    return {
-        "webhook_secret": WEBHOOK_SECRET,
-        "warning": "This is for testing only. Never expose in production!"
-    }
-
