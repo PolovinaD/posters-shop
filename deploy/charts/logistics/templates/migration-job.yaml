@@ -36,6 +36,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.migrations.secretName | default "postershop-db" }}
                   key: {{ .Values.migrations.secretKey }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: postershop-jwt
+                  key: JWT_SECRET
           resources:
             requests:
               cpu: 50m
