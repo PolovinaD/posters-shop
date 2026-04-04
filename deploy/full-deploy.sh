@@ -63,6 +63,7 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 # Configuration (can be overridden by .env or environment)
+export AWS_PAGER=""
 AWS_REGION=${AWS_REGION:-eu-north-1}
 AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null)}
 CLUSTER_NAME=${CLUSTER_NAME:-postershop}
@@ -537,6 +538,9 @@ GRANT ALL PRIVILEGES ON SCHEMA inventory_schema TO inventory_svc;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA inventory_schema TO inventory_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory_schema GRANT ALL ON TABLES TO inventory_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory_schema GRANT ALL ON SEQUENCES TO inventory_svc;
+
+-- Grant CREATE on database so Alembic can run CREATE SCHEMA IF NOT EXISTS in env.py
+GRANT CREATE ON DATABASE postershop TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc;
 
 -- Done
 SELECT 'Database initialization complete' as status;
