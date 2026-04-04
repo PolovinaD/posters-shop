@@ -30,10 +30,11 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
+          storageClassName: gp2
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
-              storage: 20Gi
+              storage: 10Gi
     
     # ServiceMonitor selector - watch all namespaces
     serviceMonitorSelectorNilUsesHelmValues: false
