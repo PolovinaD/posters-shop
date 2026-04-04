@@ -73,6 +73,13 @@ gateway:
       cpu: 50m
       memory: 64Mi
 
+# Disable memory-hungry caches — default memcached chunks/results cache requests ~9.6Gi
+# which exceeds t3.large node capacity. Not needed for thesis-scale log volume.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
 # Monitoring
 monitoring:
   selfMonitoring:
