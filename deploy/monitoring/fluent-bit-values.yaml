@@ -94,7 +94,7 @@ config:
         Host loki-gateway.monitoring.svc.cluster.local
         Port 80
         Labels job=postershop, namespace=$namespace, pod=$pod, container=$container
-        Label_Keys level, service, correlation_id
+        Label_Keys $level, $service, $correlation_id
         Remove_Keys stream, logtag
         Auto_Kubernetes_Labels Off
         Line_Format json
