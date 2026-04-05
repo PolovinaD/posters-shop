@@ -30,6 +30,11 @@ env:
         key: DATABASE_URL_CATALOG
   - name: INVENTORY_SERVICE_URL
     value: "http://inventory"
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: postershop-jwt
+        key: JWT_SECRET
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
 
