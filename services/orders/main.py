@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
+from auth import get_current_user_claims
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 from pydantic import BaseModel
@@ -92,10 +93,10 @@ def metrics():
 # ============== Order CRUD ==============
 
 @app.post("/orders", response_model=OrderOut, status_code=201)
-async def create_order(payload: OrderCreate, db: Session = Depends(get_db)):
+async def create_order(payload: OrderCreate, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
     """
     Create a new order and reserve stock from inventory.
-    
+
     Flow:
     1. Create order in CREATED status
     2. Reserve stock for each item in inventory service
@@ -104,10 +105,13 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db)):
     """
     # Calculate total
     total = sum(item.unit_price * item.quantity for item in payload.items)
-    
+
+    # Set customer_email from JWT sub — never trust client-supplied email
+    customer_email = claims["sub"]
+
     # Create order
     order = Order(
-        customer_email=payload.customer_email,
+        customer_email=customer_email,
         status=OrderStatus.CREATED,
         total_amount=total
     )
@@ -202,15 +206,22 @@ def list_orders(
     customer_email: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims)
 ):
     """List orders with optional filters."""
     query = select(Order)
-    
+
     if status:
         query = query.where(Order.status == status)
-    if customer_email:
-        query = query.where(Order.customer_email == customer_email)
+
+    if claims.get("role") == "owner":
+        # Owners see all orders; apply optional customer_email filter if provided
+        if customer_email:
+            query = query.where(Order.customer_email == customer_email)
+    else:
+        # Customers only see their own orders — ignore any caller-supplied filter
+        query = query.where(Order.customer_email == claims["sub"])
     
     query = query.order_by(Order.created_at.desc()).offset(skip).limit(limit)
     orders = db.execute(query).scalars().all()
@@ -360,16 +371,19 @@ def deliver_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/orders/{order_id}/cancel", response_model=CancelOrderResponse)
-async def cancel_order(order_id: int, db: Session = Depends(get_db)):
+async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
     """
     Cancel an order and release reserved stock.
-    
+
     Can only cancel orders that haven't started production.
     """
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    if claims.get("role") != "owner" and order.customer_email != claims.get("sub"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if not OrderStatus.can_cancel(order.status):
         raise HTTPException(
             status_code=400,
@@ -415,10 +429,10 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db)):
 # ============== Payment / Checkout ==============
 
 @app.post("/orders/{order_id}/checkout", response_model=CheckoutSessionResponse)
-async def create_checkout(order_id: int, db: Session = Depends(get_db)):
+async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
     """
     Create a Stripe checkout session for an order.
-    
+
     This is what happens when the customer clicks "Pay Now":
     1. Create a checkout session with Stripe
     2. Return the checkout URL to redirect the customer
@@ -429,7 +443,10 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db)):
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    if claims.get("role") != "owner" and order.customer_email != claims.get("sub"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if order.status != OrderStatus.RESERVED:
         raise HTTPException(
             status_code=400,
