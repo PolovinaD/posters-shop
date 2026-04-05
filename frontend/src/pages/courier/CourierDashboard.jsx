@@ -12,16 +12,16 @@ const NEXT_STATUS = {
 
 export default function CourierDashboard() {
   const navigate = useNavigate();
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, logout } = useAuth();
   const queryClient = useQueryClient();
   const [pendingIds, setPendingIds] = useState(new Set());
 
-  // Route guard: must be authenticated courier
+  // Route guard: must be authenticated courier — wait for auth hydration first
   useEffect(() => {
-    if (!isAuthenticated || user?.role !== 'courier') {
+    if (!authLoading && (!isAuthenticated || user?.role !== 'courier')) {
       navigate('/courier/login', { replace: true });
     }
-  }, [isAuthenticated, user, navigate]);
+  }, [authLoading, isAuthenticated, user, navigate]);
 
   const { data: allShipments = [], isLoading, error } = useQuery({
     queryKey: ['courier-shipments'],
@@ -60,7 +60,7 @@ export default function CourierDashboard() {
     }
   };
 
-  if (!isAuthenticated || user?.role !== 'courier') {
+  if (authLoading || !isAuthenticated || user?.role !== 'courier') {
     return null;
   }
 

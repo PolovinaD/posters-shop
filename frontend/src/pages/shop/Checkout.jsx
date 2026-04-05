@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, CreditCard, Lock, Loader2, CheckCircle } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
 import { useAuth } from '../../context/AuthContext';
-import { ordersApi, paymentsApi } from '../../api';
+import { ordersApi } from '../../api';
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -56,15 +56,10 @@ export default function Checkout() {
       const order = await ordersApi.createOrder(orderPayload);
       setOrderId(order.id);
       
-      // 2. Create checkout session
+      // 2. Create checkout session and redirect to Stripe
       const checkout = await ordersApi.createCheckout(order.id);
-      
-      // 3. Simulate payment completion (in real app, redirect to Stripe)
-      await paymentsApi.completeSession(checkout.checkout_session_id);
-      
-      // 4. Success!
-      setStep('complete');
       clearCart();
+      window.location.href = checkout.checkout_url;
       
     } catch (err) {
       setError(err.message || 'Something went wrong');
