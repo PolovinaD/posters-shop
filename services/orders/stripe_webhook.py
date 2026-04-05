@@ -9,6 +9,7 @@ Key concepts:
 2. IDEMPOTENCY - Events may be sent multiple times; handlers check order.status == PAID
 3. QUICK RESPONSE - Respond 200 quickly, do processing in-place
 """
+import json
 import os
 from typing import Optional
 
@@ -198,6 +199,7 @@ async def process_webhook(
         logger.warning("Stripe webhook payload invalid", error=str(e))
         raise HTTPException(status_code=400, detail="Invalid payload")
 
+    event_dict = json.loads(payload)
     event_type = event["type"]
     event_id = event["id"]
 
@@ -211,7 +213,7 @@ async def process_webhook(
         return {"status": "ignored", "event_type": event_type}
 
     # Process event
-    result = await handler(event["data"], db)
+    result = await handler(event_dict["data"], db)
     result["event_id"] = event_id
 
     return result
