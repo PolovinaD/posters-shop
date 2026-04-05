@@ -105,62 +105,62 @@ export const catalogApi = {
     return fetchJSON(`${API_BASE}/catalog/products${query ? `?${query}` : ''}`);
   },
   getProduct: (sku) => fetchJSON(`${API_BASE}/catalog/products/${sku}`),
-  createProduct: (data) => fetchJSON(`${API_BASE}/catalog/products`, {
+  createProduct: (data) => authFetchJSON(`${API_BASE}/catalog/products`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  updateProduct: (sku, data) => fetchJSON(`${API_BASE}/catalog/products/${sku}`, {
+  updateProduct: (sku, data) => authFetchJSON(`${API_BASE}/catalog/products/${sku}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
-  deleteProduct: (sku) => fetch(`${API_BASE}/catalog/products/${sku}`, {
+  deleteProduct: (sku) => authFetchJSON(`${API_BASE}/catalog/products/${sku}`, {
     method: 'DELETE',
-  }).then(r => { if (!r.ok) throw new Error('Failed to delete'); return r; }),
+  }),
   getCategories: () => fetchJSON(`${API_BASE}/catalog/categories`),
   getSizes: () => fetchJSON(`${API_BASE}/catalog/sizes`),
   getFrames: () => fetchJSON(`${API_BASE}/catalog/frames`),
-  seed: () => fetchJSON(`${API_BASE}/catalog/seed`, { method: 'POST' }),
+  seed: () => authFetchJSON(`${API_BASE}/catalog/seed`, { method: 'POST' }),
 };
 
 // ============== Inventory API ==============
 export const inventoryApi = {
-  getStock: () => fetchJSON(`${API_BASE}/inventory/stock`),
-  getStockBySku: (sku) => fetchJSON(`${API_BASE}/inventory/stock/${sku}`),
-  createStock: (data) => fetchJSON(`${API_BASE}/inventory/stock`, {
+  getStock: () => authFetchJSON(`${API_BASE}/inventory/stock`),
+  getStockBySku: (sku) => authFetchJSON(`${API_BASE}/inventory/stock/${sku}`),
+  createStock: (data) => authFetchJSON(`${API_BASE}/inventory/stock`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  updateStock: (sku, data) => fetchJSON(`${API_BASE}/inventory/stock/${sku}`, {
+  updateStock: (sku, data) => authFetchJSON(`${API_BASE}/inventory/stock/${sku}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
-  restock: (sku, quantity) => fetchJSON(`${API_BASE}/inventory/stock/${sku}/restock`, {
+  restock: (sku, quantity) => authFetchJSON(`${API_BASE}/inventory/stock/${sku}/restock`, {
     method: 'POST',
     body: JSON.stringify({ quantity }),
   }),
   getReservations: () => fetchJSON(`${API_BASE}/inventory/reservations`),
-  seed: () => fetchJSON(`${API_BASE}/inventory/seed`, { method: 'POST' }),
+  seed: () => authFetchJSON(`${API_BASE}/inventory/seed`, { method: 'POST' }),
 };
 
 // ============== Orders API ==============
 export const ordersApi = {
   getOrders: (params = {}) => {
     const query = new URLSearchParams(params).toString();
-    return fetchJSON(`${API_BASE}/orders/orders${query ? `?${query}` : ''}`);
+    return authFetchJSON(`${API_BASE}/orders/orders${query ? `?${query}` : ''}`);
   },
-  getOrder: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}`),
-  createOrder: (data) => fetchJSON(`${API_BASE}/orders/orders`, {
+  getOrder: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}`),
+  createOrder: (data) => authFetchJSON(`${API_BASE}/orders/orders`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  payOrder: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/pay`, { method: 'POST' }),
-  cancelOrder: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/cancel`, { method: 'POST' }),
-  startProduction: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/produce`, { method: 'POST' }),
-  shipOrder: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/ship`, { method: 'POST' }),
-  deliverOrder: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/deliver`, { method: 'POST' }),
-  getOrderStats: () => fetchJSON(`${API_BASE}/orders/orders/stats/by-status`),
-  getOutboxStats: () => fetchJSON(`${API_BASE}/orders/outbox/stats`),
-  createCheckout: (id) => fetchJSON(`${API_BASE}/orders/orders/${id}/checkout`, { method: 'POST' }),
+  payOrder: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/pay`, { method: 'POST' }),
+  cancelOrder: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/cancel`, { method: 'POST' }),
+  startProduction: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/produce`, { method: 'POST' }),
+  shipOrder: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/ship`, { method: 'POST' }),
+  deliverOrder: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/deliver`, { method: 'POST' }),
+  getOrderStats: () => authFetchJSON(`${API_BASE}/orders/orders/stats/by-status`),
+  getOutboxStats: () => authFetchJSON(`${API_BASE}/orders/outbox/stats`),
+  createCheckout: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/checkout`, { method: 'POST' }),
 };
 
 // ============== Production API ==============
