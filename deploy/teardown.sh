@@ -231,6 +231,67 @@ if [ "$CLUSTER_EXISTS" = true ]; then
         echo "  Would delete namespace: external-secrets"
     fi
 fi
+
+# ============================================================
+# Step 1.5: Wait for ALB cleanup (AWS Load Balancer Controller)
+# ============================================================
+if [ "$CLUSTER_EXISTS" = true ]; then
+    log_info "Step 1.5: Waiting for Load Balancer Controller to clean up ALBs..."
+
+    if [ "$DRY_RUN" = false ]; then
+        # Find ALBs tagged by LBC for this cluster
+        find_cluster_albs() {
+            AWS_PROFILE=$AWS_PROFILE aws elbv2 describe-load-balancers \
+                --region "$AWS_REGION" \
+                --query 'LoadBalancers[*].LoadBalancerArn' \
+                --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$' | \
+            while read -r arn; do
+                TAGS=$(AWS_PROFILE=$AWS_PROFILE aws elbv2 describe-tags \
+                    --resource-arns "$arn" \
+                    --region "$AWS_REGION" \
+                    --output json 2>/dev/null)
+                if echo "$TAGS" | jq -e --arg cluster "$CLUSTER_NAME" \
+                    '.TagDescriptions[].Tags[] | select(.Key == "elbv2.k8s.aws/cluster" and .Value == $cluster)' \
+                    > /dev/null 2>&1; then
+                    echo "$arn"
+                fi
+            done
+        }
+
+        WAIT_SECONDS=0
+        MAX_WAIT=90
+        POLL_INTERVAL=10
+
+        while [ $WAIT_SECONDS -lt $MAX_WAIT ]; do
+            ALBS=$(find_cluster_albs)
+            if [ -z "$ALBS" ]; then
+                log_success "Step 1.5: No LBC-managed ALBs found — clean"
+                break
+            fi
+            ALB_COUNT=$(echo "$ALBS" | grep -c .)
+            log_info "Step 1.5: Found $ALB_COUNT ALB(s) — waiting for LBC to self-delete (${WAIT_SECONDS}s / ${MAX_WAIT}s)..."
+            sleep $POLL_INTERVAL
+            WAIT_SECONDS=$((WAIT_SECONDS + POLL_INTERVAL))
+        done
+
+        # Force-delete any remaining ALBs
+        REMAINING=$(find_cluster_albs)
+        if [ -n "$REMAINING" ]; then
+            log_warn "Step 1.5: ALBs still present after ${MAX_WAIT}s — force-deleting..."
+            echo "$REMAINING" | while read -r arn; do
+                [ -z "$arn" ] && continue
+                log_info "  Deleting ALB: $arn"
+                AWS_PROFILE=$AWS_PROFILE aws elbv2 delete-load-balancer \
+                    --load-balancer-arn "$arn" \
+                    --region "$AWS_REGION" || log_warn "  Failed to delete $arn (may already be gone)"
+            done
+            log_success "Step 1.5: Force-delete complete"
+        fi
+    else
+        echo "  Would wait up to 90s for LBC to self-delete ALBs tagged elbv2.k8s.aws/cluster=$CLUSTER_NAME"
+        echo "  Would force-delete any remaining ALBs via aws elbv2 delete-load-balancer"
+    fi
+fi
 echo ""
 
 # ============================================================
