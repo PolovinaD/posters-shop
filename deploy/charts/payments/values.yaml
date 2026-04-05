@@ -36,7 +36,7 @@ env:
   - name: ORDERS_WEBHOOK_URL
     value: "http://orders/webhooks/stripe"
   - name: FRONTEND_URL
-    value: ""  # Set via --set env[X].value=$ALB_URL or override in deploy
+    value: "http://k8s-postersh-frontend-485473415f-1919299998.eu-north-1.elb.amazonaws.com"
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
 
