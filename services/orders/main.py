@@ -36,6 +36,7 @@ from payment_client import PaymentServiceError
 from circuit_breaker import CircuitOpenError
 from stripe_webhook import process_webhook, WebhookError
 from logger import get_logger, LoggingMiddleware
+from auth import get_current_user_claims
 
 logger = get_logger(__name__)
 
@@ -266,11 +267,18 @@ def list_orders(
 
 
 @app.get("/orders/{order_id}", response_model=OrderOut)
-def get_order(order_id: int, db: Session = Depends(get_db)):
-    """Get order by ID with all items."""
+def get_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    """Get order by ID with all items. Requires auth; customer can only view their own orders."""
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    # Owner role can view any order; customers can only view their own
+    if claims.get("role") != "owner" and order.customer_email != claims.get("sub"):
+        raise HTTPException(status_code=403, detail="Access denied")
     return order
 
 
