@@ -3,17 +3,16 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-SECRET_KEY = os.getenv("JWT_SECRET")
-if not SECRET_KEY:
-    raise RuntimeError("JWT_SECRET environment variable is required")
-
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login", auto_error=False)
 
 
 def decode_token(token: str):
+    secret = os.getenv("JWT_SECRET")
+    if not secret:
+        raise RuntimeError("JWT_SECRET environment variable is required")
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(token, secret, algorithms=[ALGORITHM])
     except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
