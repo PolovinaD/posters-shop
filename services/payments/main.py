@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_test_secret_key_12345")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Set Stripe API key immediately — AuthenticationError on startup if key is missing/invalid
 stripe.api_key = STRIPE_SECRET_KEY
@@ -50,8 +51,8 @@ class CreateSessionRequest(BaseModel):
     order_id: int
     customer_email: str
     line_items: list[LineItem]
-    success_url: str = "http://localhost:3000/success"
-    cancel_url: str = "http://localhost:3000/cancel"
+    success_url: str = f"{FRONTEND_URL}/shop/orders"
+    cancel_url: str = f"{FRONTEND_URL}/shop"
 
 
 class CheckoutSession(BaseModel):

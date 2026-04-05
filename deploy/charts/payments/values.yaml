@@ -35,6 +35,8 @@ env:
         key: WEBHOOK_SECRET
   - name: ORDERS_WEBHOOK_URL
     value: "http://orders/webhooks/stripe"
+  - name: FRONTEND_URL
+    value: ""  # Set via --set env[X].value=$ALB_URL or override in deploy
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
 
