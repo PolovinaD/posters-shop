@@ -3,7 +3,7 @@ uvicorn
 sqlalchemy>=2.0
 psycopg2-binary
 prometheus-client
-python-jose[cryptography]
+PyJWT==2.10.1
 pydantic
 boto3
 httpx

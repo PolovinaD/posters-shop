@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from logger import get_logger, LoggingMiddleware
 from database import Base, engine, get_db
 from metrics import metrics_endpoint
+from auth import require_owner
 
 logger = get_logger(__name__)
 
@@ -206,7 +207,7 @@ async def get_product(sku: str, include_stock: bool = True, db: Session = Depend
 
 
 @app.post("/products", response_model=ProductOut, status_code=201)
-def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
+def create_product(payload: ProductCreate, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Create a new product."""
     existing = db.execute(
         select(Product).where(Product.sku == payload.sku)
@@ -224,7 +225,7 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
 
 
 @app.patch("/products/{sku}", response_model=ProductOut)
-def update_product(sku: str, payload: ProductUpdate, db: Session = Depends(get_db)):
+def update_product(sku: str, payload: ProductUpdate, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Update a product."""
     product = db.execute(
         select(Product).where(Product.sku == sku)
@@ -244,7 +245,7 @@ def update_product(sku: str, payload: ProductUpdate, db: Session = Depends(get_d
 
 
 @app.delete("/products/{sku}", status_code=204)
-def delete_product(sku: str, db: Session = Depends(get_db)):
+def delete_product(sku: str, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Delete a product (or deactivate)."""
     product = db.execute(
         select(Product).where(Product.sku == sku)
@@ -289,7 +290,7 @@ def list_frames(db: Session = Depends(get_db)):
 # ============== Seed Data ==============
 
 @app.post("/seed")
-def seed_catalog(db: Session = Depends(get_db)):
+def seed_catalog(db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Seed catalog with sample products."""
     # Check if data already exists
     existing = db.execute(select(Product)).first()
