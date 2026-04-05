@@ -26,6 +26,9 @@ logger = get_logger("webhook")
 # Webhook secret — must match the Stripe Dashboard webhook signing secret
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_test_secret_key_12345")
 
+# stripe.Webhook.construct_event() requires an API key to be set even for signature-only verification
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+
 # Kept for documentation; stripe SDK handles timestamp tolerance internally (default: 300s)
 TIMESTAMP_TOLERANCE = 300
 
