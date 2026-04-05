@@ -107,6 +107,25 @@ for service in "${SERVICES[@]}"; do
             kubectl set env deployment/"$service" -n "$NAMESPACE" CORS_ORIGINS="${CORS_ORIGINS}" 2>/dev/null || true
         fi
 
+        # After frontend deploys, resolve ALB hostname and patch payments FRONTEND_URL
+        if [ "$service" = "frontend" ] && [ "$DRY_RUN" != "--dry-run" ]; then
+            echo "   ⏳ Waiting for ALB hostname..."
+            for i in $(seq 1 24); do
+                ALB_HOST=$(kubectl get ingress frontend -n "$NAMESPACE" \
+                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                if [ -n "$ALB_HOST" ]; then break; fi
+                sleep 5
+            done
+            if [ -n "$ALB_HOST" ]; then
+                echo "   🌐 ALB: http://$ALB_HOST"
+                kubectl set env deployment/payments -n "$NAMESPACE" \
+                    FRONTEND_URL="http://$ALB_HOST" 2>/dev/null || true
+                echo "   ✅ payments FRONTEND_URL patched"
+            else
+                echo "   ⚠️  ALB hostname not ready — patch payments FRONTEND_URL manually"
+            fi
+        fi
+
         echo "   ✅ $service deployed"
     else
         echo "   ⚠️  Chart not found: $CHART_PATH"
