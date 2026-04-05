@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { 
   Package, 
@@ -13,6 +13,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { ordersApi, productionApi, logisticsApi } from '../../api';
+import { useAuth } from '../../context/AuthContext';
 
 const STATUS_STEPS = [
   { status: 'reserved', label: 'Order Placed', icon: Clock, description: 'Waiting for payment' },
@@ -139,21 +140,31 @@ function OrderLookup() {
 
 export default function OrderTracking() {
   const { orderId } = useParams();
-  
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated && orderId) {
+      navigate('/shop/login', { replace: true });
+    }
+  }, [authLoading, isAuthenticated, orderId, navigate]);
+
   const { data: order, isLoading, error } = useQuery({
     queryKey: ['order', orderId],
     queryFn: () => ordersApi.getOrder(orderId),
-    enabled: !!orderId,
+    enabled: !!orderId && !authLoading && isAuthenticated,
     refetchInterval: 5000, // Poll for updates
   });
-  
+
   const { data: job } = useQuery({
     queryKey: ['job', orderId],
     queryFn: () => productionApi.getJobByOrder(orderId).catch(() => null),
-    enabled: !!orderId && ['paid', 'producing', 'shipped', 'delivered'].includes(order?.status),
+    enabled: !!orderId && !authLoading && isAuthenticated && ['paid', 'producing', 'shipped', 'delivered'].includes(order?.status),
     refetchInterval: 5000,
   });
-  
+
+  if (authLoading) return null;
+
   // If no order ID, show lookup form
   if (!orderId) {
     return (
