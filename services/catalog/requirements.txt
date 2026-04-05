@@ -7,3 +7,4 @@ pydantic==2.12.3
 boto3==1.38.0
 httpx==0.28.1
 alembic==1.15.2
+PyJWT==2.10.1

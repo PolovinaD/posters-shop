@@ -25,6 +25,7 @@ from metrics import (
     STOCK_LEVEL, ACTIVE_RESERVATIONS, RESERVATIONS_EXPIRED
 )
 from logger import get_logger, LoggingMiddleware
+from auth import require_owner
 
 logger = get_logger(__name__)
 
@@ -161,7 +162,8 @@ def metrics():
 def list_stock(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_owner)
 ):
     """List all stock items."""
     stocks = db.execute(
@@ -171,7 +173,7 @@ def list_stock(
 
 
 @app.get("/stock/{sku}", response_model=StockOut)
-def get_stock(sku: str, db: Session = Depends(get_db)):
+def get_stock(sku: str, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Get stock for a specific SKU."""
     stock = db.execute(
         select(Stock).where(Stock.sku == sku)
@@ -183,7 +185,7 @@ def get_stock(sku: str, db: Session = Depends(get_db)):
 
 
 @app.post("/stock", response_model=StockOut, status_code=201)
-def create_stock(payload: StockCreate, db: Session = Depends(get_db)):
+def create_stock(payload: StockCreate, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Create a new stock item."""
     existing = db.execute(
         select(Stock).where(Stock.sku == payload.sku)
@@ -207,7 +209,7 @@ def create_stock(payload: StockCreate, db: Session = Depends(get_db)):
 
 
 @app.patch("/stock/{sku}", response_model=StockOut)
-def update_stock(sku: str, payload: StockUpdate, db: Session = Depends(get_db)):
+def update_stock(sku: str, payload: StockUpdate, db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Update stock item (name or available quantity)."""
     stock = db.execute(
         select(Stock).where(Stock.sku == sku)
@@ -229,7 +231,7 @@ def update_stock(sku: str, payload: StockUpdate, db: Session = Depends(get_db)):
 
 
 @app.post("/stock/{sku}/restock", response_model=StockOut)
-def restock(sku: str, quantity: int = Query(..., gt=0), db: Session = Depends(get_db)):
+def restock(sku: str, quantity: int = Query(..., gt=0), db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Add quantity to existing stock."""
     stock = db.execute(
         select(Stock).where(Stock.sku == sku)
@@ -485,7 +487,7 @@ def list_reservations(
 # ============== Seed Data ==============
 
 @app.post("/seed")
-def seed_stock(db: Session = Depends(get_db)):
+def seed_stock(db: Session = Depends(get_db), _: dict = Depends(require_owner)):
     """Seed initial stock data for testing."""
     # Check if data already exists
     existing = db.execute(select(Stock)).first()
