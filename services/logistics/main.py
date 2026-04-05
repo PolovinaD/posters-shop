@@ -191,14 +191,11 @@ async def update_shipment_status(
     background_tasks: BackgroundTasks,
     status: str = Body(..., embed=True),
     db: Session = Depends(get_db),
-    claims: dict = Depends(optional_auth),  # Optional for now, can enable with require_courier_or_admin
+    claims: dict = Depends(require_courier_or_admin),
 ):
     """
-    Update shipment status.
+    Update shipment status. Requires courier or owner role.
     When status changes to 'delivered', automatically notifies the orders service.
-
-    In production, this endpoint would require courier authentication.
-    For external delivery integrations, this could be called via webhook.
     """
     s = db.get(Shipment, shipment_id)
     if not s:
@@ -234,9 +231,7 @@ async def update_shipment_status(
         background_tasks.add_task(orders_client.notify_order_delivered, s.order_id)
         logger.info(f"Queued order delivery notification for order {s.order_id}")
 
-    # Log who made the update if authenticated
-    if claims:
-        logger.info(f"Status update by user: {claims.get('sub')} (role: {claims.get('role')})")
+    logger.info(f"Status update by user: {claims.get('sub')} (role: {claims.get('role')})")
 
     return shipment_to_dict(s)
 

@@ -38,6 +38,10 @@ import Login from './pages/shop/Login';
 import Register from './pages/shop/Register';
 import MyOrders from './pages/shop/MyOrders';
 
+// Courier Pages
+import CourierLogin from './pages/courier/CourierLogin';
+import CourierDashboard from './pages/courier/CourierDashboard';
+
 // Context
 import { CartProvider } from './context/CartContext';
 import { AuthProvider } from './context/AuthContext';
@@ -205,6 +209,10 @@ export default function App() {
               <Route path="/outbox" element={<AdminLayout><Outbox /></AdminLayout>} />
               <Route path="/users" element={<AdminLayout><UsersPage /></AdminLayout>} />
               <Route path="/infrastructure" element={<AdminLayout><Infrastructure /></AdminLayout>} />
+
+              {/* Courier Routes (standalone, no layout wrapper) */}
+              <Route path="/courier/login" element={<CourierLogin />} />
+              <Route path="/courier/dashboard" element={<CourierDashboard />} />
             </Routes>
           </BrowserRouter>
         </CartProvider>
