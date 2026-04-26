@@ -1,11 +1,8 @@
-import { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Package, Clock, CheckCircle, Truck, Factory, XCircle, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { ordersApi } from '../../api';
-
-const CANCELLABLE_STATUSES = ['created', 'reserved', 'paid'];
 
 const STATUS_CONFIG = {
   created: { label: 'Order Placed', icon: Clock, color: 'text-stone-600 bg-stone-50' },
@@ -21,21 +18,6 @@ const STATUS_CONFIG = {
 function OrderCard({ order }) {
   const config = STATUS_CONFIG[order.status] || STATUS_CONFIG.reserved;
   const Icon = config.icon;
-  const queryClient = useQueryClient();
-  const [cancelError, setCancelError] = useState(null);
-
-  const { mutate: cancelOrder, isPending: cancelling } = useMutation({
-    mutationFn: () => ordersApi.cancelOrder(order.id),
-    onSuccess: () => {
-      setCancelError(null);
-      queryClient.invalidateQueries({ queryKey: ['myOrders'] });
-    },
-    onError: (err) => {
-      setCancelError(err.message || 'Cannot cancel order');
-    },
-  });
-
-  const canCancel = CANCELLABLE_STATUSES.includes(order.status);
 
   return (
     <Link
@@ -70,25 +52,6 @@ function OrderCard({ order }) {
         <span className="text-sm font-medium">View Details</span>
         <ChevronRight className="w-4 h-4 transform group-hover:translate-x-1 transition-transform" />
       </div>
-
-      {canCancel && (
-        <div className="mt-3" onClick={(e) => e.preventDefault()}>
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              cancelOrder();
-            }}
-            disabled={cancelling}
-            className="text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50 transition-colors"
-          >
-            {cancelling ? 'Cancelling...' : 'Cancel Order'}
-          </button>
-          {cancelError && (
-            <p className="text-xs text-red-500 mt-1">{cancelError}</p>
-          )}
-        </div>
-      )}
     </Link>
   );
 }
