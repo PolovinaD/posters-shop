@@ -17,6 +17,17 @@ services:
       timeout: 5s
       retries: 10
 
+  users-migrate:
+    build: ./services/users
+    container_name: users-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dusers
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   users:
     build: ./services/users
     container_name: users
@@ -25,10 +36,23 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
+      users-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     ports:
       - "8001:8000"
+
+  catalog-migrate:
+    build: ./services/catalog
+    container_name: catalog-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dcatalog
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   catalog:
     build: ./services/catalog
@@ -38,12 +62,25 @@ services:
       INVENTORY_SERVICE_URL: http://inventory:8000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
+      catalog-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       inventory:
         condition: service_started
     ports:
       - "8002:8000"
+
+  orders-migrate:
+    build: ./services/orders
+    container_name: orders-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dorders
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   orders:
     build: ./services/orders
@@ -58,6 +95,8 @@ services:
       CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
       CB_RECOVERY_TIMEOUT: ${CB_RECOVERY_TIMEOUT:-30}
     depends_on:
+      orders-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       inventory:
@@ -66,6 +105,17 @@ services:
         condition: service_started
     ports:
       - "8003:8000"
+
+  production-migrate:
+    build: ./services/production
+    container_name: production-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dproduction
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   production:
     build: ./services/production
@@ -76,12 +126,25 @@ services:
       LOGISTICS_SERVICE_URL: http://logistics:8000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
+      production-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       logistics:
         condition: service_started
     ports:
       - "8004:8000"
+
+  logistics-migrate:
+    build: ./services/logistics
+    container_name: logistics-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dlogistics
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   logistics:
     build: ./services/logistics
@@ -92,10 +155,23 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
+      logistics-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     ports:
       - "8005:8000"
+
+  inventory-migrate:
+    build: ./services/inventory
+    container_name: inventory-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   inventory:
     build: ./services/inventory
@@ -104,6 +180,8 @@ services:
       DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
+      inventory-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     ports:
