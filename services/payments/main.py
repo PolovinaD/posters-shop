@@ -51,8 +51,8 @@ class CreateSessionRequest(BaseModel):
     order_id: int
     customer_email: str
     line_items: list[LineItem]
-    success_url: str = f"{FRONTEND_URL}/shop/orders"
-    cancel_url: str = f"{FRONTEND_URL}/shop"
+    success_url: Optional[str] = None
+    cancel_url: Optional[str] = None
 
 
 class CheckoutSession(BaseModel):
@@ -112,6 +112,9 @@ def create_checkout_session(payload: CreateSessionRequest):
     The customer is redirected to Stripe's hosted page to enter card details.
     On payment, Stripe sends checkout.session.completed webhook to orders service directly.
     """
+    success_url = payload.success_url or f"{FRONTEND_URL}/shop/orders/{payload.order_id}"
+    cancel_url = payload.cancel_url or f"{FRONTEND_URL}/shop"
+
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
@@ -126,8 +129,8 @@ def create_checkout_session(payload: CreateSessionRequest):
                 }
                 for item in payload.line_items
             ],
-            success_url=payload.success_url,
-            cancel_url=payload.cancel_url,
+            success_url=success_url,
+            cancel_url=cancel_url,
             metadata={"order_id": str(payload.order_id)},
             customer_email=payload.customer_email,
         )
