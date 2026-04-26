@@ -253,8 +253,8 @@ def list_orders(
     if status:
         query = query.where(Order.status == status)
 
-    if claims.get("role") == "owner":
-        # Owners see all orders; apply optional customer_email filter if provided
+    if claims.get("role") in ("owner", "courier"):
+        # Owners and couriers see all orders; apply optional customer_email filter if provided
         if customer_email:
             query = query.where(Order.customer_email == customer_email)
     else:
@@ -667,7 +667,10 @@ def outbox_stats(db: Session = Depends(get_db)):
 # ============== Admin/Debug Endpoints ==============
 
 @app.get("/orders/stats/by-status")
-def orders_by_status(db: Session = Depends(get_db)):
+def orders_by_status(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
     """Get count of orders by status."""
     result = db.execute(
         select(Order.status, sql_func.count(Order.id))
