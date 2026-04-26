@@ -94,7 +94,7 @@ services:
       PRODUCTION_SERVICE_URL: http://production:8000
       PAYMENT_SERVICE_URL: http://payments:8000
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
-      STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: orders
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -202,7 +202,7 @@ services:
     container_name: payments
     environment:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
-      STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       ORDERS_WEBHOOK_URL: http://orders:8000/webhooks/stripe
       SERVICE_NAME: payments
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
