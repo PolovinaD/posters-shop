@@ -94,6 +94,7 @@ services:
       PRODUCTION_SERVICE_URL: http://production:8000
       PAYMENT_SERVICE_URL: http://payments:8000
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: orders
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
