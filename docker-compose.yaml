@@ -93,6 +93,7 @@ services:
       INVENTORY_SERVICE_URL: http://inventory:8000
       PRODUCTION_SERVICE_URL: http://production:8000
       PAYMENT_SERVICE_URL: http://payments:8000
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: orders
@@ -200,6 +201,7 @@ services:
     build: ./services/payments
     container_name: payments
     environment:
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: whsec_test_secret_key_12345
       ORDERS_WEBHOOK_URL: http://orders:8000/webhooks/stripe
       SERVICE_NAME: payments
