@@ -287,8 +287,8 @@ def get_order(
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    # Owner role can view any order; customers can only view their own
-    if claims.get("role") != "owner" and order.customer_email != claims.get("sub"):
+    # Owners and couriers can view any order; customers can only view their own
+    if claims.get("role") not in ("owner", "courier") and order.customer_email != claims.get("sub"):
         raise HTTPException(status_code=403, detail="Access denied")
     return order
 
