@@ -2,6 +2,8 @@
 
 Prioritized list of planned improvements and known issues.
 
+See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept out of scope for the thesis.
+
 ---
 
 ## Priority: High

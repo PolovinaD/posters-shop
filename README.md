@@ -151,21 +151,23 @@ shop-platform/
 ## Documentation
 
 ### Architecture & Design
+- [Project Planning Index](.planning/INDEX.md) - Roadmap, decisions, phase plans
 - [Architecture Diagrams](docs/ARCHITECTURE.md) - Mermaid diagrams for system overview
 - [Event Catalog](docs/EVENT_CATALOG.md) - All events, payloads, producers/consumers
 - [API Contracts](docs/API_CONTRACTS.md) - Inter-service API specifications
 - [Database Schema](docs/DATABASE_SCHEMA.md) - Tables, columns, relationships
 - [Thesis Snapshot](THESIS_SNAPSHOT.md) - Research context and decisions
+- [Known Limitations](docs/KNOWN_LIMITATIONS.md) - Deliberately deferred features
 
 ### Development
+- [Quick Reference](docs/QUICK_REFERENCE.md) - Ports, env vars, common commands
 - [Development Guide](docs/DEVELOPMENT.md) - Local setup, commands, debugging
 - [Environment Variables](docs/ENV_VARS.md) - All configuration options
 - [Database Migrations](docs/MIGRATIONS.md) - Alembic migration workflow
 - [Backlog](docs/BACKLOG.md) - Planned improvements and known issues
 
 ### Deployment
-- [Deployment Guide](deploy/README.md) - EKS deployment instructions
-- [AWS Setup](docs/AWS_SETUP.md) - AWS resource configuration
+- [Deployment Guide](deploy/README.md) - EKS deployment instructions (includes AWS setup, OIDC, ECR)
 - [Database Initialization](deploy/rds/README.md) - Schema setup
 - [Secrets Management](deploy/secrets/README.md) - AWS Secrets Manager
 - [Monitoring](deploy/monitoring/README.md) - Prometheus/Grafana

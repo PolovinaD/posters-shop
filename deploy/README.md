@@ -145,11 +145,129 @@ deploy/
 | psql | 14+ | Database initialization |
 | jq | 1.6+ | JSON processing |
 
+## AWS Setup Details
+
+### Account ID Auto-detection
+
+The Makefile and deploy scripts auto-detect your AWS account ID via the AWS CLI:
+
+```bash
+# These are auto-detected if AWS CLI is configured:
+make ecr-login    # Login to ECR
+make build-all    # Build all images
+make push-all     # Push to ECR
+```
+
+Override explicitly when needed (e.g., switching regions or running outside `aws configure`):
+
+```bash
+AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 make push-all
+```
+
+When running `deploy/deploy.sh` or `deploy/full-deploy.sh` directly the same overrides apply:
+
+```bash
+# Auto-detect from AWS CLI:
+./deploy/deploy.sh
+
+# Or set explicitly:
+AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 ./deploy/deploy.sh
+```
+
+### GitHub Actions OIDC
+
+Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
+
+| Variable | Example |
+|----------|---------|
+| `AWS_ACCOUNT_ID` | `123456789012` |
+| `AWS_REGION` | `eu-north-1` |
+| `EKS_CLUSTER` | `postershop` |
+
+Then provision the OIDC identity provider and the IAM role:
+
+1. **Create OIDC Identity Provider** in AWS IAM:
+   - Provider URL: `https://token.actions.githubusercontent.com`
+   - Audience: `sts.amazonaws.com`
+
+2. **Create IAM Role** for GitHub Actions. Edit `trust-policy.json` with your values:
+   - Replace `YOUR_AWS_ACCOUNT_ID` with your account ID
+   - Replace `YOUR_GITHUB_ORG/YOUR_REPO` with your GitHub repository
+
+   ```bash
+   aws iam create-role \
+     --role-name github-actions-role \
+     --assume-role-policy-document file://trust-policy.json
+   ```
+
+3. **Attach Required Policies**:
+
+   ```bash
+   # ECR access
+   aws iam attach-role-policy \
+     --role-name github-actions-role \
+     --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+
+   # EKS access
+   aws iam attach-role-policy \
+     --role-name github-actions-role \
+     --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+   ```
+
+### ECR Repository Creation
+
+Create one repository per service:
+
+```bash
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=eu-north-1
+
+for service in users catalog orders production logistics inventory payments infra frontend; do
+  aws ecr create-repository \
+    --repository-name $service \
+    --region $AWS_REGION \
+    --image-scanning-configuration scanOnPush=true
+done
+```
+
+### Helm Chart Image Overrides
+
+Helm charts use placeholder values by default. The deployment scripts automatically point them at the right ECR registry, but you can override manually:
+
+```bash
+# Automatic (recommended):
+./deploy/deploy.sh
+
+# Or manual override:
+helm upgrade --install users ./deploy/charts/users \
+  --set image.repository=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/users \
+  --set image.tag=latest
+```
+
+### AWS-Specific Troubleshooting
+
+**"YOUR_AWS_ACCOUNT_ID" error** — AWS CLI is not configured. Run `aws configure` or set `AWS_ACCOUNT_ID` explicitly.
+
+**ECR login fails** — Ensure you have the correct IAM permissions and run:
+
+```bash
+aws ecr get-login-password --region $AWS_REGION \
+  | docker login --username AWS --password-stdin \
+    $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+```
+
+**Helm deployment fails with "image pull error"** —
+
+1. Verify the ECR repository exists
+2. Verify the image was pushed
+3. Check that EKS nodes have ECR pull permissions
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AWS_REGION` | `eu-north-1` | AWS region |
+| `AWS_ACCOUNT_ID` | (auto-detected via `aws sts get-caller-identity`) | AWS account ID used for ECR registry URLs |
 | `CLUSTER_NAME` | `postershop` | EKS cluster name |
 | `NAMESPACE` | `postershop` | Kubernetes namespace |
 | `DB_PASSWORD` | (prompt) | RDS master password |
