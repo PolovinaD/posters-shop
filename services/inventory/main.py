@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,9 +31,41 @@ from auth import require_owner
 logger = get_logger(__name__)
 
 SERVICE_NAME = "inventory"
+ORDERS_SERVICE_URL = os.getenv("ORDERS_SERVICE_URL", "http://orders:8000")
 
 # Background task control
 background_task = None
+
+
+async def notify_order_reservation_expired(order_id: int) -> None:
+    """
+    Best-effort fire-and-forget notification to orders that a reservation
+    for order_id has expired. The orders endpoint is idempotent — duplicates,
+    unknown order_ids, and already-finalised orders all return 200.
+
+    We intentionally swallow all exceptions: the worker has already released
+    stock; failing to notify orders is a non-fatal divergence that the
+    endpoint's idempotency contract tolerates on the next worker tick (when
+    the reservation row is already 'expired', so this won't re-fire — see
+    caveat: notification only fires on the tick that flipped the reservation).
+    """
+    url = f"{ORDERS_SERVICE_URL}/internal/orders/{order_id}/reservation-expired"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json={})
+            if response.status_code >= 400:
+                logger.warning(
+                    "Order reservation-expired notification returned error",
+                    order_id=order_id,
+                    status_code=response.status_code,
+                    body=response.text[:200],
+                )
+    except Exception as e:
+        logger.warning(
+            "Failed to notify orders of expired reservation",
+            order_id=order_id,
+            error=str(e),
+        )
 
 
 async def expire_reservations_worker():
@@ -53,6 +86,7 @@ async def expire_reservations_worker():
                 ).scalars().all()
                 
                 expired_count = 0
+                order_ids_to_notify: set[int] = set()
                 for reservation in expired:
                     # Return quantity to available stock
                     db.execute(
@@ -63,20 +97,27 @@ async def expire_reservations_worker():
                             reserved=Stock.reserved - reservation.quantity
                         )
                     )
-                    
+
                     # Mark reservation as expired
                     reservation.status = "expired"
                     reservation.released_at = now
+                    order_ids_to_notify.add(reservation.order_id)
                     expired_count += 1
-                
+
                 if expired_count > 0:
                     db.commit()
                     RESERVATIONS_EXPIRED.inc(expired_count)
                     logger.info("Released expired reservations", count=expired_count)
-                    
+
                     # Update metrics
                     _update_metrics(db)
-                    
+
+                    # Fire-and-forget notify orders service per unique order_id.
+                    # Tasks run on the running event loop; they do not block the
+                    # 30-second sleep below. notify_* swallows all exceptions.
+                    for order_id in order_ids_to_notify:
+                        asyncio.create_task(notify_order_reservation_expired(order_id))
+
         except Exception as e:
             logger.error("Error in expire_reservations_worker", error=str(e))
         

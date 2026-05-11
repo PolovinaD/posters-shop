@@ -631,6 +631,62 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ============== Internal Service-to-Service ==============
+
+@app.post("/internal/orders/{order_id}/reservation-expired")
+async def reservation_expired(order_id: int, db: Session = Depends(get_db)):
+    """
+    Internal endpoint called by the inventory service when a reservation
+    expires. Auto-cancels the order if it is still in 'reserved' state.
+
+    Idempotent contract — always returns 200:
+      - order not found        -> {"status": "not_found", ...}
+      - order not in RESERVED  -> {"status": "no_action", "current_status": ...}
+      - order in RESERVED      -> flip to CANCELLED, emit ORDER_CANCELLED event
+
+    No auth dependency: this is service-to-service over the cluster network.
+    The inventory worker is fire-and-forget, so we deliberately avoid 4xx/5xx
+    responses for the duplicate / unknown / wrong-state cases — they are
+    expected and not errors.
+    """
+    order = db.get(Order, order_id)
+    if order is None:
+        logger.info("Reservation expired for unknown order, no-op", order_id=order_id)
+        return {"status": "not_found", "order_id": order_id}
+
+    if order.status != OrderStatus.RESERVED:
+        logger.info(
+            "Reservation expired but order not in reserved state, no-op",
+            order_id=order_id,
+            current_status=order.status,
+        )
+        return {
+            "status": "no_action",
+            "order_id": order_id,
+            "current_status": order.status,
+        }
+
+    order.status = OrderStatus.CANCELLED
+    emit_event(
+        db=db,
+        event_type="ORDER_CANCELLED",
+        aggregate_type="order",
+        aggregate_id=str(order_id),
+        payload={
+            "order_id": order_id,
+            "previous_status": "reserved",
+            "reason": "reservation_expired",
+            "released_stock": True,
+        },
+    )
+    db.commit()
+    logger.info(
+        "Order auto-cancelled after reservation expiry",
+        order_id=order_id,
+    )
+    return {"status": "cancelled", "order_id": order_id}
+
+
 # ============== Outbox Monitoring ==============
 
 @app.get("/outbox/stats")
