@@ -75,6 +75,7 @@ done
 SERVICES=(
     "inventory"      # No dependencies
     "payments"       # No dependencies
+    "notifications"  # No dependencies
     "users"          # No dependencies
     "catalog"        # Depends on inventory
     "logistics"      # Depends on orders (but orders depends on others, so deploy logistics first)

@@ -1,0 +1,47 @@
+image:
+  # Override with: --set image.repository=$ECR_REGISTRY/notifications
+  repository: YOUR_ECR_REGISTRY/notifications
+  tag: "latest"
+replicaCount: 1
+
+service:
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+env:
+  - name: SERVICE_NAME
+    value: "notifications"
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: ROOT_PATH
+    value: "/api/notifications"
+  # EMAIL_PROVIDER is "ses" for production and requires the IRSA role in the
+  # serviceAccount block below (grants ses:SendEmail). Override to "logging"
+  # for a credential-free demo (no AWS needed).
+  - name: EMAIL_PROVIDER
+    value: "ses"
+  - name: EMAIL_FROM
+    value: "no-reply@postershop.example"
+  - name: SES_REGION
+    value: "eu-central-1"
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
+
+ingress:
+  enabled: false
+
+# IRSA hook for prod SES access (ses:SendEmail). IAM role creation is out of scope here.
+# Uncomment and fill role-arn, then set serviceAccountName in the deployment template.
+serviceAccount:
+  create: false
+  name: ""            # e.g. notifications
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-notifications-ses

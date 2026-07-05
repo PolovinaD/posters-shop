@@ -711,7 +711,7 @@ if [ "$DRY_RUN" = false ]; then
     # Login to ECR
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
     
-    SERVICES="users catalog orders production logistics inventory payments frontend infra"
+    SERVICES="users catalog orders production logistics inventory payments notifications frontend infra"
     
     for svc in $SERVICES; do
         log_info "Building $svc..."

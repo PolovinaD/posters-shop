@@ -211,6 +211,18 @@ services:
     ports:
       - "8007:8000"
 
+  notifications:
+    build: ./services/notifications
+    container_name: notifications
+    environment:
+      SERVICE_NAME: notifications
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-logging}
+      EMAIL_FROM: ${EMAIL_FROM:-no-reply@postershop.local}
+      SES_REGION: ${SES_REGION:-eu-central-1}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8009:8000"
+
   infra:
     build: ./services/infra
     container_name: infra

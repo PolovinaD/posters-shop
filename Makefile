@@ -277,7 +277,7 @@ ecr-login: check-account ## Login to ECR
 
 .PHONY: build-all
 build-all: ## Build all Docker images
-	@for svc in users catalog orders production logistics inventory payments; do \
+	@for svc in users catalog orders production logistics inventory payments notifications; do \
 		echo "Building $$svc..."; \
 		docker build -t $(ECR_REGISTRY)/$$svc:latest services/$$svc; \
 	done
@@ -285,7 +285,7 @@ build-all: ## Build all Docker images
 
 .PHONY: push-all
 push-all: ecr-login ## Push all images to ECR
-	@for svc in users catalog orders production logistics inventory payments frontend; do \
+	@for svc in users catalog orders production logistics inventory payments notifications frontend; do \
 		echo "Pushing $$svc..."; \
 		docker push $(ECR_REGISTRY)/$$svc:latest; \
 	done
