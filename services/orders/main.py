@@ -396,10 +396,34 @@ def ship_order(order_id: int, db: Session = Depends(get_db)):
             status_code=400,
             detail=f"Cannot ship order in status '{order.status}'. Order must be in 'producing' status."
         )
-    
+
     order.status = OrderStatus.SHIPPED
+
+    # Emit ORDER_SHIPPED event to outbox (SAME TRANSACTION!) so notifications
+    # sends a "shipped" email. Delivered reliably via the outbox worker.
+    items = [
+        {"sku": i.sku, "name": i.name, "quantity": i.quantity}
+        for i in order.items
+    ]
+    emit_event(
+        db=db,
+        event_type="ORDER_SHIPPED",
+        aggregate_type="order",
+        aggregate_id=str(order_id),
+        payload={
+            "order_id": order_id,
+            "customer_email": order.customer_email,
+            "status": order.status,
+            "total_amount": str(order.total_amount),
+            "items": items,
+        }
+    )
+
     db.commit()
     db.refresh(order)
+
+    logger.info("Order shipped - event emitted", order_id=order_id, event_type="ORDER_SHIPPED")
+
     return order
 
 
@@ -415,10 +439,34 @@ def deliver_order(order_id: int, db: Session = Depends(get_db)):
             status_code=400,
             detail=f"Cannot mark as delivered order in status '{order.status}'. Order must be in 'shipped' status."
         )
-    
+
     order.status = OrderStatus.DELIVERED
+
+    # Emit ORDER_DELIVERED event to outbox (SAME TRANSACTION!) so notifications
+    # sends a "delivered" email. Delivered reliably via the outbox worker.
+    items = [
+        {"sku": i.sku, "name": i.name, "quantity": i.quantity}
+        for i in order.items
+    ]
+    emit_event(
+        db=db,
+        event_type="ORDER_DELIVERED",
+        aggregate_type="order",
+        aggregate_id=str(order_id),
+        payload={
+            "order_id": order_id,
+            "customer_email": order.customer_email,
+            "status": order.status,
+            "total_amount": str(order.total_amount),
+            "items": items,
+        }
+    )
+
     db.commit()
     db.refresh(order)
+
+    logger.info("Order delivered - event emitted", order_id=order_id, event_type="ORDER_DELIVERED")
+
     return order
 
 
@@ -463,6 +511,7 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
         aggregate_id=str(order_id),
         payload={
             "order_id": order_id,
+            "customer_email": order.customer_email,
             "previous_status": order.status,
             "released_stock": released_stock
         }
@@ -674,6 +723,7 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db)):
         aggregate_id=str(order_id),
         payload={
             "order_id": order_id,
+            "customer_email": order.customer_email,
             "previous_status": "reserved",
             "reason": "reservation_expired",
             "released_stock": True,

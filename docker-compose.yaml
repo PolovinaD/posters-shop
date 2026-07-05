@@ -93,6 +93,7 @@ services:
       INVENTORY_SERVICE_URL: http://inventory:8000
       PRODUCTION_SERVICE_URL: http://production:8000
       PAYMENT_SERVICE_URL: http://payments:8000
+      NOTIFICATIONS_SERVICE_URL: http://notifications:8000
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}

@@ -27,13 +27,26 @@ logger = get_logger("outbox")
 
 SCHEMA_NAME = "orders_schema"
 
-# Event subscriber URLs - which services listen to which events
+# Notifications service base URL (transactional email fan-out via the outbox).
+NOTIFICATIONS_SERVICE_URL = os.getenv("NOTIFICATIONS_SERVICE_URL", "http://notifications:8000")
+
+# Event subscriber URLs - which services listen to which events.
+# ORDER_PAID / ORDER_CANCELLED fan out to BOTH production and notifications;
+# ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
 EVENT_SUBSCRIBERS = {
     "ORDER_PAID": [
-        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-paid"
+        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-paid",
+        NOTIFICATIONS_SERVICE_URL + "/events/order-paid",
     ],
     "ORDER_CANCELLED": [
-        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-cancelled"
+        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-cancelled",
+        NOTIFICATIONS_SERVICE_URL + "/events/order-cancelled",
+    ],
+    "ORDER_SHIPPED": [
+        NOTIFICATIONS_SERVICE_URL + "/events/order-shipped",
+    ],
+    "ORDER_DELIVERED": [
+        NOTIFICATIONS_SERVICE_URL + "/events/order-delivered",
     ],
 }
 

@@ -39,6 +39,8 @@ env:
     value: "http://production"
   - name: PAYMENT_SERVICE_URL
     value: "http://payments"
+  - name: NOTIFICATIONS_SERVICE_URL
+    value: "http://notifications"
   - name: STRIPE_SECRET_KEY
     valueFrom:
       secretKeyRef:
