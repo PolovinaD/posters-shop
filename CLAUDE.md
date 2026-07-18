@@ -20,7 +20,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Technology Stack
 
 ## Languages
-- Python 3.11 - All backend microservices (8 services), runtime specified in `services/payments/Dockerfile` as `python:3.11-slim`
+- Python 3.11 - All backend microservices (9 services), runtime specified in `services/payments/Dockerfile` as `python:3.11-slim`
 - TypeScript/JavaScript (ES Modules) - Frontend application in `frontend/`
 - SQL - Database migrations via Alembic, init scripts in `db/init.sql`
 - YAML - Kubernetes manifests, Helm charts, GitHub Actions workflows
@@ -58,11 +58,11 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 |-----------|---------|---------|------------|
 | psycopg2-binary | >=2.9 | PostgreSQL driver | Low |
 | Alembic | >=1.13.0 | Database schema migrations | Low |
-| prometheus-client | >=0.15.0 | Metrics exposition for Prometheus scraping | Low |
+| prometheus-client | >=0.15.0, newest pin 0.23.1 | Metrics exposition for Prometheus scraping | Low |
 | httpx | >=0.25.0 | Async HTTP client for inter-service calls | Low |
 | python-jose | 3.5.0 | JWT token creation/validation (users, catalog, logistics) | Medium - unmaintained library |
 | passlib | 1.7.4 | Password hashing (users service) | Medium - unmaintained |
-| boto3 | unpinned | AWS SDK (catalog, logistics services) | Medium - unpinned |
+| boto3 | 1.38.0 | AWS SDK (catalog, logistics, notifications services) | Low - pinned |
 | kubernetes | unpinned | K8s Python client (infra service) | Low |
 | websockets | unpinned | WebSocket support (infra service) | Low |
 | Tailwind CSS | ^3.4.19 | Utility-first CSS framework (frontend) | Low |
@@ -111,6 +111,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | inventory | 8006 | PostgreSQL (inventory schema) | - |
 | payments | 8007 | None (in-memory mock) | httpx |
 | infra | 8008 | None | kubernetes, websockets |
+| notifications | 8009 | None (stateless) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |
 <!-- GSD:stack-end -->
 
@@ -149,7 +150,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - **Environment variables:** All config via `os.getenv()` with defaults
 - **Database URLs:** `DATABASE_URL` env var per service
 - **Service discovery:** `<SERVICE>_SERVICE_URL` env vars (e.g., `INVENTORY_SERVICE_URL`)
-- **Secrets:** JWT_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET via env vars
+- **Secrets:** JWT_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET via env vars. Notifications needs no secret — its AWS SES access comes from an IAM role assumed via IRSA, so no key is stored
 - **Local dev:** `.env` file loaded by docker-compose and Makefile
 - **Production:** AWS Secrets Manager → External Secrets Operator → Kubernetes Secrets
 ## API Conventions
@@ -179,12 +180,12 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Architecture
 
 ## Pattern Overview
-- 8 independent Python/FastAPI backend services, each owning its own database schema
+- 9 independent Python/FastAPI backend services; the six database-backed ones each own their own PostgreSQL schema, while payments, infra and notifications are stateless
 - Single React SPA frontend acting as both admin dashboard and customer-facing shop
 - Synchronous HTTP inter-service communication via `httpx` async clients
-- Asynchronous event delivery via the Outbox Pattern (orders -> production)
+- Asynchronous event delivery via the Outbox Pattern, fanning out to multiple subscribers (orders -> production, notifications)
 - Nginx reverse proxy (in production Docker) routing `/api/{service}/` to backend services
-- Each service runs on port 8000 internally, exposed on unique host ports (8001-8008)
+- Each service runs on port 8000 internally, exposed on unique host ports (8001-8009)
 ## Layers
 - Purpose: Admin dashboard and customer-facing poster shop
 - Location: `frontend/src/`
@@ -205,7 +206,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Location: `db/init.sql` (schema/user setup), `services/{service}/alembic/` (migrations)
 - Contains: PostgreSQL schemas: `users`, `catalog`, `orders`, `production`, `logistics`, `inventory`
 - Depends on: Single PostgreSQL 16 instance
-- Used by: All services with database needs (all except payments and infra)
+- Used by: All services with database needs (all except payments, infra and notifications)
 - Purpose: Kubernetes (EKS) deployment with Helm charts
 - Location: `deploy/`
 - Contains: Helm charts per service, infrastructure scripts, monitoring config
@@ -223,7 +224,10 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Pattern: Each client module defines a base URL from env vars, custom exception classes, and async functions using `httpx.AsyncClient`
 - Purpose: Reliable at-least-once event delivery between services
 - Examples: `services/orders/outbox.py`
-- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry (5s, 15s, 1m, 5m, 15m). Max 5 retries.
+- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry (5s, 15s, 1m, 5m, 15m). Max 5 retries. Multi-subscriber fan-out: `EVENT_SUBSCRIBERS` maps 4 event types to 6 URLs — `ORDER_PAID` and `ORDER_CANCELLED` go to both production and notifications, `ORDER_SHIPPED` and `ORDER_DELIVERED` to notifications only. Retry is per-event, not per-subscriber, so a failure at one subscriber re-delivers to those that already succeeded.
+- Purpose: Swappable email transport so local development needs no AWS credentials
+- Examples: `services/notifications/providers.py` (`EmailProvider` ABC, `LoggingProvider`, `SesProvider`)
+- Pattern: Abstract base class with a single `send(to, subject, body)` method, selected at startup by the `EMAIL_PROVIDER` env var (`get_provider()`). LoggingProvider renders into the structured log for docker-compose and demos; SesProvider calls AWS SES via boto3 with credentials from IRSA rather than any stored key.
 - Purpose: Enforces valid order status transitions
 - Examples: `services/orders/models.py` (`OrderStatus` class)
 - Pattern: Explicit transition map: CREATED -> RESERVED -> PAID -> PRODUCING -> SHIPPED -> DELIVERED. Terminal states: CANCELLED, FAILED, DELIVERED.

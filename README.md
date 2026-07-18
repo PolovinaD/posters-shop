@@ -24,10 +24,10 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
               │(lifecycle)│     │ (jobs)  │     │  (shipments)    │     │
               └───────────┘     └─────────┘     └─────────────────┘     │
                     │                                                    │
-              ┌─────┴─────┐     ┌─────────┐                             │
-              │ payments  │     │  infra  │                             │
-              │ (mock)    │     │ (k8s)   │                             │
-              └───────────┘     └─────────┘                             │
+              ┌─────┴─────┐     ┌─────────┐     ┌─────────────────┐     │
+              │ payments  │     │  infra  │     │  notifications  │     │
+              │ (mock)    │     │ (k8s)   │     │  (email/SES)    │     │
+              └───────────┘     └─────────┘     └─────────────────┘     │
     └───────────────────────────────────────────────────────────────────┘
                                       │
                     ┌─────────────────┴───────────────────┐
@@ -48,11 +48,13 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
 | **logistics** | 8000 | Shipment tracking |
 | **payments** | 8000 | Mock Stripe-like checkout sessions |
 | **infra** | 8000 | Kubernetes cluster introspection API |
+| **notifications** | 8000 | Transactional email on order events (pluggable: logging / AWS SES) |
 | **frontend** | 80 | React SPA (shop + admin panel) |
 
 ## Key Features
 
-- **Outbox Pattern**: Reliable event delivery between services (orders → production)
+- **Outbox Pattern**: Reliable event delivery between services (orders → production, notifications)
+- **Transactional Email**: Order confirmation, shipping, delivery and cancellation email via a pluggable provider (AWS SES in production, log-only locally)
 - **Schema Isolation**: Each service owns its PostgreSQL schema
 - **JWT Auth**: Stateless authentication with role-based access
 - **Admin Panel**: Full management UI for all services
@@ -103,6 +105,7 @@ helm upgrade --install production deploy/charts/production -n postershop
 helm upgrade --install logistics  deploy/charts/logistics  -n postershop
 helm upgrade --install payments   deploy/charts/payments   -n postershop
 helm upgrade --install infra      deploy/charts/infra      -n postershop
+helm upgrade --install notifications deploy/charts/notifications -n postershop
 helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 ```
 
@@ -136,6 +139,7 @@ shop-platform/
 │   ├── production/
 │   ├── logistics/
 │   ├── payments/
+│   ├── notifications/
 │   └── infra/
 ├── frontend/               # React SPA
 ├── deploy/                 # Deployment resources
@@ -177,7 +181,8 @@ shop-platform/
 Each service has its own README with API endpoints, schemas, and usage:
 - [Users](services/users/README.md) | [Catalog](services/catalog/README.md) | [Inventory](services/inventory/README.md)
 - [Orders](services/orders/README.md) | [Production](services/production/README.md) | [Logistics](services/logistics/README.md)
-- [Payments](services/payments/README.md) | [Infra](services/infra/README.md) | [Shared](services/shared/README.md)
+- [Payments](services/payments/README.md) | [Infra](services/infra/README.md) | [Notifications](services/notifications/README.md)
+- [Shared](services/shared/README.md)
 
 ## Technology Stack
 

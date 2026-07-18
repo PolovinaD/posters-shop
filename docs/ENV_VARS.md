@@ -8,7 +8,7 @@ This document lists all environment variables used by each service.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | - | Yes (except payments, infra) |
+| `DATABASE_URL` | PostgreSQL connection string | - | Yes (except payments, infra, notifications) |
 | `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) | `INFO` | No |
 | `SERVICE_NAME` | Service identifier for logging | Service-specific | No |
 | `ROOT_PATH` | API path prefix (for ALB routing) | `""` | No |
@@ -50,6 +50,7 @@ This document lists all environment variables used by each service.
 | `INVENTORY_SERVICE_URL` | Inventory service base URL | `http://inventory:8000` | No |
 | `PRODUCTION_SERVICE_URL` | Production service base URL | `http://production:8000` | No |
 | `PAYMENT_SERVICE_URL` | Payment service base URL | `http://payments:8000` | No |
+| `NOTIFICATIONS_SERVICE_URL` | Notifications service base URL (outbox email fan-out) | `http://notifications:8000` | No |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature verification | `whsec_test_secret_key_12345` | Yes (in prod) |
 
 ---
@@ -95,6 +96,28 @@ This document lists all environment variables used by each service.
 
 ---
 
+## Notifications Service
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `EMAIL_PROVIDER` | Transport selector: `ses` for AWS SES, anything else for the logging provider | `logging` | No |
+| `EMAIL_FROM` | Sender address — must be a verified SES identity when using SES | `no-reply@postershop.example` | Yes (when `EMAIL_PROVIDER=ses`) |
+| `SES_REGION` | Region holding the verified SES sender identity | `eu-central-1` | No |
+
+**Note:** Notifications service is stateless (no database, no Alembic migrations).
+
+**On `SES_REGION` vs `AWS_REGION`:** these are deliberately independent. `AWS_REGION`
+(`eu-north-1`) is where the EKS cluster runs; `SES_REGION` is where the sender identity
+was verified. SES is a regional service, and a verified identity does not have to live in
+the region of the workload calling it. Set `SES_REGION=eu-north-1` if you verify your
+identity there — the difference is a configuration choice, not a misconfiguration.
+
+**No secret is required for SES.** Credentials come from IRSA (*IAM Roles for Service
+Accounts*), so there is no access key to store. See
+[deploy/README.md](../deploy/README.md) under "Email Delivery Setup (SES via IRSA)".
+
+---
+
 ## Frontend
 
 | Variable | Description | Default | Required |
@@ -125,6 +148,10 @@ stringData:
 - `db-credentials` - DATABASE_URL for all database-backed services
 - `jwt-secret` - JWT_SECRET for users service
 - `stripe-secrets` - STRIPE_WEBHOOK_SECRET for orders/payments
+
+**Notifications requires no secret.** Its only external credential is AWS SES access,
+which is granted through an IAM role assumed via IRSA rather than a stored key. Nothing
+about SES authentication belongs in a Kubernetes Secret or in AWS Secrets Manager.
 
 ---
 

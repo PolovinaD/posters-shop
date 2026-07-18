@@ -14,6 +14,7 @@ Practical reference card for the PosterShop platform. For deeper docs, see [READ
 | inventory  | 8006      | 8000           |
 | payments   | 8007      | 8000           |
 | infra      | 8008      | 8000           |
+| notifications | 8009   | 8000           |
 | frontend   | 3000      | 80             |
 | postgres   | 5432      | 5432           |
 
@@ -30,6 +31,10 @@ Practical reference card for the PosterShop platform. For deeper docs, see [READ
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | `sk_test_...` / `whsec_...` | orders, payments |
 | `CB_FAILURE_THRESHOLD` / `CB_RECOVERY_TIMEOUT` | `5` / `30` | orders (circuit breaker) |
 | `<SERVICE>_SERVICE_URL` | `http://inventory:8000` | Inter-service HTTP clients |
+| `NOTIFICATIONS_SERVICE_URL` | `http://notifications:8000` | orders (outbox email fan-out) |
+| `EMAIL_PROVIDER` | `logging` / `ses` | notifications (transport selector) |
+| `EMAIL_FROM` | `no-reply@postershop.example` | notifications (SES verified sender) |
+| `SES_REGION` | `eu-central-1` | notifications (independent of `AWS_REGION` by design) |
 
 Full list: see [env.example](../env.example).
 
@@ -82,6 +87,26 @@ curl -X POST localhost:8006/seed
 # List orders (with auth)
 curl localhost:8003/orders \
   -H "Authorization: Bearer $TOKEN"
+
+# Notifications smoke test — the default logging provider needs no AWS credentials,
+# so this works out of the box. The rendered email lands in the service log.
+curl -X POST localhost:8009/events/order-paid \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event_id": 1,
+    "event_type": "ORDER_PAID",
+    "aggregate_type": "order",
+    "aggregate_id": "123",
+    "payload": {
+      "order_id": 123,
+      "customer_email": "customer@example.com",
+      "total_amount": "99.99"
+    }
+  }'
+# -> {"status":"sent","event_id":1}
+# Repeat the same call -> {"status":"already_processed","event_id":1}
+
+docker compose logs notifications | tail -5
 ```
 
 ## Default Credentials

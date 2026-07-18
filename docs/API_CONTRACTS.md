@@ -10,7 +10,8 @@ This document defines the APIs used for service-to-service communication.
 |--------|--------|---------|----------|
 | Orders | Inventory | Stock reservation/commit | Sync HTTP |
 | Orders | Payments | Checkout sessions | Sync HTTP |
-| Orders (Outbox) | Production | Order events | Async HTTP |
+| Orders (Outbox) | Production | Order events (ORDER_PAID, ORDER_CANCELLED) | Async HTTP |
+| Orders (Outbox) | Notifications | Order events (all four types) — transactional email | Async HTTP |
 | Production | Orders | Status updates | Sync HTTP |
 | Production | Logistics | Create shipment | Sync HTTP |
 | Logistics | Orders | Delivery notification | Sync HTTP |
@@ -219,6 +220,11 @@ POST /orders/{order_id}/ship
 POST /orders/{order_id}/deliver
 ```
 
+`POST /orders/{id}/ship` and `POST /orders/{id}/deliver` also emit `ORDER_SHIPPED` and
+`ORDER_DELIVERED` respectively, written to the outbox **in the same transaction as the
+status change**. Either both the status change and the event persist, or neither does —
+the status can never advance without its notification event being queued.
+
 **Response (200 OK):**
 ```json
 {
@@ -286,8 +292,10 @@ Content-Type: application/json
   "aggregate_id": "123",
   "payload": {
     "order_id": 123,
+    "customer_email": "customer@example.com",
     "previous_status": "reserved",
-    "released_stock": true
+    "released_stock": true,
+    "reason": "cancelled by customer"
   }
 }
 ```
@@ -298,6 +306,75 @@ Content-Type: application/json
   "status": "cancelled",  // or "no_job" or "already_processing"
   "job_id": 456
 }
+```
+
+---
+
+## Notifications Service APIs
+
+**Called by:** Orders Service (outbox worker)  
+**When:** Any order-lifecycle event occurs
+
+Stateless service — no database. Not ALB-exposed; reached over cluster-internal DNS only.
+
+### Event Handlers
+
+```http
+POST /events/order-paid
+POST /events/order-shipped
+POST /events/order-delivered
+POST /events/order-cancelled
+```
+
+All four accept the standard outbox envelope:
+
+```json
+{
+  "event_id": 42,
+  "event_type": "ORDER_PAID",
+  "aggregate_type": "order",
+  "aggregate_id": "123",
+  "payload": {
+    "order_id": 123,
+    "customer_email": "customer@example.com",
+    "total_amount": "99.99",
+    "items": [...]
+  },
+  "created_at": "2026-07-05T10:30:00Z"
+}
+```
+
+`payload.customer_email` is the only field the service strictly requires.
+
+### Response Contract
+
+**The status code is load-bearing**, because it directly controls whether the orders
+outbox worker retries the event. Getting it wrong either drops customer email silently or
+floods the retry budget.
+
+| Response | Meaning | Why this code |
+|----------|---------|---------------|
+| `200 {"status": "sent", "event_id": 42}` | Email handed to the provider | Success; outbox marks the event delivered |
+| `200 {"status": "already_processed", "event_id": 42}` | This `event_id` was seen before | Duplicate delivery is expected under at-least-once semantics and is not an error |
+| `200 {"status": "skipped", "reason": "no_customer_email"}` | Payload carried no address | **Deliberately 200, not 4xx.** Retrying cannot make a missing address appear, so a non-2xx here would burn all five retries and then abandon the event for no reason |
+| `503` | The email provider raised on send | **Deliberately retryable.** A transient SES failure should be retried with backoff, so the event is left undelivered and the worker tries again |
+
+The distinction reduces to: **200 means "do not retry, there is nothing more to do";
+503 means "retry, this might succeed later."** The service returns `200` for the skip
+case precisely so that a permanently unfixable input does not consume the retry budget.
+
+### Idempotency
+
+Guarded by an in-memory set of processed `event_id` values
+(`services/notifications/main.py`). This is per-replica and does not survive a restart,
+so a duplicate email is possible after a pod restart or with `replicaCount > 1`.
+
+### Health & Metrics
+
+```http
+GET /healthz    # liveness
+GET /readyz     # readiness — always ready, no DB to check
+GET /metrics    # Prometheus
 ```
 
 ---

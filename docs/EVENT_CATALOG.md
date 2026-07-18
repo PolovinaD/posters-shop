@@ -21,7 +21,7 @@ Events are delivered using the **Transactional Outbox Pattern**:
 ### ORDER_PAID
 
 **Producer:** Orders Service  
-**Consumers:** Production Service  
+**Consumers:** Production Service, Notifications Service  
 **Trigger:** Order status transitions to `paid` after successful payment
 
 **Payload:**
@@ -43,49 +43,130 @@ Events are delivered using the **Transactional Outbox Pattern**:
 **Consumer behavior:**
 - Production service creates a `Job` in `queued` status
 - Idempotency: Checks if job already exists for order_id before creating
+- Notifications service sends the order-confirmation email
+- Idempotency: In-memory `event_id` set (per replica, non-durable)
 
 ---
 
 ### ORDER_CANCELLED
 
 **Producer:** Orders Service  
-**Consumers:** Production Service  
-**Trigger:** Order is cancelled before production starts
+**Consumers:** Production Service, Notifications Service  
+**Trigger:** Order is cancelled — either by the customer, or by the Stripe
+`checkout.session.expired` webhook path
 
 **Payload:**
 ```json
 {
   "order_id": 123,
+  "customer_email": "customer@example.com",
   "previous_status": "reserved",
-  "released_stock": true
+  "released_stock": true,
+  "reason": "cancelled by customer"
 }
 ```
+
+`customer_email` and `reason` are required by the notifications consumer. The
+`checkout.session.expired` path previously emitted no event at all; it now emits
+`ORDER_CANCELLED` with the customer's address so the cancellation email is sent.
 
 **Consumer behavior:**
 - If job exists and is `queued`, marks it as `failed` with "Order cancelled"
 - If job is already `processing` or `completed`, no action taken
+- Notifications service sends the cancellation email. The wording is conditional
+  on `released_stock` and `previous_status`, so it never claims stock was
+  released when it was not, and never asserts a payment outcome for an order
+  that was already paid (see `docs/KNOWN_LIMITATIONS.md`)
+
+---
+
+### ORDER_SHIPPED
+
+**Producer:** Orders Service  
+**Consumers:** Notifications Service  
+**Trigger:** `POST /orders/{id}/ship` — emitted in the same transaction as the
+status change to `shipped`
+
+**Payload:**
+```json
+{
+  "order_id": 123,
+  "customer_email": "customer@example.com",
+  "items": [
+    {
+      "sku": "POSTER-SUNSET-A3",
+      "name": "Golden Sunset",
+      "quantity": 2
+    }
+  ]
+}
+```
+
+**Consumer behavior:**
+- Notifications service sends the shipment-notification email
+- No production-side consumer
+
+---
+
+### ORDER_DELIVERED
+
+**Producer:** Orders Service  
+**Consumers:** Notifications Service  
+**Trigger:** `POST /orders/{id}/deliver` — emitted in the same transaction as the
+status change to `delivered`
+
+**Payload:**
+```json
+{
+  "order_id": 123,
+  "customer_email": "customer@example.com",
+  "items": [
+    {
+      "sku": "POSTER-SUNSET-A3",
+      "name": "Golden Sunset",
+      "quantity": 2
+    }
+  ]
+}
+```
+
+**Consumer behavior:**
+- Notifications service sends the delivery-confirmation email
+- No production-side consumer
 
 ---
 
 ## Event Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           ORDER LIFECYCLE EVENTS                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Orders Service                          Production Service                 │
-│   ┌───────────────┐                       ┌───────────────┐                 │
-│   │               │                       │               │                 │
-│   │  Order Paid   │──── ORDER_PAID ──────▶│  Create Job   │                 │
-│   │               │     (outbox)          │   (queued)    │                 │
-│   │               │                       │               │                 │
-│   │  Order        │──── ORDER_CANCELLED ─▶│  Cancel Job   │                 │
-│   │  Cancelled    │     (outbox)          │  (if queued)  │                 │
-│   │               │                       │               │                 │
-│   └───────────────┘                       └───────────────┘                 │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              ORDER LIFECYCLE EVENTS                                     │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│   Orders Service                    Production Service          Notifications Service   │
+│   ┌───────────────┐                 ┌───────────────┐           ┌──────────────────┐   │
+│   │               │                 │               │           │                  │   │
+│   │  Order Paid   │─ ORDER_PAID ───▶│  Create Job   │           │                  │   │
+│   │               │   (outbox)      │   (queued)    │           │                  │   │
+│   │               │   └─────────────────────────────────────── ▶│  Confirmation    │   │
+│   │               │                 │               │           │  email           │   │
+│   │               │                 │               │           │                  │   │
+│   │  Order        │─ ORDER_CANCELLED│  Cancel Job   │           │                  │   │
+│   │  Cancelled    │   (outbox)  ───▶│  (if queued)  │           │                  │   │
+│   │               │   └─────────────────────────────────────── ▶│  Cancellation    │   │
+│   │               │                 │               │           │  email           │   │
+│   │               │                 │               │           │                  │   │
+│   │  Order        │─ ORDER_SHIPPED ─────────────────────────── ▶│  Shipped email   │   │
+│   │  Shipped      │   (outbox)      │               │           │                  │   │
+│   │               │                 │               │           │                  │   │
+│   │  Order        │─ ORDER_DELIVERED────────────────────────── ▶│  Delivered email │   │
+│   │  Delivered    │   (outbox)      │               │           │                  │   │
+│   └───────────────┘                 └───────────────┘           └──────────────────┘   │
+│                                                                                         │
+│   ORDER_PAID and ORDER_CANCELLED fan out to BOTH consumers (publish-subscribe).          │
+│   ORDER_SHIPPED and ORDER_DELIVERED have a single consumer.                             │
+│                                                                                         │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -135,15 +216,30 @@ Events are delivered with this envelope structure:
 Subscribers are configured in `services/orders/outbox.py`:
 
 ```python
+NOTIFICATIONS_SERVICE_URL = os.getenv("NOTIFICATIONS_SERVICE_URL", "http://notifications:8000")
+
+# ORDER_PAID / ORDER_CANCELLED fan out to BOTH production and notifications;
+# ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
 EVENT_SUBSCRIBERS = {
     "ORDER_PAID": [
-        "http://production:8000/events/order-paid"
+        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-paid",
+        NOTIFICATIONS_SERVICE_URL + "/events/order-paid",
     ],
     "ORDER_CANCELLED": [
-        "http://production:8000/events/order-cancelled"
+        os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-cancelled",
+        NOTIFICATIONS_SERVICE_URL + "/events/order-cancelled",
+    ],
+    "ORDER_SHIPPED": [
+        NOTIFICATIONS_SERVICE_URL + "/events/order-shipped",
+    ],
+    "ORDER_DELIVERED": [
+        NOTIFICATIONS_SERVICE_URL + "/events/order-delivered",
     ],
 }
 ```
+
+Four event types across six subscriber URLs. Subscriber base URLs are read from
+environment variables so the same map works in docker-compose and in Kubernetes.
 
 ---
 
@@ -187,7 +283,16 @@ emit_event(
 
 ## Known Limitations
 
-1. **No Dead Letter Queue** - Failed events are abandoned after 5 retries
-2. **No Event Idempotency** - Consumers should check for duplicates but don't have a standardized mechanism
-3. **Single Consumer Per Event Type** - Fan-out to multiple consumers requires multiple URLs
+1. **No Dead Letter Queue** - Failed events are abandoned after 5 retries. This
+   matters more now that email delivery rides the outbox: a subscriber outage
+   longer than the retry window silently drops customer email.
+2. **No Event Idempotency** - Consumers should check for duplicates but don't have a
+   standardized mechanism. Production uses a database lookup; notifications uses an
+   in-memory set that does not survive a pod restart.
+3. **Retry Is Per-Event, Not Per-Subscriber** - Fan-out to multiple consumers is in
+   use (`ORDER_PAID` and `ORDER_CANCELLED` each go to two services), but the retry
+   unit is the whole event, not the individual subscriber. If any one subscriber
+   fails, the entire event is retried and **re-delivered to subscribers that had
+   already succeeded**. Consumers must therefore be idempotent even when they are
+   themselves healthy.
 4. **Polling Latency** - 2-second poll interval adds latency to event delivery

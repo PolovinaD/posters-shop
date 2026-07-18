@@ -27,14 +27,23 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 ---
 
 ### 2. Event Idempotency
-**Status:** Partially done (production service checks for existing jobs)  
-**Effort:** Low (1-2 hours)  
+**Status:** Partially done — production: durable (checks for an existing job by order_id); notifications: in-memory set, non-durable  
+**Effort:** Low for database-backed consumers (1-2 hours); higher for stateless ones  
 **Description:** Add standardized idempotency mechanism for event handlers.
 
 **Tasks:**
-- [ ] Add `processed_events` table per consuming service
+- [ ] Add `processed_events` table per **database-backed** consuming service
 - [ ] Check event_id before processing
 - [ ] Add index on event_id for fast lookups
+- [ ] Decide on a mechanism for **stateless** consumers
+
+**Caveat — the proposed fix does not generalize.** A `processed_events` table assumes the
+consumer owns a database. `notifications` deliberately does not: it is stateless, with no
+schema and no Alembic. Its guard is an in-memory `set` that is per-replica and lost on
+restart, so duplicates are possible after a pod restart or with `replicaCount > 1`.
+Giving notifications a database purely for idempotency would undo its stateless design.
+A shared Redis set with a TTL, or a provider-side idempotency key, fits a stateless
+consumer better. This is an architectural choice, not a one-hour task.
 
 ---
 
@@ -42,6 +51,15 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 **Status:** Not started  
 **Effort:** Medium (2-3 hours)  
 **Description:** Events exceeding MAX_RETRIES should go to DLQ instead of being abandoned.
+
+**Stakes raised by the notifications service.** Abandoning an event used to mean a print
+job was not queued, which is visible in the production service's own state and
+recoverable by an operator looking at order status. Now the same abandonment silently
+drops **customer-facing email** — a confirmation or shipping notice that no one will ever
+notice is missing, because nothing downstream records that it should have arrived. The
+fan-out retry behaviour compounds this: a persistently failing subscriber burns the
+shared retry budget for an event other subscribers already handled, and then the whole
+event is abandoned.
 
 **Tasks:**
 - [ ] Add `dead_letter_events` table in orders schema
@@ -189,6 +207,24 @@ Reservations automatically expire after 15 minutes (configurable) with backgroun
 ### ✅ User Accounts for Shop
 **Completed:** 2024-01-14  
 Added login/register/my-orders functionality to shop frontend.
+
+### ✅ Email Notifications (SES)
+**Completed:** 2026-07-05  
+Added the `notifications` service — a stateless consumer of the orders outbox that sends
+transactional email for `ORDER_PAID`, `ORDER_SHIPPED`, `ORDER_DELIVERED` and
+`ORDER_CANCELLED`. Transport is pluggable behind an `EmailProvider` abstraction: a
+logging provider for local development and demos (no AWS credentials needed) and an AWS
+SES provider for production, authenticated through IRSA so no access key is stored
+anywhere. Delivery is instrumented with `notifications_emails_sent_total` and
+`notifications_email_send_failures_total`.
+
+The same change made the outbox genuinely publish-subscribe: `ORDER_PAID` and
+`ORDER_CANCELLED` now fan out to both production and notifications, and orders gained two
+new event types emitted in the same transaction as their status change.
+
+Verified locally with the logging provider only — **SES was not exercised against real
+AWS**. Remaining gaps are tracked as items 2 and 3 above and in
+`docs/KNOWN_LIMITATIONS.md`.
 
 ---
 

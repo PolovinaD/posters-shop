@@ -53,26 +53,26 @@ pip install -r requirements.txt
 alembic upgrade head
 uvicorn main:app --reload --port 8002
 
-# Inventory Service
-cd services/inventory
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn main:app --reload --port 8003
-
 # Orders Service
 cd services/orders
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn main:app --reload --port 8004
+uvicorn main:app --reload --port 8003
 
 # Production Service
 cd services/production
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn main:app --reload --port 8005
+uvicorn main:app --reload --port 8004
 
 # Logistics Service
 cd services/logistics
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn main:app --reload --port 8005
+
+# Inventory Service
+cd services/inventory
 pip install -r requirements.txt
 alembic upgrade head
 uvicorn main:app --reload --port 8006
@@ -86,7 +86,15 @@ uvicorn main:app --reload --port 8007
 cd services/infra
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8008
+
+# Notifications Service (no database, no migrations)
+cd services/notifications
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8009
 ```
+
+Port assignments follow `docker-compose.yaml`, which is authoritative. Note the ordering:
+orders is **8003** and inventory is **8006**, not the other way around.
 
 **Frontend:**
 ```bash
@@ -160,12 +168,13 @@ kubectl logs -f deployment/orders -n postershop
 Each service has auto-generated OpenAPI docs:
 - Users: http://localhost:8001/docs
 - Catalog: http://localhost:8002/docs
-- Inventory: http://localhost:8003/docs
-- Orders: http://localhost:8004/docs
-- Production: http://localhost:8005/docs
-- Logistics: http://localhost:8006/docs
+- Orders: http://localhost:8003/docs
+- Production: http://localhost:8004/docs
+- Logistics: http://localhost:8005/docs
+- Inventory: http://localhost:8006/docs
 - Payments: http://localhost:8007/docs
 - Infra: http://localhost:8008/docs
+- Notifications: http://localhost:8009/docs
 
 ---
 
@@ -289,16 +298,32 @@ docker system prune -a
 
 ### Orders failing with "insufficient stock"
 
-1. Check inventory was seeded: `curl http://localhost:8003/stock`
+1. Check inventory was seeded: `curl http://localhost:8006/stock`
 2. Verify SKUs match between catalog and inventory
 3. Check for expired reservations
 
 ### Events not being delivered
 
-1. Check outbox stats: `curl http://localhost:8004/outbox/stats`
-2. Verify PRODUCTION_SERVICE_URL is correct
-3. Check production service is running and healthy
+1. Check outbox stats: `curl http://localhost:8003/orders/outbox/stats`
+2. Verify `PRODUCTION_SERVICE_URL` and `NOTIFICATIONS_SERVICE_URL` are correct
+3. Check that both subscriber services are running and healthy
 4. Look for errors in outbox `last_error` field
+
+Remember that `ORDER_PAID` and `ORDER_CANCELLED` fan out to **both** production and
+notifications. If either subscriber is down, the whole event is retried and re-delivered
+to the one that already succeeded — so a stuck event does not necessarily implicate the
+service you first suspect.
+
+### Emails not being sent
+
+1. Confirm notifications is up: `curl http://localhost:8009/healthz`
+2. Check the failure counter: `curl http://localhost:8009/metrics | grep notifications_email_send_failures_total`
+3. With the default `EMAIL_PROVIDER=logging`, a successful send appears in the log as
+   `Email (logging provider)` — no AWS involvement at all
+4. A `{"status": "skipped", "reason": "no_customer_email"}` response means the event
+   payload carried no address; check the emitting code path in orders
+5. With `EMAIL_PROVIDER=ses`, a `503` means the provider raised — verify the IRSA role
+   and that `EMAIL_FROM` is a verified identity in `SES_REGION`
 
 ### Frontend can't reach backend
 
@@ -320,12 +345,16 @@ docker system prune -a
    cp services/catalog/{main.py,database.py,requirements.txt,Dockerfile} services/newservice/
    ```
 
-3. **Set up Alembic:**
+3. **Set up Alembic — database-backed services only:**
    ```bash
    cd services/newservice
    alembic init alembic
    # Configure alembic.ini and env.py (see existing services)
    ```
+
+   **Stateless services skip this step entirely.** `payments`, `infra` and
+   `notifications` own no schema, have no `alembic/` directory, and no `models.py` or
+   `database.py`. Do not add a schema to a service that does not need one.
 
 4. **Create Helm chart:**
    ```bash
@@ -333,10 +362,31 @@ docker system prune -a
    # Update values.yaml with service name
    ```
 
-5. **Add to deploy workflow:**
-   Edit `.github/workflows/deploy.yaml` to include new service
+   **For a stateless service, delete `templates/migration-job.yaml` from the copied
+   chart.** Leaving it in place produces a Helm hook that runs `alembic upgrade head`
+   against a service with no migrations, which fails the install. Compare against
+   `deploy/charts/notifications/`, whose `templates/` holds only `deployment.yaml`.
 
-6. **Update documentation:**
-   - Add to README.md service list
+5. **Add a ServiceMonitor:**
+   Add an entry to `deploy/monitoring/servicemonitors.yaml` so Prometheus scrapes the
+   new service's `/metrics`.
+
+   **The `endpoints[].port` value must be the port NAME declared on the service's
+   Kubernetes Service, not a port number and not an assumption.** Most services name it
+   `http`, but `infra` names its port `http-metrics`. A ServiceMonitor whose port name
+   matches nothing still appears healthy in `kubectl get servicemonitor` while scraping
+   nothing at all — a silent failure that is harder to spot than a missing monitor.
+   Check the chart's Service definition before writing the block.
+
+6. **Add to deploy workflow:**
+   Edit `.github/workflows/deploy.yaml` to include new service.
+   Also add the service to the `SERVICES` list in `deploy/full-deploy.sh` and to the
+   ECR repository creation loop in `deploy/README.md` — a service missing from either
+   deploys into an `ImagePullBackOff`.
+
+7. **Update documentation:**
+   - Add to README.md service list **and its Service Documentation link list**
+   - Create `services/newservice/README.md` (every service has one)
    - Add to ARCHITECTURE.md diagrams
-   - Add to ENV_VARS.md
+   - Add to ENV_VARS.md, QUICK_REFERENCE.md port table, and docs/EVENT_CATALOG.md if it
+     produces or consumes events

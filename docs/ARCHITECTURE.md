@@ -29,6 +29,7 @@ graph TB
         PRODUCTION[Production Service<br/>Job processing]
         LOGISTICS[Logistics Service<br/>Shipping]
         PAYMENTS[Payments Service<br/>Stripe mock]
+        NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>stateless, no DB]
     end
     
     subgraph "Infrastructure"
@@ -52,6 +53,8 @@ graph TB
     ORDERS -->|sync| INVENTORY
     ORDERS -->|sync| PAYMENTS
     ORDERS -.->|outbox| PRODUCTION
+    ORDERS -.->|outbox| NOTIFICATIONS
+    NOTIFICATIONS -->|SES via IRSA| SES[AWS SES]
     PRODUCTION -->|sync| ORDERS
     PRODUCTION -->|sync| LOGISTICS
     LOGISTICS -->|sync| ORDERS
@@ -64,6 +67,14 @@ graph TB
     PRODUCTION --> PG
     LOGISTICS --> PG
 ```
+
+**Notifications has no edge to PostgreSQL.** It is stateless by design: no schema, no
+Alembic migrations, no `models.py`. Its only persistent-looking state is an in-memory
+set of processed `event_id` values, which is per-replica and lost on restart.
+
+**Notifications is not ALB-exposed.** Its chart sets `ingress.enabled: false`, so it
+receives no ALB routing rule and appears in no routing table below. The orders outbox
+worker reaches it over cluster-internal DNS (`http://notifications:8000`).
 
 ---
 
@@ -105,6 +116,7 @@ sequenceDiagram
     participant Inventory
     participant Payments
     participant Production
+    participant Notifications
     
     Customer->>Frontend: Add to cart & checkout
     Frontend->>Orders: POST /orders
@@ -129,6 +141,8 @@ sequenceDiagram
     loop Outbox Worker (2s poll)
         Orders->>Production: POST /events/order-paid
         Production-->>Orders: 200 OK (event processed)
+        Orders->>Notifications: POST /events/order-paid
+        Notifications-->>Orders: 200 OK (confirmation email sent)
     end
     
     Production->>Orders: POST /orders/{id}/produce
@@ -138,7 +152,16 @@ sequenceDiagram
     Production->>Logistics: POST /ship
     Logistics-->>Production: Shipment created
     Production->>Orders: POST /orders/{id}/ship
+    
+    Note over Orders: Emit ORDER_SHIPPED to outbox (same TX)
+    
+    Orders->>Notifications: POST /events/order-shipped
+    Notifications-->>Orders: 200 OK (shipping email sent)
 ```
+
+`ORDER_PAID` fans out to both production and notifications from a single outbox row.
+Delivery is sequential within one worker pass, and the retry unit is the whole event
+rather than the individual subscriber.
 
 ---
 
@@ -189,13 +212,26 @@ flowchart LR
         JQ[(Jobs Queue)]
     end
     
+    subgraph "Notifications Service"
+        NEH[Event Handler]
+        EP[Email Provider<br/>logging / SES]
+    end
+    
     BL -->|"1. Same TX"| OT
     OW -->|"2. Poll (2s)"| OT
-    OW -->|"3. HTTP POST"| EH
-    EH -->|"4. Create job"| JQ
-    EH -->|"5. 200 OK"| OW
-    OW -->|"6. Mark delivered"| OT
+    OW -->|"3a. HTTP POST"| EH
+    EH -->|"4a. Create job"| JQ
+    EH -->|"5a. 200 OK"| OW
+    OW -->|"3b. HTTP POST"| NEH
+    NEH -->|"4b. Render & send"| EP
+    NEH -->|"5b. 200 OK"| OW
+    OW -->|"6. Mark delivered<br/>(only after ALL subscribers succeed)"| OT
 ```
+
+Step 6 is the important subtlety: the outbox row is marked delivered only once every
+subscriber for that event type has returned success. A failure at any single subscriber
+retries the whole event, re-delivering it to subscribers that already succeeded, which is
+why every consumer must be idempotent.
 
 ---
 
@@ -306,6 +342,7 @@ graph TB
                     LOGISTICS_DEP[logistics<br/>Deployment]
                     PAYMENTS_DEP[payments<br/>Deployment]
                     INFRA_DEP[infra<br/>Deployment]
+                    NOTIFICATIONS_DEP[notifications<br/>Deployment<br/>no ingress]
                 end
                 
                 subgraph "kube-system"

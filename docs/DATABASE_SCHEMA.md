@@ -20,6 +20,11 @@ The platform uses a single PostgreSQL database with **schema-per-service** isola
 | `production_schema` | Production | jobs |
 | `logistics_schema` | Logistics | shipments |
 
+**Three services are stateless and own no schema:** `payments` (in-memory checkout
+sessions), `infra` (reads live Kubernetes state) and `notifications` (renders and sends
+email, holding only an in-memory idempotency set). They have no Alembic migrations and
+appear nowhere in this document.
+
 ---
 
 ## users_schema

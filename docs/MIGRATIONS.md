@@ -100,7 +100,9 @@ Migrations run automatically as a Helm pre-install/pre-upgrade hook.
 
 ### Migration Job
 
-Each service has a Helm hook that runs migrations:
+Each **database-backed** service has a Helm hook that runs migrations. The stateless
+services (`payments`, `infra`, `notifications`) own no schema, have no Alembic setup, and
+their charts contain no `migration-job.yaml` at all:
 
 ```yaml
 # deploy/charts/orders/templates/migration-job.yaml
@@ -229,7 +231,20 @@ alembic merge -m "merge heads" head1 head2
 
 ## Adding New Services
 
-To add migrations to a new service:
+**First decide whether the service needs a database at all.** Three of the nine backend
+services are stateless and deliberately have no migrations:
+
+| Service | State |
+|---------|-------|
+| payments | In-memory checkout sessions |
+| infra | None — reads live Kubernetes state |
+| notifications | In-memory idempotency set only |
+
+For these, skip this entire section and **delete `templates/migration-job.yaml` from the
+chart** if it was copied from a database-backed service. A migration hook on a service
+with no `alembic/` directory fails the Helm install.
+
+To add migrations to a new database-backed service:
 
 ```bash
 cd services/new-service
