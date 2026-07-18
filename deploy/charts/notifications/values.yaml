@@ -63,9 +63,26 @@ ingress:
   enabled: false
 
 # IRSA hook for prod SES access (ses:SendEmail). IAM role creation is out of scope here.
-# Uncomment and fill role-arn, then set serviceAccountName in the deployment template.
+#
+# Setting `name` is sufficient and is all the documented path needs: the Deployment
+# emits `serviceAccountName` only when `name` is non-empty, so the default install
+# below renders no `serviceAccountName` at all and the pod uses the namespace default
+# ServiceAccount. That is correct for EMAIL_PROVIDER=logging, which needs no AWS access.
+#
+#   create: false + name: notifications  -> consume a ServiceAccount created outside
+#                                           Helm (the `eksctl create iamserviceaccount`
+#                                           path in deploy/README.md). Annotations are
+#                                           applied by eksctl, not by this chart.
+#   create: true  + name + annotations   -> this chart creates and annotates the
+#                                           ServiceAccount itself. Use when the IAM role
+#                                           already exists and you want Helm to own the
+#                                           Kubernetes object.
+#
+# `create: true` with an empty `name` fails the render with an explicit message rather
+# than producing an unnamed ServiceAccount.
+# See deploy/README.md -> "Email Delivery Setup (SES via IRSA)".
 serviceAccount:
   create: false
   name: ""            # e.g. notifications
-  # annotations:
+  annotations: {}
   #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-notifications-ses

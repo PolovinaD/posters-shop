@@ -12,7 +12,13 @@ spec:
       labels:
         app: notifications
     spec:
-      # serviceAccountName: {{ .Values.serviceAccount.name }}   # enable once IRSA role is set
+      {{- if .Values.serviceAccount.name }}
+      # Set serviceAccount.name to bind the pod to an IRSA-annotated ServiceAccount
+      # (see deploy/README.md -> "Email Delivery Setup (SES via IRSA)"). Left unset,
+      # the pod runs under the namespace default ServiceAccount, which is correct for
+      # EMAIL_PROVIDER=logging because LoggingProvider needs no AWS credentials.
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
       containers:
         - name: notifications
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

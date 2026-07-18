@@ -344,7 +344,10 @@ For least privilege, prefer a customer-managed policy over `AmazonSESFullAccess`
 ### 3. Point the chart at the ServiceAccount
 
 `eksctl` creates the ServiceAccount with the `eks.amazonaws.com/role-arn` annotation
-already applied, so the chart only needs to consume it.
+already applied, so the chart only needs to consume it. The Deployment emits
+`serviceAccountName` whenever `serviceAccount.name` is non-empty, and omits it entirely
+otherwise — which is why a plain `helm install` still runs under the namespace default
+ServiceAccount with no AWS identity.
 
 `env` is a list, so `--set env[N].value=…` depends on positional indices that shift
 whenever the list changes. Use an override file instead:
@@ -379,7 +382,39 @@ helm upgrade --install notifications deploy/charts/notifications \
 Helm replaces lists wholesale rather than merging them, so the override must restate
 every `env` entry, not just the one being changed.
 
-If you manage the ServiceAccount yourself instead, annotate it directly:
+Confirm the binding actually rendered before installing:
+
+```bash
+helm template notifications deploy/charts/notifications \
+  -f notifications-prod.yaml | grep serviceAccountName
+# expected: "      serviceAccountName: notifications" (no leading '#')
+```
+
+If that prints nothing, `serviceAccount.name` did not reach the chart and the pod would
+run under the default ServiceAccount — boto3 would then find no SES credentials and every
+send would return `503`, which the orders outbox retries five times per event before
+abandoning it.
+
+### Alternative: let the chart own the ServiceAccount
+
+If you created the IAM role without `eksctl` (so no ServiceAccount exists yet), the chart
+can create and annotate it. Set `create: true` and supply the role ARN:
+
+```yaml
+serviceAccount:
+  create: true
+  name: notifications
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-notifications-ses
+```
+
+The IAM role's trust policy must still name this ServiceAccount and the cluster's OIDC
+provider; Helm creates the Kubernetes object, not the AWS role. Do not combine this with
+the `eksctl` path above — `eksctl` already created the ServiceAccount, and `create: true`
+would make Helm try to take ownership of an object it does not own.
+
+If you manage the ServiceAccount outside Helm entirely, annotate it directly and leave
+`create: false`:
 
 ```yaml
 apiVersion: v1
