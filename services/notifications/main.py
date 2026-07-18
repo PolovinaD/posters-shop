@@ -146,11 +146,21 @@ def render_email(event_type: str, payload: dict) -> tuple[str, str]:
     if event_type == "ORDER_CANCELLED":
         subject = f"Your PosterShop order #{order_id} was cancelled"
         reason = payload.get("reason", "cancelled")
-        body = (
-            f"Order #{order_id} has been cancelled ({reason}).\n"
-            f"Any reserved stock has been released. If this was unexpected, "
-            f"please contact support.\n"
-        )
+        body = f"Order #{order_id} has been cancelled ({reason}).\n"
+        # Only claim stock release when the emitting service actually reported it.
+        # Unconditional wording was false for orders cancelled after production
+        # had already consumed the reservation.
+        if payload.get("released_stock"):
+            body += "Any stock reserved for this order has been released.\n"
+        # An order cancelled after payment has billing consequences this service
+        # cannot observe or confirm, so point the customer at support instead of
+        # asserting any payment outcome. See docs/KNOWN_LIMITATIONS.md.
+        if payload.get("previous_status") in ("PAID", "PRODUCING", "SHIPPED"):
+            body += (
+                "This order had already been paid. Please contact our support team "
+                "with any questions about the payment for this order.\n"
+            )
+        body += "If this was unexpected, please contact support.\n"
         return subject, body
 
     # Fallback — should not happen given the fixed set of handlers.

@@ -103,6 +103,7 @@ deploy/
 │   ├── logistics/
 │   ├── inventory/
 │   ├── payments/
+│   ├── notifications/
 │   ├── infra/
 │   └── frontend/
 │
@@ -222,7 +223,7 @@ Create one repository per service:
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION=eu-north-1
 
-for service in users catalog orders production logistics inventory payments infra frontend; do
+for service in users catalog orders production logistics inventory payments notifications frontend infra; do
   aws ecr create-repository \
     --repository-name $service \
     --region $AWS_REGION \
@@ -271,6 +272,138 @@ aws ecr get-login-password --region $AWS_REGION \
 | `CLUSTER_NAME` | `postershop` | EKS cluster name |
 | `NAMESPACE` | `postershop` | Kubernetes namespace |
 | `DB_PASSWORD` | (prompt) | RDS master password |
+| `EMAIL_PROVIDER` | `logging` (code default) | Notifications email transport: `ses` for real delivery, anything else uses the credential-free logging provider |
+| `EMAIL_FROM` | `no-reply@postershop.example` | Sender address. Must be a **verified SES identity** in `SES_REGION` when `EMAIL_PROVIDER=ses` |
+| `SES_REGION` | `eu-central-1` | Region whose SES holds the verified sender identity. Deliberately independent of `AWS_REGION` (see below) |
+
+## Email Delivery Setup (SES via IRSA)
+
+The `notifications` service sends transactional email on order-lifecycle events.
+Its transport is pluggable:
+
+| `EMAIL_PROVIDER` | Provider | AWS needed? | Intended environment |
+|------------------|----------|-------------|----------------------|
+| unset / anything but `ses` | `LoggingProvider` — renders the email into the structured log | No | Local dev, docker-compose, thesis demo |
+| `ses` | `SesProvider` — real send through AWS SES | Yes (IRSA role) | Production |
+
+The chart ships `EMAIL_PROVIDER=logging` so that a plain `helm install` works with
+no AWS setup at all. **Production must explicitly opt in to SES** by completing the
+three steps below and then setting `EMAIL_PROVIDER=ses`.
+
+### 1. Verify a sender identity in SES
+
+```bash
+aws ses verify-email-identity \
+  --email-address no-reply@postershop.example \
+  --region eu-central-1
+```
+
+Confirm the verification link that SES emails to that address. Until the identity is
+verified, every send fails. A whole verified domain works too, and is preferable for
+production because it removes the per-address confirmation step.
+
+> **On the region difference — this is intentional, not a bug.**
+> The EKS cluster runs in `eu-north-1` (`AWS_REGION`), while `SES_REGION` defaults to
+> `eu-central-1`. SES is a regional service and a verified sender identity lives in
+> whichever region it was verified in; that region does not have to match the region
+> the calling workload runs in. `eu-north-1` also has narrower SES availability than
+> `eu-central-1`. If you verify your identity in `eu-north-1` instead, simply set
+> `SES_REGION=eu-north-1` — the two values are independent by design.
+
+### 2. Create the IAM role for IRSA
+
+IRSA (*IAM Roles for Service Accounts*) lets the pod assume an IAM role through its
+Kubernetes ServiceAccount, so **no AWS access key is ever stored** — not in the image,
+not in a Kubernetes Secret, not in Secrets Manager.
+
+```bash
+eksctl create iamserviceaccount \
+  --name notifications \
+  --namespace postershop \
+  --cluster postershop \
+  --region eu-north-1 \
+  --attach-policy-arn arn:aws:iam::aws:policy/AmazonSESFullAccess \
+  --approve
+```
+
+For least privilege, prefer a customer-managed policy over `AmazonSESFullAccess`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+### 3. Point the chart at the ServiceAccount
+
+`eksctl` creates the ServiceAccount with the `eks.amazonaws.com/role-arn` annotation
+already applied, so the chart only needs to consume it.
+
+`env` is a list, so `--set env[N].value=…` depends on positional indices that shift
+whenever the list changes. Use an override file instead:
+
+```yaml
+# notifications-prod.yaml
+serviceAccount:
+  create: false
+  name: notifications
+
+env:
+  - name: SERVICE_NAME
+    value: "notifications"
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: EMAIL_PROVIDER
+    value: "ses"
+  - name: EMAIL_FROM
+    value: "no-reply@postershop.example"
+  - name: SES_REGION
+    value: "eu-central-1"
+  - name: CORS_ORIGINS
+    value: "https://shop.example.com"
+```
+
+```bash
+helm upgrade --install notifications deploy/charts/notifications \
+  --namespace postershop \
+  -f notifications-prod.yaml
+```
+
+Helm replaces lists wholesale rather than merging them, so the override must restate
+every `env` entry, not just the one being changed.
+
+If you manage the ServiceAccount yourself instead, annotate it directly:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: notifications
+  namespace: postershop
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-notifications-ses
+```
+
+### Verifying
+
+```bash
+# The pod should have the IRSA env vars injected by the EKS webhook
+kubectl exec -n postershop deploy/notifications -- env | grep AWS_ROLE_ARN
+
+# Watch the send path
+kubectl logs -n postershop deploy/notifications -f
+```
+
+With the logging provider, a successful send appears as an `Email (logging provider)`
+log line carrying the rendered subject and body. With SES, a failure raises `503` so the
+orders outbox retries; check `notifications_email_send_failures_total` in Prometheus.
 
 ## Useful Commands
 
@@ -347,8 +480,18 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 
 ## Secrets Management
 
-The platform uses **AWS Secrets Manager** as the single source of truth for all secrets,
-with **External Secrets Operator** automatically syncing them to Kubernetes.
+The platform uses **AWS Secrets Manager** as the single source of truth for every *stored*
+secret — database passwords, the JWT signing key, and the Stripe keys — with
+**External Secrets Operator** automatically syncing them to Kubernetes.
+
+> **Carve-out: IRSA-based AWS auth is deliberately outside this flow.**
+> The `notifications` service reaches AWS SES through IRSA (*IAM Roles for Service
+> Accounts*), which mints short-lived credentials from the pod's ServiceAccount at
+> runtime. There is no access key to store, so nothing about SES authentication lives in
+> Secrets Manager. The same applies to any other workload that assumes an IAM role rather
+> than holding a key. Secrets Manager remains the single source of truth for stored
+> secrets; credentials that are never stored simply do not enter it.
+> See [Email Delivery Setup (SES via IRSA)](#email-delivery-setup-ses-via-irsa).
 
 ### How it works
 

@@ -21,20 +21,44 @@ env:
     value: "notifications"
   - name: LOG_LEVEL
     value: "INFO"
-  - name: ROOT_PATH
-    value: "/api/notifications"
-  # EMAIL_PROVIDER is "ses" for production and requires the IRSA role in the
-  # serviceAccount block below (grants ses:SendEmail). Override to "logging"
-  # for a credential-free demo (no AWS needed).
+  # ROOT_PATH is deliberately NOT set here.
+  #
+  # It was copy-pasted from an ALB-exposed chart, where it makes the service aware
+  # of the "/api/<name>" prefix the ingress strips. notifications has
+  # `ingress.enabled: false` below — it is an internal, cluster-only consumer of the
+  # orders outbox and is never reached through the ALB — so the prefix routed
+  # nowhere and only corrupted the OpenAPI server URL at /docs. The code default
+  # (`ROOT_PATH=""`, services/notifications/main.py:25) is correct for this service.
+  # If notifications is ever exposed through the ingress, re-add ROOT_PATH together
+  # with the routing rule, not before.
+  #
+  # EMAIL_PROVIDER — effective default per environment:
+  #   chart default (here)    : "logging"  -> LoggingProvider, renders the email into
+  #                             the structured log. Needs NO AWS credentials, so a
+  #                             plain `helm install` works out of the box.
+  #   production              : "ses"      -> SesProvider, real AWS SES delivery.
+  #                             REQUIRES the IRSA role (ses:SendEmail) wired via the
+  #                             serviceAccount block below, plus a verified sender
+  #                             identity in SES_REGION.
+  #
+  # This chart previously defaulted to "ses". That made an un-configured install fail
+  # closed in the worst way: every send raised 503, which the orders outbox treats as
+  # retryable, so each event burned all five retries before being abandoned. Defaulting
+  # to "logging" keeps the failure mode safe and makes SES an explicit opt-in.
+  # See deploy/README.md -> "Email Delivery Setup (SES via IRSA)".
   - name: EMAIL_PROVIDER
-    value: "ses"
+    value: "logging"
   - name: EMAIL_FROM
     value: "no-reply@postershop.example"
+  # SES_REGION is intentionally independent of the cluster region (eu-north-1):
+  # a verified SES sender identity need not live in the region of the calling workload.
   - name: SES_REGION
     value: "eu-central-1"
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
 
+# Internal service only — consumed by the orders outbox over cluster DNS.
+# Not ALB-exposed, therefore it adds no ingress routing rule.
 ingress:
   enabled: false
 

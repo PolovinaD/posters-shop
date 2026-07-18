@@ -6,12 +6,24 @@
 # ============================================================
 #
 # ============================================================
-# ServiceMonitor Coverage Status (MON-01)
+# ServiceMonitor Coverage Status (MON-01) — COMPLETE
 # ============================================================
-# Monitors defined: users, catalog, orders, production, logistics, inventory, payments
-# Missing: infra — infra service gains /metrics endpoint in phase 4 but ServiceMonitor
-#          is deferred to phase 6 deployment to keep scope focused.
-#          To add: kubectl apply a ServiceMonitor for app: infra after full-deploy.sh.
+# Monitors defined (9 of 9 backend services):
+#   users, catalog, orders, production, logistics, inventory, payments,
+#   notifications, infra
+#
+# Coverage is complete: every backend service that exposes /metrics is scraped.
+#
+# History: infra's ServiceMonitor was originally deferred to the phase 6 deployment
+# to keep phase 4 scope focused. Phase 6 is now complete, so that deferral is
+# RESOLVED here rather than overridden — this is the follow-through the original
+# note asked for. notifications was added at the same time, having shipped as the
+# 9th backend service after this file was first written.
+#
+# PORT NAMES ARE NOT UNIFORM — see the comment above the infra block below.
+# A ServiceMonitor whose `port` does not match a NAMED port on the target Service
+# still shows up healthy in `kubectl get servicemonitor` while scraping nothing.
+# When adding a service, copy its Service's actual port NAME, do not assume "http".
 # ============================================================
 
 ---
@@ -155,6 +167,71 @@ spec:
       app: payments
   endpoints:
     - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: notifications
+  namespace: postershop
+  labels:
+    app: notifications
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: notifications
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop
+
+# ------------------------------------------------------------
+# infra — NOTE THE DIFFERENT PORT NAME. This is not a typo.
+# ------------------------------------------------------------
+# `endpoints[].port` must match a port NAME on the target Service, not a number
+# and not the convention used elsewhere in this file.
+#
+# The other eight services name their Service port "http". infra names its port
+# "http-metrics" (deploy/charts/infra/templates/deployment.yaml — the Service's
+# ports entry sets both `targetPort: http-metrics` and `name: http-metrics`, and
+# the Deployment container declares a matching named port). infra is internally
+# consistent; it simply standardized on a different name.
+#
+# Using `port: http` here would still match the Service via the label selector,
+# but would resolve NO port — Prometheus would silently scrape nothing while
+# `kubectl get servicemonitor` looked perfectly healthy. This block therefore
+# matches existing reality rather than introducing an inconsistency.
+#
+# Renaming infra's Service port to "http" would be the alternative unification,
+# but that is a live-traffic change to a working service and is out of scope here.
+#
+# The selector is `app: infra` because deploy/charts/infra/Chart.yaml sets
+# `name: infra`, so the chart's `app: {{ .Chart.Name }}` label renders to "infra".
+# ------------------------------------------------------------
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: infra
+  namespace: postershop
+  labels:
+    app: infra
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: infra
+  endpoints:
+    - port: http-metrics
       path: /metrics
       interval: 15s
   namespaceSelector:
