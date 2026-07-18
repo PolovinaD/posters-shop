@@ -103,8 +103,15 @@ created ──> reserved ──> paid ──> producing ──> shipped ──> 
 
 | Event | Trigger | Consumers |
 |-------|---------|-----------|
-| ORDER_PAID | Payment webhook received | Production |
-| ORDER_CANCELLED | Order cancelled | Production |
+| ORDER_PAID | Payment webhook received | Production, Notifications |
+| ORDER_CANCELLED | Order cancelled | Production, Notifications |
+| ORDER_SHIPPED | `POST /orders/{id}/ship` | Notifications |
+| ORDER_DELIVERED | `POST /orders/{id}/deliver` | Notifications |
+
+`ORDER_PAID` and `ORDER_CANCELLED` fan out to two subscribers each, so the outbox
+is publish-subscribe rather than a single-consumer channel. See
+[docs/EVENT_CATALOG.md](../../docs/EVENT_CATALOG.md) for payloads and the
+authoritative `EVENT_SUBSCRIBERS` map (`outbox.py:36-51`).
 
 ## Outbox Pattern
 

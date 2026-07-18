@@ -190,9 +190,16 @@ ROOT_PATH=
 
 # Service-specific (see ENV_VARS.md for full list)
 JWT_SECRET=your-secret-key
-INVENTORY_SERVICE_URL=http://localhost:8003
-PRODUCTION_SERVICE_URL=http://localhost:8005
+INVENTORY_SERVICE_URL=http://localhost:8006
+PRODUCTION_SERVICE_URL=http://localhost:8004
+NOTIFICATIONS_SERVICE_URL=http://localhost:8009
 ```
+
+> Host ports follow `docker-compose.yaml`, which is authoritative:
+> users 8001, catalog 8002, orders 8003, production 8004, logistics 8005,
+> inventory 8006, payments 8007, infra 8008, notifications 8009.
+> Inside Docker Compose every service listens on container port 8000, so
+> service-to-service URLs there use `http://<service>:8000` instead.
 
 ---
 
