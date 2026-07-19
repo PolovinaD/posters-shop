@@ -41,6 +41,38 @@ metadata:
     project: postershop
     environment: development
 
+# ============================================================
+# EKS access entries — who may talk to the cluster API
+# ============================================================
+# An access entry lives on the CLUSTER, so it dies with a teardown.
+# Declaring it here re-grants CI access automatically on every
+# `eksctl create cluster`, instead of a manual step after each recreate.
+#
+# authenticationMode: API_AND_CONFIG_MAP enables the access-entry API
+# while leaving the legacy aws-auth ConfigMap path working, so nothing
+# that still depends on aws-auth loses access silently. Bare `API`
+# would disable that path outright.
+#
+# Scope is cluster-admin, deliberately. The deploy workflow runs
+# `kubectl get nodes` in its cluster probe (a cluster-scoped read) and
+# `kubectl create namespace` on first deploy (a cluster-scoped write).
+# A namespace-scoped AmazonEKSEditPolicy grants neither: the probe would
+# 403, classify as `kubectl-rbac-denied`, and end the run RED before any
+# deploy was attempted. Acceptable here — a single-tenant thesis cluster
+# whose CI role is already pinned by trust policy to one repo and the
+# master branch.
+#
+# NOTE: principalARN takes a literal ARN — eksctl config files have no
+# variable substitution — so the AWS account ID is committed here.
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+  accessEntries:
+    - principalARN: arn:aws:iam::553967852170:role/github-eks-deploy
+      accessPolicies:
+        - policyARN: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          accessScope:
+            type: cluster
+
 iam:
   withOIDC: true
   serviceAccounts:
