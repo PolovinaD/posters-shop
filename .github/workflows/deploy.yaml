@@ -155,12 +155,31 @@ jobs:
       # A missing cluster is NOT a failure: it produces reachable=false and
       # the deploy steps below are skipped, leaving the run green.
       #
+      # THREE outcomes, not two:
+      #   REASON  -> benign. The cluster is genuinely absent, genuinely
+      #              mid-transition, or genuinely unreachable. reachable=false,
+      #              deploy steps skip, run ends GREEN.
+      #   FATAL   -> configuration error. IAM denial, invalid credentials, an
+      #              unrecognised AWS failure, or an in-cluster RBAC rejection.
+      #              These are NOT "the cluster is down" and must never be
+      #              reported as such: the step prints ::error::, writes a note
+      #              to the job summary, and exits 1, ending the run RED.
+      #   neither -> cluster ACTIVE and its API answered. reachable=true.
+      # An unrecognised describe-cluster error is FATAL by design. Calling it
+      # "cluster-not-found" would assert something we do not know to be true,
+      # which is the precise failure mode this classification exists to fix.
+      #
       # `set +e` FIRST is mandatory. GitHub Actions runs every `run:` block as
       # `bash -e {0}`, so errexit is already on before the first line, and
       # neither `set -u` nor `set -o pipefail` clears it. Without `set +e` the
       # first failing probe command aborts this step and turns the job RED,
       # which is exactly the behaviour the probe exists to prevent.
       # Belt and braces: every probe command also sits inside an `if`.
+      #
+      # Stderr from both probe commands is captured to a FILE, never discarded
+      # with `2>&1`. The classification greps that file, and every failure
+      # branch prints it. `/usr/bin/grep` is pinned so the check cannot be
+      # hijacked by a shell function or an alternative grep on PATH.
       - name: Probe EKS cluster
         id: probe
         run: |
@@ -169,15 +188,24 @@ jobs:
 
           REACHABLE=false
           REASON=""
+          FATAL=""
 
           if ! aws eks describe-cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" \
                --query 'cluster.status' --output text > /tmp/eks_status.txt 2>/tmp/eks_err.txt; then
-            REASON="cluster-not-found"
             echo "::notice::aws eks describe-cluster failed for '$EKS_CLUSTER' in '$AWS_REGION'"
             sed -n '1,20p' /tmp/eks_err.txt
+            if /usr/bin/grep -qiE 'ResourceNotFoundException|No cluster found' /tmp/eks_err.txt; then
+              REASON="cluster-not-found"
+            elif /usr/bin/grep -qiE 'AccessDenied|not authorized to perform' /tmp/eks_err.txt; then
+              FATAL="iam-access-denied"
+            elif /usr/bin/grep -qiE 'ExpiredToken|InvalidClientTokenId' /tmp/eks_err.txt; then
+              FATAL="aws-credentials-invalid"
+            else
+              FATAL="describe-cluster-failed"
+            fi
           fi
 
-          if [ -z "$REASON" ]; then
+          if [ -z "$REASON" ] && [ -z "$FATAL" ]; then
             STATUS=$(tr -d '[:space:]' < /tmp/eks_status.txt)
             if [ "$STATUS" != "ACTIVE" ]; then
               REASON="status-${STATUS:-unknown}"
@@ -185,18 +213,50 @@ jobs:
             fi
           fi
 
-          if [ -z "$REASON" ]; then
-            if ! aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER" >/dev/null 2>&1; then
-              REASON="kubeconfig-failed"
+          if [ -z "$REASON" ] && [ -z "$FATAL" ]; then
+            if ! aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER" \
+                 >/dev/null 2>/tmp/kubeconfig_err.txt; then
+              FATAL="update-kubeconfig-failed"
               echo "::notice::aws eks update-kubeconfig failed"
+              sed -n '1,20p' /tmp/kubeconfig_err.txt
             fi
           fi
 
-          if [ -z "$REASON" ]; then
-            if ! kubectl get nodes --request-timeout=20s >/dev/null 2>&1; then
-              REASON="api-unreachable"
-              echo "::notice::kubectl could not reach the cluster API within 20s"
+          if [ -z "$REASON" ] && [ -z "$FATAL" ]; then
+            if ! kubectl get nodes --request-timeout=20s >/dev/null 2>/tmp/kubectl_err.txt; then
+              echo "::notice::kubectl could not list nodes within 20s"
+              sed -n '1,20p' /tmp/kubectl_err.txt
+              if /usr/bin/grep -qiE 'Forbidden|Unauthorized|must be logged in' /tmp/kubectl_err.txt; then
+                FATAL="kubectl-rbac-denied"
+              else
+                REASON="api-unreachable"
+              fi
             fi
+          fi
+
+          if [ -n "$FATAL" ]; then
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=$FATAL" >> "$GITHUB_OUTPUT"
+            echo "::error::Cluster probe failed with a configuration error: $FATAL"
+            {
+              echo ""
+              echo "### Deploy FAILED - cluster probe hit a configuration error"
+              echo ""
+              echo "Classification: \`$FATAL\` (cluster \`$EKS_CLUSTER\`, region \`$AWS_REGION\`)"
+              echo ""
+              echo "This is **not** a torn-down cluster, so the run is red rather than a"
+              echo "green skip. Likely causes by classification:"
+              echo ""
+              echo "- \`iam-access-denied\` - the github-actions-role lacks \`eks:DescribeCluster\`."
+              echo "- \`aws-credentials-invalid\` - the OIDC assume-role produced no usable session."
+              echo "- \`update-kubeconfig-failed\` - describe succeeded but kubeconfig could not be written."
+              echo "- \`kubectl-rbac-denied\` - AWS-side IAM is fine but the role has no in-cluster"
+              echo "  RBAC. Add an EKS access entry or an aws-auth ConfigMap mapping."
+              echo "- \`describe-cluster-failed\` - an unrecognised AWS error; see the step log."
+              echo ""
+              echo "The captured error output is printed in the **Probe EKS cluster** step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
           if [ -z "$REASON" ]; then

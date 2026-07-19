@@ -386,6 +386,114 @@ def main():
         fail("13 S5", "%s: a failed rollout must dump `kubectl describe deployment` "
                       "rather than a bare timeout" % DEPLOY)
 
+    # ---- 14. Probe failure classification (W-1 regression test) -----------
+    # The probe must distinguish THREE outcomes, not two. Group 10 only proves
+    # the probe survives a failing command; it is blind to the probe reporting
+    # "cluster is down" for an error that means "you are misconfigured".
+    if probe is not None:
+        probe_run = probe.get("run", "")
+        probe_lines = join_continuations(probe_run)
+
+        if not re.search(r'^\s*FATAL=""\s*$', probe_run, re.MULTILINE):
+            fail("14 classify",
+                 '%s probe step does not initialise `FATAL=""`. Under `set -u` the later '
+                 "`[ -z \"$FATAL\" ]` guards would abort the step." % DEPLOY)
+
+        # (a) Every classification label must exist AS AN ASSIGNMENT to the
+        #     correct variable -- not merely as a string somewhere in the step.
+        #     Searching the whole block for the bare label is vacuous: the
+        #     step-summary help text names every label in prose, so a mutation
+        #     that reclassified `FATAL="iam-access-denied"` as
+        #     `REASON="cluster-not-found"` (turning a red configuration error
+        #     back into a green skip) still "found" the label and passed. The
+        #     variable is the part that carries the meaning.
+        for var, label, why in (
+            ("REASON", "cluster-not-found", "genuinely absent cluster -> GREEN skip"),
+            ("REASON", "api-unreachable", "genuine network unreachability -> GREEN skip"),
+            ("FATAL", "iam-access-denied", "IAM denial on eks:DescribeCluster -> RED"),
+            ("FATAL", "aws-credentials-invalid", "expired/invalid AWS session -> RED"),
+            ("FATAL", "describe-cluster-failed", "unrecognised AWS error -> RED; calling "
+                                                 "it a torn-down cluster asserts something "
+                                                 "we do not know"),
+            ("FATAL", "kubectl-rbac-denied", "in-cluster RBAC rejection -> RED"),
+        ):
+            if ('%s="%s"' % (var, label)) not in probe_run:
+                fail("14 classify",
+                     '%s probe step never assigns %s="%s" (%s). If this outcome was '
+                     "collapsed into another variable, a configuration error is reported "
+                     "as a green skip - or a torn-down cluster fails the run."
+                     % (DEPLOY, var, label, why))
+
+        # (b) the FATAL path must actually reach `exit 1`
+        fatal_at = next((i for i, l in enumerate(probe_lines)
+                         if re.search(r'-n\s+"\$FATAL"', l)), None)
+        if fatal_at is None:
+            fail("14 classify",
+                 '%s probe step never tests `[ -n "$FATAL" ]`, so a fatal classification '
+                 "can never fail the run." % DEPLOY)
+        elif not any(l.strip() == "exit 1" for l in probe_lines[fatal_at:]):
+            fail("14 classify",
+                 '%s probe step tests `[ -n "$FATAL" ]` but no `exit 1` follows it. A '
+                 "configuration error would be reported as a GREEN skip - the exact "
+                 "defect this group exists to prevent." % DEPLOY)
+
+        # (c) stderr of BOTH probe commands must be captured to a file.
+        #     `2>&1` merges it into the discarded stdout; `2>/dev/null` destroys
+        #     it outright. Either way the classification has nothing to read and
+        #     the operator sees no diagnostic.
+        for cmd in ("aws eks describe-cluster", "kubectl get nodes"):
+            hit = None
+            for line in probe_lines:
+                unquoted = re.sub(r"\"[^\"]*\"|'[^']*'", "", line)
+                if cmd in unquoted:
+                    hit = line
+                    break
+            if hit is None:
+                fail("14 classify", "%s probe step no longer runs `%s`" % (DEPLOY, cmd))
+                continue
+            if "2>&1" in hit:
+                fail("14 classify",
+                     "%s probe step redirects `%s` stderr with `2>&1`, discarding it. A "
+                     "403 Forbidden then becomes indistinguishable from a network timeout "
+                     "and is reported as a green skip:\n        %s"
+                     % (DEPLOY, cmd, hit.strip()))
+            if "2>/dev/null" in hit:
+                fail("14 classify",
+                     "%s probe step sends `%s` stderr to /dev/null:\n        %s"
+                     % (DEPLOY, cmd, hit.strip()))
+            if not re.search(r"2>\s*/\S+", hit) or "2>/dev/null" in hit:
+                fail("14 classify",
+                     "%s probe step does not capture `%s` stderr to a file, so it cannot "
+                     "be classified or printed:\n        %s" % (DEPLOY, cmd, hit.strip()))
+
+        # (d) the classification patterns themselves, pinned to /usr/bin/grep
+        for pattern, meaning in (
+            (r"ResourceNotFoundException", "genuinely-absent cluster -> green"),
+            (r"AccessDenied", "IAM denial -> red"),
+            (r"not authorized to perform", "IAM denial, long form -> red"),
+            (r"ExpiredToken", "stale credentials -> red"),
+            (r"InvalidClientTokenId", "bad credentials -> red"),
+            (r"Forbidden", "kubectl RBAC rejection -> red"),
+            (r"Unauthorized", "kubectl auth rejection -> red"),
+        ):
+            if pattern not in probe_run:
+                fail("14 classify",
+                     "%s probe step no longer matches %r (%s). Without it that error "
+                     "falls through to a different outcome." % (DEPLOY, pattern, meaning))
+
+        greps = [l for l in probe_lines
+                 if re.search(r"\bgrep\b", l) and not l.strip().startswith("#")]
+        for line in greps:
+            if "/usr/bin/grep" not in line:
+                fail("14 classify",
+                     "%s probe step calls an unpinned `grep`; pin `/usr/bin/grep` so the "
+                     "classification cannot be altered by a shell function or a different "
+                     "grep on PATH:\n        %s" % (DEPLOY, line.strip()))
+        if not greps:
+            fail("14 classify",
+                 "%s probe step performs no grep-based classification at all, so every "
+                 "failure collapses into one outcome." % DEPLOY)
+
     report()
 
 
@@ -396,7 +504,7 @@ def report():
             print("  FAIL " + f)
         print("")
         sys.exit(1)
-    print("workflow validation PASSED (13 assertion groups)")
+    print("workflow validation PASSED (14 assertion groups)")
     print("NOTE: offline only - GitHub-side state (repository variables, secrets,")
     print("      environments, IAM trust policy, ECR repositories) is NOT checked.")
     sys.exit(0)
