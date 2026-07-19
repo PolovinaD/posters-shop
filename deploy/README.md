@@ -181,8 +181,9 @@ AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 ./deploy/deploy.sh
 
 1. **Build and Push** triggers on a push to `master` that touches `services/**` or
    `frontend/**`. It diffs the full pushed commit range and builds only the services whose
-   directory changed, tagging each image `<git-sha>` and `latest`. Missing ECR repositories
-   are created on demand.
+   directory changed, tagging each image `<git-sha>` and `latest`. It **checks** that the
+   target ECR repository exists and fails with instructions if it does not — it cannot
+   create one (see step 3 below).
 2. It then calls **Deploy to EKS** as a reusable workflow, passing the exact service list it
    just built and the exact `<git-sha>` it just built, into namespace `postershop`.
 3. If the EKS cluster is torn down, the deploy is **skipped and the run stays green** — the
@@ -192,23 +193,27 @@ AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 ./deploy/deploy.sh
 Chart-only changes under `deploy/charts/**` do not trigger the pipeline; use a manual
 **Deploy to EKS** dispatch. See `docs/BACKLOG.md` for why this is deliberate.
 
-> **Unverified prerequisites.** The `gh` CLI was not available when this pipeline was
-> written, so nothing below could be checked against the actual repository. Before the first
-> push, confirm by hand that: the three repository variables exist; the OIDC identity
-> provider exists; the `github-actions-role` trust policy names this repository and permits
-> the `master` branch; and the role can act **inside** the cluster (an EKS access entry or
-> `aws-auth` mapping). A classic failure mode is OIDC and ECR working correctly while
-> `kubectl` returns 403 because the role was never mapped into the cluster. Also confirm an
-> ECR repository exists for every service, `notifications` included — though the pipeline
-> now creates missing ones itself.
+> **Prerequisites to confirm by hand.** The `gh` CLI was not available when this pipeline
+> was written, so GitHub-side state cannot be checked from this repository. Before the first
+> push, confirm that: the repository variables exist; the OIDC identity provider exists; the
+> `github-eks-deploy` trust policy names this repository and permits the `master` branch;
+> and the role can act **inside** the cluster (an EKS access entry or `aws-auth` mapping).
+> A classic failure mode is OIDC and ECR working correctly while `kubectl` returns 403
+> because the role was never mapped into the cluster — the deploy workflow's probe reports
+> this as `kubectl-rbac-denied` and ends the run red. Also confirm an ECR repository exists
+> for **every** service; the pipeline cannot create a missing one.
 
 Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
 
-| Variable | Example |
-|----------|---------|
-| `AWS_ACCOUNT_ID` | `123456789012` |
-| `AWS_REGION` | `eu-north-1` |
-| `EKS_CLUSTER` | `postershop` |
+| Variable | Example | Required |
+|----------|---------|----------|
+| `AWS_ACCOUNT_ID` | `123456789012` | yes |
+| `AWS_REGION` | `eu-north-1` | no — defaults to `eu-north-1` |
+| `EKS_CLUSTER` | `postershop` | no — defaults to `postershop` |
+| `AWS_ROLE_NAME` | `github-eks-deploy` | no — defaults to `github-eks-deploy` |
+
+`AWS_ROLE_NAME` overrides the IAM role **both** workflows assume via OIDC. Leave it unset
+unless the role is named something other than `github-eks-deploy`.
 
 Then provision the OIDC identity provider and the IAM role:
 
@@ -216,35 +221,87 @@ Then provision the OIDC identity provider and the IAM role:
    - Provider URL: `https://token.actions.githubusercontent.com`
    - Audience: `sts.amazonaws.com`
 
-2. **Create IAM Role** for GitHub Actions. Edit `trust-policy.json` with your values:
-   - Replace `YOUR_AWS_ACCOUNT_ID` with your account ID
-   - Replace `YOUR_GITHUB_ORG/YOUR_REPO` with your GitHub repository
+2. **Create IAM Role** for GitHub Actions. `trust-policy.json` at the repository root is a
+   template — edit it before use:
+   - Replace `YOUR_AWS_ACCOUNT_ID` with your account ID (it appears in the `Federated`
+     provider ARN).
+   - Replace `YOUR_GITHUB_ORG/YOUR_REPO` with your GitHub repository.
+   - The `sub` condition is pinned to `ref:refs/heads/master`. Widen it only if you need
+     other branches, tags or pull requests to assume the role; `repo:ORG/REPO:*` would let
+     **any** ref in the repository assume it, including a pull request from a fork.
+   - Keep the file to the three top-level keys IAM accepts (`Version`, `Id`, `Statement`).
+     Any other key — a `_comment`, for instance — makes `create-role` fail with
+     `MalformedPolicyDocument`.
 
    ```bash
    aws iam create-role \
-     --role-name github-actions-role \
+     --role-name github-eks-deploy \
      --assume-role-policy-document file://trust-policy.json
    ```
 
-3. **Attach Required Policies**:
+3. **Attach the permissions the workflows actually need.** There are three, and only the
+   first two are IAM:
+
+   **(a) ECR push.** `AmazonEC2ContainerRegistryPowerUser` covers push and pull:
 
    ```bash
-   # ECR access
-   # AmazonEC2ContainerRegistryPowerUser also grants ecr:CreateRepository, which is
-   # what lets the build workflow create a missing repository on demand.
    aws iam attach-role-policy \
-     --role-name github-actions-role \
+     --role-name github-eks-deploy \
      --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
-
-   # EKS access
-   aws iam attach-role-policy \
-     --role-name github-actions-role \
-     --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
    ```
+
+   > This managed policy does **not** grant `ecr:CreateRepository` — verified with
+   > `aws iam simulate-principal-policy`, which returns `implicitDeny`. The build workflow
+   > therefore cannot create a missing repository; it detects one and fails with
+   > instructions. **Pre-create every repository** using the loop in *ECR Repository
+   > Creation* below. That is both the least-privilege option and the one that works.
+   > At the time of writing, `notifications` is the one service with no repository, so its
+   > build will fail at the guard step until you create it.
+
+   **(b) `eks:DescribeCluster` on the target cluster**, which the deploy workflow's probe
+   needs. A small inline policy is the honest minimum:
+
+   ```bash
+   aws iam put-role-policy \
+     --role-name github-eks-deploy \
+     --policy-name eks-describe-cluster \
+     --policy-document '{
+       "Version": "2012-10-17",
+       "Statement": [{
+         "Effect": "Allow",
+         "Action": "eks:DescribeCluster",
+         "Resource": "arn:aws:eks:eu-north-1:YOUR_AWS_ACCOUNT_ID:cluster/postershop"
+       }]
+     }'
+   ```
+
+   > Do **not** attach `AmazonEKSClusterPolicy` or `AmazonEKSWorkerNodePolicy` for this.
+   > The first is the EKS control-plane *service-role* policy and the second is an EC2
+   > *node-instance* policy; neither is a deployer policy. If they are already attached to
+   > your role they are incidental, not a recommendation.
+
+   **(c) In-cluster RBAC — not an IAM permission.** IAM gets you to the EKS API; Kubernetes
+   still has to authorize the role. Without this, OIDC and ECR work while `kubectl` returns
+   403 and the probe reports `kubectl-rbac-denied`.
+   >
+   > An access entry lives on the **cluster**, so it is destroyed with every teardown. Both
+   > `deploy/infrastructure/eksctl-cluster.yaml` and `eksctl-cluster-dev.yaml` declare it
+   > under `accessConfig.accessEntries`, so `eksctl create cluster` re-grants it
+   > automatically and no manual step is needed after a recreate. If you bring up a cluster
+   > that predates that config, grant it once by hand:
+   >
+   > ```bash
+   > aws eks create-access-entry --cluster-name postershop \
+   >   --principal-arn arn:aws:iam::YOUR_AWS_ACCOUNT_ID:role/github-eks-deploy
+   > aws eks associate-access-policy --cluster-name postershop \
+   >   --principal-arn arn:aws:iam::YOUR_AWS_ACCOUNT_ID:role/github-eks-deploy \
+   >   --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+   >   --access-scope type=cluster
+   > ```
 
 ### ECR Repository Creation
 
-Create one repository per service:
+The build workflow cannot create repositories, so create one per service up front:
 
 ```bash
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
