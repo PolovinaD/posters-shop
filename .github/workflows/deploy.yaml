@@ -1,17 +1,36 @@
 # ============================================================
 # Deploy to Kubernetes (EKS)
 # ============================================================
-# Deploys services to EKS cluster after build completes.
+# Reusable workflow. Invoked by "Build and Push" via workflow_call
+# with the exact service set and image tag that were just built,
+# or run manually via workflow_dispatch.
+#
 # Uses OIDC for passwordless AWS authentication.
+#
+# Cluster-down behaviour: the `probe` step decides whether the EKS
+# cluster is reachable. Absent/unreachable -> every deploy step is
+# skipped and the run ends GREEN with a note in the step summary.
+# Present but `helm upgrade` fails -> the run ends RED.
 # ============================================================
 
 name: Deploy to EKS
 
 on:
-  workflow_run:
-    workflows: ["Build and Push"]
-    types: [completed]
-    branches: [main]
+  workflow_call:
+    inputs:
+      services:
+        description: 'Space-separated list of services to deploy'
+        required: true
+        type: string
+      image_tag:
+        description: 'Image tag to deploy (must already exist in ECR)'
+        required: true
+        type: string
+      namespace:
+        description: 'Kubernetes namespace to deploy into'
+        required: false
+        default: postershop
+        type: string
   workflow_dispatch:
     inputs:
       environment:
@@ -29,15 +48,21 @@ on:
         type: choice
         options:
           - all
-          - users
           - catalog
-          - orders
-          - production
-          - logistics
-          - inventory
-          - payments
-          - infra
           - frontend
+          - infra
+          - inventory
+          - logistics
+          - notifications
+          - orders
+          - payments
+          - production
+          - users
+      image_tag:
+        description: 'Image tag to deploy (e.g. latest, or a commit SHA)'
+        required: true
+        default: 'latest'
+        type: string
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
@@ -50,13 +75,65 @@ permissions:
 
 jobs:
   deploy:
-    # Only run if build succeeded (for workflow_run trigger)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'staging' }}
-    
+
     steps:
       - uses: actions/checkout@v4
+
+      # Normalises the two trigger shapes into one set of step outputs.
+      # Under workflow_call the dispatch-only inputs are absent, so the
+      # dispatch branch reads `github.event.inputs.*` and the call branch
+      # reads `inputs.*` (declared only for workflow_call).
+      - name: Resolve deploy inputs
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+            if [ "$ENV" = "production" ]; then
+              NS=postershop
+            else
+              NS=postershop-staging
+            fi
+            SVC="${{ github.event.inputs.service }}"
+            if [ "$SVC" = "all" ]; then
+              SVCS=$(ls -1 deploy/charts | tr '\n' ' ')
+            else
+              SVCS="$SVC"
+            fi
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            NS="${{ inputs.namespace }}"
+            SVCS="${{ inputs.services }}"
+            TAG="${{ inputs.image_tag }}"
+          fi
+
+          # collapse repeated/leading/trailing whitespace
+          SVCS=$(printf '%s' "$SVCS" | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
+
+          {
+            echo "namespace=$NS"
+            echo "services=$SVCS"
+            echo "image_tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Deploy plan"
+            echo ""
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            echo "- Namespace: \`$NS\`"
+            echo "- Services: \`${SVCS:-<none>}\`"
+            echo "- Image tag: \`$TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Resolved: namespace=$NS services='$SVCS' image_tag=$TAG"
+
+          if [ -z "$SVCS" ]; then
+            echo "::warning::Resolved service list is empty - there is nothing to deploy"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**No services resolved - nothing to deploy.**" >> "$GITHUB_STEP_SUMMARY"
+            # Ends this step only; later steps iterate an empty list and no-op.
+            exit 0
+          fi
 
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -74,66 +151,154 @@ jobs:
         with:
           version: 'v3.13.0'
 
-      - name: Configure kubectl for EKS
+      # The EKS cluster is torn down between test sessions to control cost.
+      # A missing cluster is NOT a failure: it produces reachable=false and
+      # the deploy steps below are skipped, leaving the run green.
+      #
+      # `set +e` FIRST is mandatory. GitHub Actions runs every `run:` block as
+      # `bash -e {0}`, so errexit is already on before the first line, and
+      # neither `set -u` nor `set -o pipefail` clears it. Without `set +e` the
+      # first failing probe command aborts this step and turns the job RED,
+      # which is exactly the behaviour the probe exists to prevent.
+      # Belt and braces: every probe command also sits inside an `if`.
+      - name: Probe EKS cluster
+        id: probe
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }}
+          set +e
+          set -uo pipefail
 
-      - name: Set namespace
-        id: namespace
-        run: |
-          ENV="${{ github.event.inputs.environment || 'staging' }}"
-          if [ "$ENV" == "production" ]; then
-            echo "namespace=postershop" >> $GITHUB_OUTPUT
-          else
-            echo "namespace=postershop-staging" >> $GITHUB_OUTPUT
+          REACHABLE=false
+          REASON=""
+
+          if ! aws eks describe-cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" \
+               --query 'cluster.status' --output text > /tmp/eks_status.txt 2>/tmp/eks_err.txt; then
+            REASON="cluster-not-found"
+            echo "::notice::aws eks describe-cluster failed for '$EKS_CLUSTER' in '$AWS_REGION'"
+            sed -n '1,20p' /tmp/eks_err.txt
           fi
 
+          if [ -z "$REASON" ]; then
+            STATUS=$(tr -d '[:space:]' < /tmp/eks_status.txt)
+            if [ "$STATUS" != "ACTIVE" ]; then
+              REASON="status-${STATUS:-unknown}"
+              echo "::notice::EKS cluster status is '${STATUS:-unknown}', expected ACTIVE"
+            fi
+          fi
+
+          if [ -z "$REASON" ]; then
+            if ! aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER" >/dev/null 2>&1; then
+              REASON="kubeconfig-failed"
+              echo "::notice::aws eks update-kubeconfig failed"
+            fi
+          fi
+
+          if [ -z "$REASON" ]; then
+            if ! kubectl get nodes --request-timeout=20s >/dev/null 2>&1; then
+              REASON="api-unreachable"
+              echo "::notice::kubectl could not reach the cluster API within 20s"
+            fi
+          fi
+
+          if [ -z "$REASON" ]; then
+            REACHABLE=true
+            REASON="ok"
+          fi
+
+          echo "reachable=$REACHABLE" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "Cluster probe result: reachable=$REACHABLE reason=$REASON"
+          exit 0
+
+      - name: Note skipped deploy (cluster not running)
+        if: steps.probe.outputs.reachable != 'true'
+        run: |
+          {
+            echo ""
+            echo "### Deploy skipped - EKS cluster is not running"
+            echo ""
+            echo "Reason: \`${{ steps.probe.outputs.reason }}\` (cluster \`${{ env.EKS_CLUSTER }}\`, region \`${{ env.AWS_REGION }}\`)"
+            echo ""
+            echo "Images were built and pushed to ECR at tag \`${{ steps.resolve.outputs.image_tag }}\`."
+            echo "Nothing was deployed because the cluster is absent or unreachable."
+            echo ""
+            echo "To deploy these images later, bring the cluster up and run the"
+            echo "**Deploy to EKS** workflow manually (Run workflow -> \`image_tag\` ="
+            echo "\`${{ steps.resolve.outputs.image_tag }}\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy skipped: cluster not reachable (${{ steps.probe.outputs.reason }}). This is not a failure."
+
+      # No `|| true` on helm and no continue-on-error: a cluster that exists
+      # but whose rollout fails MUST fail the run. The `|| true` guards below
+      # are on the three diagnostic commands only.
       - name: Deploy services
+        if: steps.probe.outputs.reachable == 'true'
+        env:
+          NS: ${{ steps.resolve.outputs.namespace }}
+          SVCS: ${{ steps.resolve.outputs.services }}
+          TAG: ${{ steps.resolve.outputs.image_tag }}
         run: |
-          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
-          SERVICE="${{ github.event.inputs.service || 'all' }}"
-          
-          # Create namespace if needed
-          kubectl get namespace "$NAMESPACE" || kubectl create namespace "$NAMESPACE"
-          
-          if [ "$SERVICE" == "all" ]; then
-            SERVICES="inventory payments users catalog logistics production orders infra frontend"
-          else
-            SERVICES="$SERVICE"
-          fi
-          
-          ECR_REGISTRY="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          
-          for svc in $SERVICES; do
-            echo "🚀 Deploying $svc..."
-            helm upgrade --install "$svc" ./deploy/charts/"$svc" \
-              --namespace "$NAMESPACE" \
-              --set image.repository="${ECR_REGISTRY}/${svc}" \
-              --set image.tag=${{ github.sha }} \
-              --wait \
-              --timeout 5m
-            echo "✅ $svc deployed"
+          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
+
+          FAILED=""
+          for svc in $SVCS; do
+            echo "::group::helm upgrade $svc"
+            if ! helm upgrade --install "$svc" ./deploy/charts/"$svc" \
+                 --namespace "$NS" \
+                 --set image.repository="${ECR_REGISTRY}/${svc}" \
+                 --set image.tag="$TAG" \
+                 --wait --timeout 10m; then
+              FAILED="$FAILED $svc"
+              echo "::error::helm upgrade failed for $svc - diagnostics follow"
+              kubectl describe deployment "$svc" -n "$NS" || true
+              kubectl get pods -n "$NS" -l app="$svc" -o wide || true
+              kubectl logs -n "$NS" -l app="$svc" --tail=100 --all-containers=true || true
+            else
+              echo "$svc deployed"
+            fi
+            echo "::endgroup::"
           done
 
+          if [ -n "$FAILED" ]; then
+            echo "::error::Failed rollouts:$FAILED"
+            {
+              echo ""
+              echo "### Failed rollouts"
+              echo ""
+              echo "\`$FAILED\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Get deployment status
+        if: steps.probe.outputs.reachable == 'true'
+        env:
+          NS: ${{ steps.resolve.outputs.namespace }}
         run: |
-          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
-          echo "### 📊 Deployment Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | Ready | Available |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
-          
-          for deploy in $(kubectl get deployments -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
-            READY=$(kubectl get deployment "$deploy" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
-            AVAIL=$(kubectl get deployment "$deploy" -n "$NAMESPACE" -o jsonpath='{.status.availableReplicas}')
-            echo "| $deploy | ${READY:-0} | ${AVAIL:-0} |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo ""
+            echo "### Deployment Status"
+            echo ""
+            echo "| Service | Ready | Available |"
+            echo "|---------|-------|-----------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for deploy in $(kubectl get deployments -n "$NS" -o jsonpath='{.items[*].metadata.name}'); do
+            READY=$(kubectl get deployment "$deploy" -n "$NS" -o jsonpath='{.status.readyReplicas}')
+            AVAIL=$(kubectl get deployment "$deploy" -n "$NS" -o jsonpath='{.status.availableReplicas}')
+            echo "| $deploy | ${READY:-0} | ${AVAIL:-0} |" >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Get Ingress URL
+        if: steps.probe.outputs.reachable == 'true'
+        env:
+          NS: ${{ steps.resolve.outputs.namespace }}
         run: |
-          NAMESPACE="${{ steps.namespace.outputs.namespace }}"
-          URL=$(kubectl get ingress frontend -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🌐 Application URL" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Frontend: http://$URL" >> $GITHUB_STEP_SUMMARY
+          URL=$(kubectl get ingress frontend -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
+          {
+            echo ""
+            echo "### Application URL"
+            echo ""
+            echo "Frontend: http://$URL"
+          } >> "$GITHUB_STEP_SUMMARY"

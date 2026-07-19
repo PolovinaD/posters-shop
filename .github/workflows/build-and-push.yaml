@@ -1,15 +1,24 @@
 # ============================================================
 # Build and Push Docker Images to ECR
 # ============================================================
-# Triggers on push to main branch when service code changes.
+# Triggers on push to the master branch when service code changes,
+# builds only the services touched by the pushed commit range, pushes
+# them to ECR, then calls the reusable deploy workflow with exactly
+# that service set at exactly that tag.
+#
 # Uses OIDC for passwordless AWS authentication.
+#
+# Known limitation: chart-only changes under deploy/charts/** do not
+# trigger this workflow (no image is built at that SHA). Redeploy a
+# chart change with a manual "Deploy to EKS" workflow_dispatch,
+# naming the image_tag to deploy. See docs/BACKLOG.md.
 # ============================================================
 
 name: Build and Push
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'services/**'
       - 'frontend/**'
@@ -22,15 +31,16 @@ on:
         type: choice
         options:
           - all
-          - users
           - catalog
-          - orders
-          - production
-          - logistics
-          - inventory
-          - payments
-          - infra
           - frontend
+          - infra
+          - inventory
+          - logistics
+          - notifications
+          - orders
+          - payments
+          - production
+          - users
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
@@ -45,51 +55,93 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ steps.changes.outputs.services }}
+      services_json: ${{ steps.changes.outputs.services_json }}
+      services_list: ${{ steps.changes.outputs.services_list }}
     steps:
+      # fetch-depth: 0 - the push range can be long (the first push of this
+      # pipeline is ~161 commits); a shallow clone cannot diff it.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
+      # Emits BOTH outputs from one selection:
+      #   services_json - JSON array, consumed by the build matrix
+      #   services_list - space-separated string, passed to the reusable
+      #                   deploy workflow (workflow_call inputs cannot be arrays)
+      # The authoritative service set is derived from deploy/charts/ at runtime
+      # so the workflows cannot drift from the charts again.
       - name: Detect changed services
         id: changes
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            if [ "${{ inputs.service }}" == "all" ]; then
-              echo 'services=["users","catalog","orders","production","logistics","inventory","payments","infra","frontend"]' >> $GITHUB_OUTPUT
+          ALL=$(ls -1 deploy/charts | tr '\n' ' ')
+          SELECTED=()
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANGED_MODE=dispatch
+            REQ="${{ github.event.inputs.service }}"
+            if [ "$REQ" = "all" ]; then
+              for name in $ALL; do SELECTED+=("$name"); done
             else
-              echo 'services=["${{ inputs.service }}"]' >> $GITHUB_OUTPUT
+              SELECTED+=("$REQ")
             fi
           else
-            SERVICES=()
-            
-            # Check each service directory for changes
-            for svc in users catalog orders production logistics inventory payments infra; do
-              if git diff --name-only HEAD~1 HEAD | grep -q "^services/$svc/"; then
-                SERVICES+=("\"$svc\"")
-              fi
-            done
-            
-            # Check frontend
-            if git diff --name-only HEAD~1 HEAD | grep -q "^frontend/"; then
-              SERVICES+=("\"frontend\"")
-            fi
-            
-            if [ ${#SERVICES[@]} -eq 0 ]; then
-              echo 'services=[]' >> $GITHUB_OUTPUT
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            if [ -z "$BEFORE" ] \
+               || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              echo "::notice::No usable base commit (before='$BEFORE') - building ALL services"
+              CHANGED_MODE=fallback-all
+              for name in $ALL; do SELECTED+=("$name"); done
             else
-              echo "services=[$(IFS=,; echo "${SERVICES[*]}")]" >> $GITHUB_OUTPUT
+              echo "::notice::Diffing push range $BEFORE..$AFTER"
+              CHANGED_MODE=range
+              CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER")
+              for name in $ALL; do
+                if [ "$name" = "frontend" ]; then
+                  PREFIX="frontend/"
+                else
+                  PREFIX="services/$name/"
+                fi
+                if printf '%s\n' "$CHANGED_FILES" | grep -q "^${PREFIX}"; then
+                  SELECTED+=("$name")
+                fi
+              done
             fi
           fi
 
+          if [ ${#SELECTED[@]} -eq 0 ]; then
+            JSON='[]'
+            LIST=''
+            # Legitimately empty when a push touches only services/shared/**:
+            # shared is a library copied into services, not a deployable chart.
+            echo "::notice::No deployable chart matched the changed paths (mode=$CHANGED_MODE) - nothing to build"
+          else
+            JSON=$(printf '"%s",' "${SELECTED[@]}")
+            JSON="[${JSON%,}]"
+            LIST="${SELECTED[*]}"
+          fi
+
+          echo "services_json=$JSON" >> "$GITHUB_OUTPUT"
+          echo "services_list=$LIST" >> "$GITHUB_OUTPUT"
+
+          echo "Detection mode=$CHANGED_MODE services_json=$JSON services_list='$LIST'"
+
+          {
+            echo "### Change detection"
+            echo ""
+            echo "- Mode: \`$CHANGED_MODE\`"
+            echo "- Services: \`${LIST:-<none>}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.services != '[]' }}
+    if: ${{ needs.detect-changes.outputs.services_json != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
-    
+        service: ${{ fromJson(needs.detect-changes.outputs.services_json) }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -98,6 +150,16 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-role
           aws-region: ${{ env.AWS_REGION }}
+
+      # Idempotent: nothing in CI created repositories before, so the first
+      # build of a new service (e.g. notifications) had nowhere to push.
+      # AmazonEC2ContainerRegistryPowerUser includes ecr:CreateRepository.
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "${{ matrix.service }}" \
+            --region "$AWS_REGION" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "${{ matrix.service }}" \
+                 --region "$AWS_REGION" --image-scanning-configuration scanOnPush=true
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -119,8 +181,25 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### ✅ Built and pushed: ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Tag: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Registry: \`${{ env.ECR_REGISTRY }}/${{ matrix.service }}\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### Built and pushed: ${{ matrix.service }}"
+            echo ""
+            echo "- Tag: \`${{ github.sha }}\`"
+            echo "- Registry: \`${{ env.ECR_REGISTRY }}/${{ matrix.service }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
+  # Deploys exactly the services just built, at exactly the tag just built.
+  # `needs: build` means a failed build skips the deploy entirely.
+  # services_list (space-separated string) is what crosses the workflow_call
+  # boundary - workflow_call inputs cannot be arrays.
+  deploy:
+    needs: [detect-changes, build]
+    if: ${{ needs.detect-changes.outputs.services_json != '[]' && github.event_name == 'push' }}
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/deploy.yaml
+    with:
+      services: ${{ needs.detect-changes.outputs.services_list }}
+      image_tag: ${{ github.sha }}
+      namespace: postershop
