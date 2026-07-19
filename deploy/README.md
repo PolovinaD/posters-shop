@@ -177,6 +177,31 @@ AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 ./deploy/deploy.sh
 
 ### GitHub Actions OIDC
 
+#### What the pipeline does on a push to `master`
+
+1. **Build and Push** triggers on a push to `master` that touches `services/**` or
+   `frontend/**`. It diffs the full pushed commit range and builds only the services whose
+   directory changed, tagging each image `<git-sha>` and `latest`. Missing ECR repositories
+   are created on demand.
+2. It then calls **Deploy to EKS** as a reusable workflow, passing the exact service list it
+   just built and the exact `<git-sha>` it just built, into namespace `postershop`.
+3. If the EKS cluster is torn down, the deploy is **skipped and the run stays green** — the
+   images are already in ECR. Bring the cluster back up and run **Deploy to EKS** manually,
+   setting `image_tag` to that SHA (or `latest`).
+
+Chart-only changes under `deploy/charts/**` do not trigger the pipeline; use a manual
+**Deploy to EKS** dispatch. See `docs/BACKLOG.md` for why this is deliberate.
+
+> **Unverified prerequisites.** The `gh` CLI was not available when this pipeline was
+> written, so nothing below could be checked against the actual repository. Before the first
+> push, confirm by hand that: the three repository variables exist; the OIDC identity
+> provider exists; the `github-actions-role` trust policy names this repository and permits
+> the `master` branch; and the role can act **inside** the cluster (an EKS access entry or
+> `aws-auth` mapping). A classic failure mode is OIDC and ECR working correctly while
+> `kubectl` returns 403 because the role was never mapped into the cluster. Also confirm an
+> ECR repository exists for every service, `notifications` included — though the pipeline
+> now creates missing ones itself.
+
 Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
 
 | Variable | Example |
@@ -205,6 +230,8 @@ Then provision the OIDC identity provider and the IAM role:
 
    ```bash
    # ECR access
+   # AmazonEC2ContainerRegistryPowerUser also grants ecr:CreateRepository, which is
+   # what lets the build workflow create a missing repository on demand.
    aws iam attach-role-policy \
      --role-name github-actions-role \
      --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser

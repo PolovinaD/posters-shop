@@ -236,9 +236,13 @@ See [deploy/README.md](../deploy/README.md) for full EKS setup instructions.
 ```bash
 # Quick deploy
 ./deploy/scripts/deploy.sh <service-name>
-
-# Or use GitHub Actions workflow
 ```
+
+Or let CI do it: a push to `master` touching `services/**` or `frontend/**` builds the
+changed services and helm-upgrades them into the `postershop` namespace automatically. To
+redeploy without a code change (for example after editing a chart), run the **Deploy to
+EKS** workflow manually and set `image_tag` to the tag you want — `latest`, or a specific
+commit SHA.
 
 ---
 
@@ -386,7 +390,20 @@ service you first suspect.
    Check the chart's Service definition before writing the block.
 
 6. **Add to deploy workflow:**
-   Edit `.github/workflows/deploy.yaml` to include new service.
+   Automatic builds and deploys need **no workflow edit**: both workflows derive the full
+   service set from `deploy/charts/` at runtime, so a new service with a chart is picked up
+   as soon as its chart exists.
+
+   What *does* still need a manual edit is the `workflow_dispatch` `service` **choice
+   options**, in **both** `.github/workflows/build-and-push.yaml` and
+   `.github/workflows/deploy.yaml` — GitHub requires those to be statically enumerated, so
+   they cannot be derived. Omitting them means the service simply cannot be selected for a
+   manual run.
+
+   Run `python3 .github/workflows/validate-workflows.py` — it fails if the choice options,
+   `deploy/charts/` and `deploy/full-deploy.sh` disagree, which is exactly the drift that
+   previously left `notifications` out of CI entirely.
+
    Also add the service to the `SERVICES` list in `deploy/full-deploy.sh` and to the
    ECR repository creation loop in `deploy/README.md` — a service missing from either
    deploys into an `ImagePullBackOff`.

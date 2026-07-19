@@ -173,7 +173,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Git Conventions
 - **Branch:** Work on `master` branch
 - **Commit style:** Lowercase, descriptive messages (e.g., "docs, deploy scripts, initial and services migrations, a bunch of updates")
-- **No CI/CD pipeline:** Manual deployment via Makefile commands
+- **CI/CD:** A push to `master` touching `services/**` or `frontend/**` builds the changed services, pushes them to ECR, and helm-upgrades them into the `postershop` namespace (`.github/workflows/build-and-push.yaml` → `.github/workflows/deploy.yaml`). `make` targets and `deploy/full-deploy.sh` remain the local and bootstrap path.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->

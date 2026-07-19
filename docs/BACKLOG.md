@@ -111,9 +111,13 @@ event is abandoned.
 ---
 
 ### 7. CI/CD Pipeline
-**Status:** Partial (deploy workflow exists)  
+**Status:** Working end to end (build → ECR → deploy), no test/lint stages yet  
 **Effort:** Medium (3-4 hours)  
-**Description:** Complete CI pipeline with tests and automated deployment.
+**Description:** A push to `master` touching `services/**` or `frontend/**` builds the
+changed services, pushes them to ECR as `<git-sha>` + `latest`, and helm-upgrades exactly
+those services into the `postershop` namespace. A torn-down EKS cluster is a green skip, not
+a failed run. What remains is quality gating — the pipeline builds and deploys, but verifies
+nothing.
 
 **Tasks:**
 - [ ] Add lint/format checks (ruff, black)
@@ -121,6 +125,32 @@ event is abandoned.
 - [ ] Add integration test step
 - [ ] Add security scanning
 - [ ] Automate version tagging
+
+---
+
+### 7b. Chart-only changes do not auto-deploy (known limitation)
+**Status:** Deliberate limitation, documented  
+**Effort:** Low to work around (manual dispatch); Medium to automate safely  
+**Description:** The build workflow's `paths:` filter is `services/**` and `frontend/**`, so
+changes under `deploy/charts/**` or `deploy/monitoring/**` never reach the cluster
+automatically.
+
+**Why this is deliberate rather than an oversight.** Auto-deploying a chart-only change
+means choosing an image tag for a service that was *not* rebuilt in that run:
+- `:<git-sha>` — no image exists at that SHA for a service whose code did not change, so the
+  rollout ImagePullBackOffs and times out. This is precisely the defect that made the
+  original pipeline fail every time.
+- `:latest` — an image exists, but it is whatever was built last, which may be *older* than
+  what is currently running. A chart tweak could silently roll a service backwards.
+
+**Escape hatch:** run the **Deploy to EKS** workflow manually
+(`workflow_dispatch`) and set `image_tag` explicitly — `latest`, or the specific SHA you
+intend. The operator names the tag, so nothing is chosen implicitly.
+
+**Tasks:**
+- [ ] Decide whether chart-only auto-deploy is worth the tag-resolution complexity
+- [ ] If yes: resolve each service's *currently deployed* tag from the cluster and redeploy
+      at that same tag, changing only the chart
 
 ---
 
