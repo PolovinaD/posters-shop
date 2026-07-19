@@ -67,6 +67,7 @@ on:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_ROLE_NAME: ${{ vars.AWS_ROLE_NAME || 'github-eks-deploy' }}
   EKS_CLUSTER: ${{ vars.EKS_CLUSTER || 'postershop' }}
 
 permissions:
@@ -138,7 +139,7 @@ jobs:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-role
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.AWS_ROLE_NAME }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install kubectl
@@ -247,7 +248,7 @@ jobs:
               echo "This is **not** a torn-down cluster, so the run is red rather than a"
               echo "green skip. Likely causes by classification:"
               echo ""
-              echo "- \`iam-access-denied\` - the github-actions-role lacks \`eks:DescribeCluster\`."
+              echo "- \`iam-access-denied\` - the CI role \`${AWS_ROLE_NAME:-unknown}\` lacks \`eks:DescribeCluster\`."
               echo "- \`aws-credentials-invalid\` - the OIDC assume-role produced no usable session."
               echo "- \`update-kubeconfig-failed\` - describe succeeded but kubeconfig could not be written."
               echo "- \`kubectl-rbac-denied\` - AWS-side IAM is fine but the role has no in-cluster"

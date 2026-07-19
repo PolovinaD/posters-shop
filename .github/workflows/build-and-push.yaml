@@ -45,6 +45,7 @@ on:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_ROLE_NAME: ${{ vars.AWS_ROLE_NAME || 'github-eks-deploy' }}
   ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION || 'eu-north-1' }}.amazonaws.com
 
 permissions:
@@ -148,18 +149,42 @@ jobs:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-role
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.AWS_ROLE_NAME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Idempotent: nothing in CI created repositories before, so the first
-      # build of a new service (e.g. notifications) had nowhere to push.
-      # AmazonEC2ContainerRegistryPowerUser includes ecr:CreateRepository.
+      # This role does NOT have ecr:CreateRepository (verified: implicitDeny).
+      # The create below is a best-effort fallback for the day that changes; the
+      # supported path is to pre-create repositories. See deploy/README.md.
+      #
+      # The step runs under `bash -e`, so the branches are an explicit `if`
+      # rather than a `||` chain: a missing repository must produce an
+      # actionable message, not a raw AccessDeniedException.
       - name: Ensure ECR repository exists
         run: |
-          aws ecr describe-repositories --repository-names "${{ matrix.service }}" \
-            --region "$AWS_REGION" >/dev/null 2>&1 \
-            || aws ecr create-repository --repository-name "${{ matrix.service }}" \
-                 --region "$AWS_REGION" --image-scanning-configuration scanOnPush=true
+          if aws ecr describe-repositories --repository-names "${{ matrix.service }}" \
+               --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "ECR repository '${{ matrix.service }}' exists"
+          elif aws ecr create-repository --repository-name "${{ matrix.service }}" \
+                 --region "$AWS_REGION" --image-scanning-configuration scanOnPush=true \
+                 >/dev/null 2>/tmp/ecr_err.txt; then
+            echo "::notice::Created ECR repository '${{ matrix.service }}'"
+          else
+            sed -n '1,20p' /tmp/ecr_err.txt
+            echo "::error::ECR repository '${{ matrix.service }}' does not exist and could not be created."
+            {
+              echo ""
+              echo "### Missing ECR repository: \`${{ matrix.service }}\`"
+              echo ""
+              echo "The CI role has ECR push rights but not \`ecr:CreateRepository\`."
+              echo "Create it once, then re-run:"
+              echo ""
+              echo '```bash'
+              echo "aws ecr create-repository --repository-name ${{ matrix.service }} \\"
+              echo "  --region $AWS_REGION --image-scanning-configuration scanOnPush=true"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Login to Amazon ECR
         id: login-ecr

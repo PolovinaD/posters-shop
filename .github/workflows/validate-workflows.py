@@ -11,9 +11,14 @@ and their agreement with `deploy/charts/` and `deploy/full-deploy.sh`.
 
 WHAT THIS CANNOT CHECK. It is strictly offline and has no view of GitHub-side
 state. It cannot tell you whether the repository variables (AWS_ACCOUNT_ID,
-AWS_REGION, EKS_CLUSTER), the OIDC identity provider, the `github-actions-role`
-trust policy, GitHub Environments, or ECR repositories actually exist or are
-correct. Those remain operator prerequisites -- see deploy/README.md.
+AWS_REGION, EKS_CLUSTER, AWS_ROLE_NAME), the OIDC identity provider, the
+`github-eks-deploy` trust policy, GitHub Environments, or ECR repositories
+actually exist or are correct. Those remain operator prerequisites -- see
+deploy/README.md.
+
+In particular there is NO assertion anywhere in this script about the IAM role
+name the workflows assume. A PASSED result is a no-regression signal only; it is
+not evidence that the role name is correct.
 
 For a fuller lint of Actions syntax (optional, not required by this script):
 
