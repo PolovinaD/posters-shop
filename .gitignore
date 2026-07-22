@@ -19,3 +19,14 @@ deploy/.secrets-*
 *.tfstate
 *.tfstate.backup
 .terraform/
+
+# GSD planning artifacts and local AI-agent scaffolding (scrubbed from history 2026-07-22)
+.planning/
+.claude/
+.agents/
+
+# Thesis material — personal work product, kept out of the public repo
+thesis-build/
+thesis-build-bkp/
+thesis-build-bkp-1/
+Diplomski-rad-nacrt.txt
