@@ -30,3 +30,8 @@ thesis-build/
 thesis-build-bkp/
 thesis-build-bkp-1/
 Diplomski-rad-nacrt.txt
+THESIS_SNAPSHOT.md
+
+# Editor and local tooling
+.vscode/
+skills-lock.json
