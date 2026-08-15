@@ -1,9 +1,16 @@
 """
 Notifications Service — transactional email on order-lifecycle events.
 
-Stateless FastAPI service (no database, no migrations) that subscribes to the
-orders outbox and "sends" an email for each order-lifecycle event:
-ORDER_PAID, ORDER_SHIPPED, ORDER_DELIVERED, ORDER_CANCELLED.
+FastAPI service backed by a small `notifications_schema` (a `processed_events`
+idempotency table) that subscribes to the orders outbox and "sends" an email for
+each order-lifecycle event: ORDER_PAID, ORDER_SHIPPED, ORDER_DELIVERED,
+ORDER_CANCELLED.
+
+Dedup is durable and keyed by the outbox `event_id`, so a re-delivered event
+cannot send a duplicate email even across a restart. The record is written AFTER
+a successful send, so a crash in the narrow send->record window can still re-send
+once — a deliberately accepted rare duplicate, biased over dropping a customer
+email (see README).
 
 Email transport is pluggable (see providers.py): the logging provider is used
 for local dev (no AWS creds), the SES provider for production (via IRSA).
@@ -14,7 +21,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from database import engine, SessionLocal
+from models import ProcessedEvent
 from logger import get_logger, LoggingMiddleware
 from metrics import (
     metrics_endpoint, track_metrics, SERVICE_NAME,
@@ -39,12 +50,6 @@ class OutboxEventPayload(BaseModel):
 
 # Instantiate the email provider once at module load (logging by default).
 provider = get_provider()
-
-# In-memory idempotency guard. NOTE: this resets on pod restart; combined with
-# the at-least-once outbox delivery this means a rare duplicate email is
-# possible after a restart — acceptable given the stateless-mock precedent
-# (payments) and the low blast radius of a duplicate transactional email.
-_processed_event_ids: set[int] = set()
 
 
 @asynccontextmanager
@@ -83,8 +88,12 @@ def healthz():
 
 @app.get("/readyz")
 def readyz():
-    # Stateless service — no DB to check, always ready once the process is up.
-    return {"status": "ready"}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/metrics")
@@ -172,44 +181,67 @@ def render_email(event_type: str, payload: dict) -> tuple[str, str]:
 # ============== Event Processing ==============
 
 def _process(event: OutboxEventPayload, event_type: str) -> dict:
-    """Idempotently send the email for one order-lifecycle event."""
-    if event.event_id in _processed_event_ids:
-        logger.info(
-            "Event already processed (idempotent)",
-            event_id=event.event_id, event_type=event_type,
-        )
-        return {"status": "already_processed", "event_id": event.event_id}
+    """Idempotently send the email for one order-lifecycle event.
 
-    to = event.payload.get("customer_email")
-    if not to:
-        # Nothing to send and nothing to retry — do NOT 500.
-        logger.warning(
-            "No customer_email in event payload, skipping",
-            event_id=event.event_id, event_type=event_type,
-        )
-        return {"status": "skipped", "reason": "no_customer_email"}
-
-    subject, body = render_email(event_type, event.payload)
-
+    Durable dedup keyed by the outbox event_id: a re-delivered event never
+    sends a second email, even across a restart. The record is written AFTER a
+    successful send, so a crash in the narrow window between send and commit can
+    still re-send once — a deliberately accepted rare duplicate (see README /
+    module docstring), biased over silently dropping a customer email.
+    """
+    db = SessionLocal()
     try:
-        provider.send(to, subject, body)
-    except Exception as e:
-        EMAIL_SEND_FAILURES.labels(event_type=event_type).inc()
-        logger.error(
-            "Email send failed",
-            event_id=event.event_id, event_type=event_type, error=str(e),
-            exc_info=True,
-        )
-        # Signal the outbox to retry; do NOT mark as processed.
-        raise HTTPException(status_code=503, detail="email send failed")
+        already = db.execute(
+            text("SELECT 1 FROM processed_events WHERE event_id = :id"),
+            {"id": event.event_id},
+        ).first()
+        if already:
+            logger.info(
+                "Event already processed (idempotent)",
+                event_id=event.event_id, event_type=event_type,
+            )
+            return {"status": "already_processed", "event_id": event.event_id}
 
-    _processed_event_ids.add(event.event_id)
-    EMAILS_SENT.labels(event_type=event_type, status="sent").inc()
-    logger.info(
-        "Email sent",
-        event_id=event.event_id, event_type=event_type, to=to,
-    )
-    return {"status": "sent", "event_id": event.event_id}
+        to = event.payload.get("customer_email")
+        if not to:
+            # Nothing to send and nothing to retry — do NOT 500.
+            logger.warning(
+                "No customer_email in event payload, skipping",
+                event_id=event.event_id, event_type=event_type,
+            )
+            return {"status": "skipped", "reason": "no_customer_email"}
+
+        subject, body = render_email(event_type, event.payload)
+
+        try:
+            provider.send(to, subject, body)
+        except Exception as e:
+            EMAIL_SEND_FAILURES.labels(event_type=event_type).inc()
+            logger.error(
+                "Email send failed",
+                event_id=event.event_id, event_type=event_type, error=str(e),
+                exc_info=True,
+            )
+            # Signal the outbox to retry; do NOT record — no row is written.
+            raise HTTPException(status_code=503, detail="email send failed")
+
+        # Record AFTER a successful send. ON CONFLICT DO NOTHING keeps a
+        # concurrent re-delivery from erroring on the primary key.
+        db.execute(
+            pg_insert(ProcessedEvent)
+            .values(event_id=event.event_id, event_type=event_type)
+            .on_conflict_do_nothing(index_elements=["event_id"])
+        )
+        db.commit()
+
+        EMAILS_SENT.labels(event_type=event_type, status="sent").inc()
+        logger.info(
+            "Email sent",
+            event_id=event.event_id, event_type=event_type, to=to,
+        )
+        return {"status": "sent", "event_id": event.event_id}
+    finally:
+        db.close()
 
 
 # ============== Event Listeners (Outbox Pattern) ==============

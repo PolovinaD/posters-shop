@@ -56,6 +56,11 @@ env:
     value: "eu-central-1"
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: postershop-db
+        key: DATABASE_URL_NOTIFICATIONS
 
 # Internal service only — consumed by the orders outbox over cluster DNS.
 # Not ALB-exposed, therefore it adds no ingress routing rule.
@@ -86,3 +91,8 @@ serviceAccount:
   name: ""            # e.g. notifications
   annotations: {}
   #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-notifications-ses
+
+migrations:
+  enabled: true
+  secretName: postershop-db
+  secretKey: DATABASE_URL_NOTIFICATIONS
