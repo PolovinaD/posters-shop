@@ -11,6 +11,6 @@ class ProcessedEvent(Base):
     __tablename__ = "processed_events"
     __table_args__ = ({"schema": SCHEMA_NAME},)
 
-    event_id = Column(BigInteger, primary_key=True)          # outbox event_id, natural key
+    event_id = Column(BigInteger, primary_key=True, autoincrement=False)  # outbox event_id, natural key (supplied, not generated)
     event_type = Column(String, nullable=False)
     sent_at = Column(DateTime(timezone=True), server_default=func.now())

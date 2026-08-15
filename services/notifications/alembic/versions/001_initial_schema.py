@@ -27,7 +27,7 @@ def upgrade() -> None:
     # Create processed_events table
     op.create_table(
         "processed_events",
-        sa.Column("event_id", sa.BigInteger(), primary_key=True),
+        sa.Column("event_id", sa.BigInteger(), primary_key=True, autoincrement=False),
         sa.Column("event_type", sa.String(), nullable=False),
         sa.Column("sent_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         schema=SCHEMA,
