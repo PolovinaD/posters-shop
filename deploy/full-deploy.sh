@@ -120,17 +120,18 @@ load_or_generate_passwords() {
         # before a service existed (e.g. notifications) would silently provision that
         # user with the password "null". `// empty` yields a blank instead, and any
         # blank is regenerated below — so an older secret self-heals.
+        # The caller captures stdout, so the notice MUST go to stderr — otherwise it
+        # is captured as part of the password. Likewise REGENERATED_ANY cannot be set
+        # here: the function runs in a subshell, so the assignment would not survive.
         read_or_generate() {
             local value
             value=$(echo "$SECRET_JSON" | jq -r ".$1 // empty")
             if [ -z "$value" ]; then
                 value=$(generate_password)
-                log_warn "  $1 missing from postershop/passwords — generated a new value"
-                REGENERATED_ANY=true
+                log_warn "  $1 missing from postershop/passwords — generated a new value" >&2
             fi
             echo "$value"
         }
-        REGENERATED_ANY=false
 
         export USERS_SVC_PASSWORD=$(read_or_generate USERS_SVC_PASSWORD)
         export CATALOG_SVC_PASSWORD=$(read_or_generate CATALOG_SVC_PASSWORD)
@@ -141,14 +142,12 @@ load_or_generate_passwords() {
         export NOTIFICATIONS_SVC_PASSWORD=$(read_or_generate NOTIFICATIONS_SVC_PASSWORD)
         export DB_PASSWORD=$(read_or_generate DB_PASSWORD)
         export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET // empty')
-        [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32) && REGENERATED_ANY=true
+        [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32)
         export STRIPE_WEBHOOK_SECRET=$(echo "$SECRET_JSON" | jq -r '.STRIPE_WEBHOOK_SECRET // empty')
         [ -z "$STRIPE_WEBHOOK_SECRET" ] && export STRIPE_WEBHOOK_SECRET="whsec_$(openssl rand -hex 16)"
 
-        if [ "$REGENERATED_ANY" = true ]; then
-            log_warn "Some values were missing and have been generated; the secret is rewritten below."
-        fi
         log_success "Loaded passwords from AWS Secrets Manager"
+        log_info "Any value missing above was generated; Step 3 rewrites the secret with the full set."
         return 0
     fi
     
