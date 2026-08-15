@@ -68,6 +68,9 @@ AWS_REGION=${AWS_REGION:-eu-north-1}
 AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null)}
 CLUSTER_NAME=${CLUSTER_NAME:-postershop}
 NAMESPACE=${NAMESPACE:-postershop}
+# Kubernetes version and CI role must match deploy/infrastructure/eksctl-cluster.yaml.
+K8S_VERSION=${K8S_VERSION:-1.32}
+CI_ROLE_NAME=${CI_ROLE_NAME:-github-eks-deploy}
 MONITORING_NAMESPACE=monitoring
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
@@ -112,16 +115,39 @@ load_or_generate_passwords() {
     if aws secretsmanager get-secret-value --secret-id postershop/passwords --region "$AWS_REGION" &> /dev/null; then
         log_info "Loading passwords from AWS Secrets Manager..."
         SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id postershop/passwords --region "$AWS_REGION" --query SecretString --output text)
-        export USERS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.USERS_SVC_PASSWORD')
-        export CATALOG_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.CATALOG_SVC_PASSWORD')
-        export ORDERS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.ORDERS_SVC_PASSWORD')
-        export PRODUCTION_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.PRODUCTION_SVC_PASSWORD')
-        export LOGISTICS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.LOGISTICS_SVC_PASSWORD')
-        export INVENTORY_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.INVENTORY_SVC_PASSWORD')
-        export NOTIFICATIONS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.NOTIFICATIONS_SVC_PASSWORD')
-        export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET')
-        export STRIPE_WEBHOOK_SECRET=$(echo "$SECRET_JSON" | jq -r '.STRIPE_WEBHOOK_SECRET')
-        export DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.DB_PASSWORD // empty')
+
+        # `jq -r .MISSING` prints the literal string "null", so a secret written
+        # before a service existed (e.g. notifications) would silently provision that
+        # user with the password "null". `// empty` yields a blank instead, and any
+        # blank is regenerated below — so an older secret self-heals.
+        read_or_generate() {
+            local value
+            value=$(echo "$SECRET_JSON" | jq -r ".$1 // empty")
+            if [ -z "$value" ]; then
+                value=$(generate_password)
+                log_warn "  $1 missing from postershop/passwords — generated a new value"
+                REGENERATED_ANY=true
+            fi
+            echo "$value"
+        }
+        REGENERATED_ANY=false
+
+        export USERS_SVC_PASSWORD=$(read_or_generate USERS_SVC_PASSWORD)
+        export CATALOG_SVC_PASSWORD=$(read_or_generate CATALOG_SVC_PASSWORD)
+        export ORDERS_SVC_PASSWORD=$(read_or_generate ORDERS_SVC_PASSWORD)
+        export PRODUCTION_SVC_PASSWORD=$(read_or_generate PRODUCTION_SVC_PASSWORD)
+        export LOGISTICS_SVC_PASSWORD=$(read_or_generate LOGISTICS_SVC_PASSWORD)
+        export INVENTORY_SVC_PASSWORD=$(read_or_generate INVENTORY_SVC_PASSWORD)
+        export NOTIFICATIONS_SVC_PASSWORD=$(read_or_generate NOTIFICATIONS_SVC_PASSWORD)
+        export DB_PASSWORD=$(read_or_generate DB_PASSWORD)
+        export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET // empty')
+        [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32) && REGENERATED_ANY=true
+        export STRIPE_WEBHOOK_SECRET=$(echo "$SECRET_JSON" | jq -r '.STRIPE_WEBHOOK_SECRET // empty')
+        [ -z "$STRIPE_WEBHOOK_SECRET" ] && export STRIPE_WEBHOOK_SECRET="whsec_$(openssl rand -hex 16)"
+
+        if [ "$REGENERATED_ANY" = true ]; then
+            log_warn "Some values were missing and have been generated; the secret is rewritten below."
+        fi
         log_success "Loaded passwords from AWS Secrets Manager"
         return 0
     fi
@@ -175,8 +201,19 @@ check_command aws
 check_command eksctl
 check_command kubectl
 check_command helm
-check_command psql
 check_command jq
+check_command docker
+check_command openssl
+# psql is deliberately NOT required: the only psql invocation runs inside the
+# postgres:16-alpine container of the db-init Job, never on this host.
+
+# `command -v docker` passes even when Docker Desktop is stopped, and the build
+# step is Step 8 — after the cluster and RDS already exist and cost money. Fail here.
+if ! docker info &> /dev/null; then
+    log_error "Docker is installed but the daemon is not running. Start Docker and re-run."
+    exit 1
+fi
+echo "  ✓ docker daemon running"
 
 # Verify AWS credentials
 if ! aws sts get-caller-identity &> /dev/null; then
@@ -210,10 +247,24 @@ kind: ClusterConfig
 metadata:
   name: $CLUSTER_NAME
   region: $AWS_REGION
-  version: "1.32"
+  version: "$K8S_VERSION"
   tags:
     project: postershop
     environment: dev
+
+# Grants the CI/CD role in-cluster admin. Declared here rather than applied
+# afterwards so it is recreated on every teardown/recreate cycle — without it the
+# GitHub Actions deploy stage authenticates to AWS successfully but is then
+# rejected by the cluster's RBAC. Kept in step with
+# deploy/infrastructure/eksctl-cluster.yaml, which carries the same block.
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+  accessEntries:
+    - principalARN: arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CI_ROLE_NAME}
+      accessPolicies:
+        - policyARN: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          accessScope:
+            type: cluster
 
 iam:
   withOIDC: true
@@ -377,7 +428,8 @@ if [ "$DRY_RUN" = false ]; then
             -n kube-system \
             --set clusterName="$CLUSTER_NAME" \
             --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --wait --timeout 5m
         log_success "AWS Load Balancer Controller installed"
     else
         log_warn "AWS Load Balancer Controller already installed"
