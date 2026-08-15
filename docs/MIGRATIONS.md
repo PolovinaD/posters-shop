@@ -238,7 +238,7 @@ services are stateless and deliberately have no migrations:
 |---------|-------|
 | payments | In-memory checkout sessions |
 | infra | None — reads live Kubernetes state |
-| notifications | In-memory idempotency set only |
+| ~~notifications~~ | No longer applies — now DB-backed (`notifications_schema`, `processed_events`); has a migration job (quick-260815-m0m) |
 
 For these, skip this entire section and **delete `templates/migration-job.yaml` from the
 chart** if it was copied from a database-backed service. A migration hook on a service

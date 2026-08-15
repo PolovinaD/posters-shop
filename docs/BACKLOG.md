@@ -27,7 +27,7 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 ---
 
 ### 2. Event Idempotency
-**Status:** Partially done — production: durable (checks for an existing job by order_id); notifications: in-memory set, non-durable  
+**Status:** production: durable (existing job by order_id); notifications: durable — `processed_events(event_id)` table in `notifications_schema` (quick-260815-m0m). Remaining: a *unified* idempotency layer across all consumers.  
 **Effort:** Low for database-backed consumers (1-2 hours); higher for stateless ones  
 **Description:** Add standardized idempotency mechanism for event handlers.
 
@@ -37,13 +37,12 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 - [ ] Add index on event_id for fast lookups
 - [ ] Decide on a mechanism for **stateless** consumers
 
-**Caveat — the proposed fix does not generalize.** A `processed_events` table assumes the
-consumer owns a database. `notifications` deliberately does not: it is stateless, with no
-schema and no Alembic. Its guard is an in-memory `set` that is per-replica and lost on
-restart, so duplicates are possible after a pod restart or with `replicaCount > 1`.
-Giving notifications a database purely for idempotency would undo its stateless design.
-A shared Redis set with a TTL, or a provider-side idempotency key, fits a stateless
-consumer better. This is an architectural choice, not a one-hour task.
+**UPDATE (quick-260815-m0m):** notifications was given a small database (`notifications_schema`, one `processed_events` table) for exactly this — the durable-idempotency fix now applies to it too. The historical caveat below is superseded.
+
+**Caveat (historical) — the proposed fix does not generalize.** A `processed_events` table assumes the
+consumer owns a database. `notifications` originally did not: it was stateless, with no
+schema and no Alembic. Its guard was an in-memory `set` that was per-replica and lost on
+restart. The chosen fix gave notifications a minimal DB for idempotency alone.
 
 ---
 

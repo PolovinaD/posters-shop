@@ -111,7 +111,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | inventory | 8006 | PostgreSQL (inventory schema) | - |
 | payments | 8007 | None (in-memory mock) | httpx |
 | infra | 8008 | None | kubernetes, websockets |
-| notifications | 8009 | None (stateless) | boto3 (SES) |
+| notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |
 <!-- GSD:stack-end -->
 
@@ -180,7 +180,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Architecture
 
 ## Pattern Overview
-- 9 independent Python/FastAPI backend services; the six database-backed ones each own their own PostgreSQL schema, while payments, infra and notifications are stateless
+- 9 independent Python/FastAPI backend services; the seven database-backed ones each own their own PostgreSQL schema, while payments and infra are stateless
 - Single React SPA frontend acting as both admin dashboard and customer-facing shop
 - Synchronous HTTP inter-service communication via `httpx` async clients
 - Asynchronous event delivery via the Outbox Pattern, fanning out to multiple subscribers (orders -> production, notifications)
@@ -204,9 +204,9 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Used by: Frontend via Nginx proxy, other services via direct HTTP
 - Purpose: Persistent storage with schema-per-service isolation
 - Location: `db/init.sql` (schema/user setup), `services/{service}/alembic/` (migrations)
-- Contains: PostgreSQL schemas: `users`, `catalog`, `orders`, `production`, `logistics`, `inventory`
+- Contains: PostgreSQL schemas: `users`, `catalog`, `orders`, `production`, `logistics`, `inventory`, `notifications`
 - Depends on: Single PostgreSQL 16 instance
-- Used by: All services with database needs (all except payments, infra and notifications)
+- Used by: All services with database needs (all except payments and infra)
 - Purpose: Kubernetes (EKS) deployment with Helm charts
 - Location: `deploy/`
 - Contains: Helm charts per service, infrastructure scripts, monitoring config

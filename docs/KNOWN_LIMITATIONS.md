@@ -24,9 +24,11 @@ Gaps kept out of scope for the thesis implementation but worth surfacing for com
 
 **Interaction with email**: cancelling a `paid` order now also sends the customer a cancellation email, while no money is returned. The email wording is deliberately conditional on `previous_status` and `released_stock` (`services/notifications/main.py`, `render_email()`) so it never claims stock was released when it was not, and never asserts any payment outcome — it directs the customer to support instead. The underlying gap is unchanged; only the messaging is prevented from making a false promise.
 
-## 3. Notifications idempotency is in-memory and per-replica
+## 3. Notifications idempotency — RESOLVED (durable `processed_events`)
 
-**Symptom**: A customer can receive a duplicate email for the same order event after a notifications pod restart, or when `replicaCount > 1`.
+**Resolved** (quick task 260815-m0m): notifications now owns `notifications_schema` with a `processed_events(event_id PK)` table and dedups durably (`SELECT` by `event_id`, then `INSERT ... ON CONFLICT DO NOTHING` after a successful send). A re-delivered event no longer sends a duplicate email across a pod restart or with `replicaCount > 1` (verified end-to-end incl. a real container restart). The only residual is the narrow send→record crash window — a rare duplicate, deliberately biased over a dropped email, since email is not an idempotent sink. The historical description below is kept for context.
+
+**Symptom (historical)**: A customer could receive a duplicate email for the same order event after a notifications pod restart, or when `replicaCount > 1`.
 
 **Why it persists**: The service is stateless by design and has no database, so the processed-event guard is a Python `set` of `event_id` values held in process memory (`services/notifications/main.py`). Two consequences follow. The set is lost on restart, so an at-least-once redelivery arriving afterwards is treated as new. And the set is per-replica, so with more than one pod each replica has an independent view — a redelivery routed to a different pod is not recognised as a duplicate. The set also grows without bound for the lifetime of the pod, since nothing evicts old IDs.
 

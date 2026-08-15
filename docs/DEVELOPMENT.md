@@ -87,7 +87,7 @@ cd services/infra
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8008
 
-# Notifications Service (no database, no migrations)
+# Notifications Service (DB-backed: notifications_schema, processed_events)
 cd services/notifications
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8009

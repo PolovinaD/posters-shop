@@ -104,7 +104,7 @@ This document lists all environment variables used by each service.
 | `EMAIL_FROM` | Sender address — must be a verified SES identity when using SES | `no-reply@postershop.example` | Yes (when `EMAIL_PROVIDER=ses`) |
 | `SES_REGION` | Region holding the verified SES sender identity | `eu-central-1` | No |
 
-**Note:** Notifications service is stateless (no database, no Alembic migrations).
+**Note:** Notifications service is now DB-backed (`notifications_schema`, one `processed_events` table for durable idempotency) — set `DATABASE_URL` and run its Alembic migration like the other DB services (quick-260815-m0m).
 
 **On `SES_REGION` vs `AWS_REGION`:** these are deliberately independent. `AWS_REGION`
 (`eu-north-1`) is where the EKS cluster runs; `SES_REGION` is where the sender identity
