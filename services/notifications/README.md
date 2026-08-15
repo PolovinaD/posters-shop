@@ -14,7 +14,8 @@ Transactional email on order-lifecycle events.
 - FastAPI
 - boto3 (AWS SES transport)
 - prometheus-client (delivery metrics)
-- No database, no Alembic — stateless by design
+- SQLAlchemy + Alembic — owns `notifications_schema` with a `processed_events`
+  idempotency table, migrated like every other DB-backed service
 
 ## API Endpoints
 
@@ -25,7 +26,7 @@ Transactional email on order-lifecycle events.
 | POST | /events/order-delivered | Send delivery-confirmation email | - |
 | POST | /events/order-cancelled | Send cancellation email | - |
 | GET | /healthz | Liveness probe | - |
-| GET | /readyz | Readiness probe (always ready — no DB) | - |
+| GET | /readyz | Readiness probe (checks DB connectivity) | - |
 | GET | /metrics | Prometheus metrics | - |
 
 The `/events/*` endpoints are called by the orders outbox worker over cluster-internal
@@ -65,7 +66,11 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8009
 ```
 
-**Note:** No database required - the service holds no persistent state.
+**Note:** The service is DB-backed. It owns `notifications_schema` (a single
+`processed_events` idempotency table) and runs its Alembic migration under
+docker-compose via the `notifications-migrate` service, exactly like the other
+DB-backed services. `make dev` still works credential-free: `EMAIL_PROVIDER`
+defaults to `logging`, so no AWS credentials are needed.
 
 The default logging provider needs no AWS credentials, so the full event flow is
 demoable locally:
@@ -123,9 +128,20 @@ Setup is documented in [deploy/README.md](../../deploy/README.md) under
 `ORDER_SHIPPED` and `ORDER_DELIVERED` are consumed only here. See
 [docs/EVENT_CATALOG.md](../../docs/EVENT_CATALOG.md).
 
-Idempotency uses an in-memory set of processed `event_id` values. It is per-replica and
-does not survive a restart, so a duplicate email is possible after a pod restart or with
-`replicaCount > 1`.
+## Idempotency
+
+Idempotency is **durable** and keyed by the outbox envelope's `event_id`. Each
+successfully-sent email records one row in `notifications_schema.processed_events`;
+a re-delivered event (same `event_id`) short-circuits to `already_processed` and
+sends no second email. Because the record lives in Postgres — not an in-memory set —
+this holds across a pod/container restart and with `replicaCount > 1`.
+
+The record is written **after** a successful send (send → record), so there is a
+narrow window: a crash between handing the email to the provider and committing the
+row can re-send that one event once on redelivery. This is a deliberately accepted
+rare duplicate, biased over silently dropping a customer email — it is **not**
+exactly-once. On a send failure the service returns `503` and writes **no** row, so
+the outbox retries with backoff.
 
 ## Metrics
 

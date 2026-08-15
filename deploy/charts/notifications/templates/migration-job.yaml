@@ -1,0 +1,46 @@
+{{- if .Values.migrations.enabled }}
+# ============================================================
+# Database Migration Job
+# ============================================================
+# Runs Alembic migrations before the main deployment.
+# Uses Helm hook to ensure migrations complete before pods start.
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Chart.Name }}-migrate-{{ .Release.Revision }}
+  labels:
+    app: {{ .Chart.Name }}
+    component: migration
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+        component: migration
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migrations.secretName | default "postershop-db" }}
+                  key: {{ .Values.migrations.secretKey }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- end }}

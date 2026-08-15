@@ -118,6 +118,7 @@ load_or_generate_passwords() {
         export PRODUCTION_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.PRODUCTION_SVC_PASSWORD')
         export LOGISTICS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.LOGISTICS_SVC_PASSWORD')
         export INVENTORY_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.INVENTORY_SVC_PASSWORD')
+        export NOTIFICATIONS_SVC_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.NOTIFICATIONS_SVC_PASSWORD')
         export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET')
         export STRIPE_WEBHOOK_SECRET=$(echo "$SECRET_JSON" | jq -r '.STRIPE_WEBHOOK_SECRET')
         export DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.DB_PASSWORD // empty')
@@ -133,6 +134,7 @@ load_or_generate_passwords() {
     export PRODUCTION_SVC_PASSWORD=$(generate_password)
     export LOGISTICS_SVC_PASSWORD=$(generate_password)
     export INVENTORY_SVC_PASSWORD=$(generate_password)
+    export NOTIFICATIONS_SVC_PASSWORD=$(generate_password)
     export DB_PASSWORD=$(generate_password)
     export JWT_SECRET=$(openssl rand -hex 32)
     export STRIPE_WEBHOOK_SECRET="whsec_$(openssl rand -hex 16)"
@@ -326,6 +328,7 @@ if [ "$DRY_RUN" = false ]; then
     "PRODUCTION_SVC_PASSWORD": "$PRODUCTION_SVC_PASSWORD",
     "LOGISTICS_SVC_PASSWORD": "$LOGISTICS_SVC_PASSWORD",
     "INVENTORY_SVC_PASSWORD": "$INVENTORY_SVC_PASSWORD",
+    "NOTIFICATIONS_SVC_PASSWORD": "$NOTIFICATIONS_SVC_PASSWORD",
     "DB_PASSWORD": "$DB_PASSWORD",
     "JWT_SECRET": "$JWT_SECRET",
     "STRIPE_WEBHOOK_SECRET": "$STRIPE_WEBHOOK_SECRET"
@@ -485,6 +488,7 @@ CREATE SCHEMA IF NOT EXISTS orders_schema;
 CREATE SCHEMA IF NOT EXISTS production_schema;
 CREATE SCHEMA IF NOT EXISTS logistics_schema;
 CREATE SCHEMA IF NOT EXISTS inventory_schema;
+CREATE SCHEMA IF NOT EXISTS notifications_schema;
 
 -- Drop existing users if they exist (for idempotency)
 DROP USER IF EXISTS users_svc;
@@ -493,6 +497,7 @@ DROP USER IF EXISTS orders_svc;
 DROP USER IF EXISTS production_svc;
 DROP USER IF EXISTS logistics_svc;
 DROP USER IF EXISTS inventory_svc;
+DROP USER IF EXISTS notifications_svc;
 
 -- Create service users
 CREATE USER users_svc WITH PASSWORD '${USERS_SVC_PASSWORD}';
@@ -501,6 +506,7 @@ CREATE USER orders_svc WITH PASSWORD '${ORDERS_SVC_PASSWORD}';
 CREATE USER production_svc WITH PASSWORD '${PRODUCTION_SVC_PASSWORD}';
 CREATE USER logistics_svc WITH PASSWORD '${LOGISTICS_SVC_PASSWORD}';
 CREATE USER inventory_svc WITH PASSWORD '${INVENTORY_SVC_PASSWORD}';
+CREATE USER notifications_svc WITH PASSWORD '${NOTIFICATIONS_SVC_PASSWORD}';
 
 -- Grant permissions - each service only accesses its own schema
 GRANT USAGE ON SCHEMA users_schema TO users_svc;
@@ -539,8 +545,14 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA inventory_schema TO inventory_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory_schema GRANT ALL ON TABLES TO inventory_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory_schema GRANT ALL ON SEQUENCES TO inventory_svc;
 
+GRANT USAGE ON SCHEMA notifications_schema TO notifications_svc;
+GRANT ALL PRIVILEGES ON SCHEMA notifications_schema TO notifications_svc;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA notifications_schema TO notifications_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON TABLES TO notifications_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON SEQUENCES TO notifications_svc;
+
 -- Grant CREATE on database so Alembic can run CREATE SCHEMA IF NOT EXISTS in env.py
-GRANT CREATE ON DATABASE postershop TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc;
+GRANT CREATE ON DATABASE postershop TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc, notifications_svc;
 
 -- Done
 SELECT 'Database initialization complete' as status;
@@ -626,7 +638,8 @@ if [ "$DRY_RUN" = false ]; then
     "ORDERS_DATABASE_URL": "postgresql://orders_svc:${ORDERS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dorders_schema",
     "PRODUCTION_DATABASE_URL": "postgresql://production_svc:${PRODUCTION_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dproduction_schema",
     "LOGISTICS_DATABASE_URL": "postgresql://logistics_svc:${LOGISTICS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dlogistics_schema",
-    "INVENTORY_DATABASE_URL": "postgresql://inventory_svc:${INVENTORY_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dinventory_schema"
+    "INVENTORY_DATABASE_URL": "postgresql://inventory_svc:${INVENTORY_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dinventory_schema",
+    "NOTIFICATIONS_DATABASE_URL": "postgresql://notifications_svc:${NOTIFICATIONS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dnotifications_schema"
 }
 EOF
 )
