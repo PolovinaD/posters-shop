@@ -4,7 +4,7 @@ image:
   # Override with: --set image.repository=$ECR_REGISTRY/infra
   repository: YOUR_ECR_REGISTRY/infra
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always   # matches the other nine charts; :latest must be re-pulled on redeploy
 
 service:
   type: ClusterIP

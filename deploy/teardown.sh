@@ -58,9 +58,14 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 # Configuration
+# Suppress the AWS CLI pager for every call in this script; a single
+# output-producing command would otherwise stall the teardown on `less`.
+export AWS_PAGER=""
 AWS_PROFILE=${AWS_PROFILE:-private}
 AWS_REGION=${AWS_REGION:-eu-north-1}
-CLUSTER_NAME=${CLUSTER_NAME:-postershop-dev}
+# Must match full-deploy.sh, or a teardown run without .env silently targets a
+# cluster that does not exist and leaves the real one running and billing.
+CLUSTER_NAME=${CLUSTER_NAME:-postershop}
 NAMESPACE=${NAMESPACE:-postershop}
 RDS_STACK_NAME="postershop-rds"
 EXPECTED_ACCOUNT_ID=${EXPECTED_ACCOUNT_ID:-553967852170}
