@@ -35,11 +35,30 @@ env:
         key: WEBHOOK_SECRET
   - name: ORDERS_WEBHOOK_URL
     value: "http://orders/webhooks/stripe"
-  - name: FRONTEND_URL
-    value: "http://k8s-postersh-frontend-485473415f-1919299998.eu-north-1.elb.amazonaws.com"
+  # FRONTEND_URL is NOT listed here. It is rendered from the `frontendUrl:`
+  # scalar at the bottom of this file — see the comment there for why.
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
 
 ingress:
   enabled: false
+
+# Public base URL the customer's browser is sent back to after Stripe checkout
+# (services/payments/main.py builds success_url/cancel_url from it).
+#
+# This is the ALB hostname, and the ALB hostname CHANGES every time the cluster
+# is re-raised — so it MUST NOT be hardcoded here. It was, once (afbc972), and
+# the result was that every `helm upgrade` of payments restored a hostname from
+# a long-dead cluster and silently redirected paying customers to nothing.
+#
+# Empty is the correct committed value: the Deployment then renders no
+# FRONTEND_URL at all and the service falls back to its own default
+# (services/payments/main.py). The deploy path fills the real value in at
+# upgrade time from the LIVE `frontend` ingress, via
+# deploy/lib/live-config.sh -> build_helm_config_args, which both
+# deploy/deploy.sh and .github/workflows/deploy.yaml call.
+#
+# Set it explicitly only to override that lookup:
+#   --set frontendUrl=http://my-alb.example.com
+frontendUrl: ""
 

@@ -107,6 +107,57 @@ exit 0
 STUB_AWS
 chmod +x "$STUB_DIR/aws"
 
+# ------------------------------------------------------------
+# STUB: kubectl
+# Models exactly the three reads live-config.sh performs. Canned answers arrive
+# through the environment; STUB_KUBECTL_MISSING lists "<kind>/<name>" pairs that
+# should answer NotFound, and STUB_KUBECTL_FAIL=1 simulates a cluster that
+# cannot be reached at all.
+# ------------------------------------------------------------
+cat > "$STUB_DIR/kubectl" <<'STUB_KUBECTL'
+#!/usr/bin/env bash
+# STUB - not the real kubectl.
+if [ "${STUB_KUBECTL_FAIL:-0}" = "1" ]; then
+    echo "Unable to connect to the server: dial tcp: i/o timeout" >&2
+    exit 1
+fi
+
+kind=${2:-}
+name=${3:-}
+jpath=""
+for arg in "$@"; do
+    case "$arg" in jsonpath=*) jpath="$arg" ;; esac
+done
+
+case " ${STUB_KUBECTL_MISSING:-} " in
+    *" $kind/$name "*)
+        echo "Error from server (NotFound): $kind \"$name\" not found" >&2
+        exit 1
+        ;;
+esac
+
+case "$kind/$name" in
+    ingress/frontend)
+        printf '%s' "${STUB_INGRESS_HOST:-}"
+        ;;
+    deployment/payments)
+        case "$jpath" in
+            *FRONTEND_URL*) printf '%s' "${STUB_PAYMENTS_FRONTEND_URL:-}" ;;
+        esac
+        ;;
+    deployment/notifications)
+        case "$jpath" in
+            *EMAIL_PROVIDER*)     printf '%s' "${STUB_NOTIF_PROVIDER:-}" ;;
+            *EMAIL_FROM*)         printf '%s' "${STUB_NOTIF_FROM:-}" ;;
+            *SES_REGION*)         printf '%s' "${STUB_NOTIF_REGION:-}" ;;
+            *serviceAccountName*) printf '%s' "${STUB_NOTIF_SA:-}" ;;
+        esac
+        ;;
+esac
+exit 0
+STUB_KUBECTL
+chmod +x "$STUB_DIR/kubectl"
+
 echo "=============================================="
 echo " deploy/lib selftest"
 echo "=============================================="
@@ -261,6 +312,160 @@ if [ -n "$(whsec_generators)" ]; then
     whsec_generators
 else
     ok "GREP-1 no whsec value is generated anywhere under deploy/"
+fi
+
+# ============================================================
+# live-config.sh
+# ============================================================
+echo ""
+echo "-- live-config.sh ----------------------------"
+
+# Runs build_helm_config_args in an isolated subshell with stubbed kubectl.
+#   $1 = service, $2 = namespace, remaining args = VAR=value for the stubs and
+#   for the explicit-override precedence tests.
+# Prints everything the function emitted plus a final "ARGS:<space-joined>" line.
+# `set -e` is on inside, because both callers run under errexit.
+run_config() {
+    local service=$1
+    local ns=$2
+    shift 2
+    (
+        set -e
+        PATH="$STUB_DIR:$PATH"
+        export PATH
+        for kv in "$@"; do
+            export "$kv"
+        done
+        # shellcheck source=deploy/lib/live-config.sh
+        . "$SCRIPT_DIR/live-config.sh"
+        build_helm_config_args "$service" "$ns"
+        echo "ARGS:${HELM_CONFIG_ARGS[@]+${HELM_CONFIG_ARGS[@]}}"
+    ) 2>&1
+}
+
+config_args() {
+    local line
+    line=$(printf '%s\n' "$1" | grep '^ARGS:' | tail -1)
+    printf '%s' "${line#ARGS:}"
+}
+
+ALB="alb-live.example.com"
+# Stands in for the hostname afbc972 committed into the payments chart: a real
+# ALB from a cluster that no longer exists. A stand-in rather than the literal,
+# so that grepping the repo for the dead hostname keeps returning nothing.
+STALE="http://k8s-postersh-frontend-deadcluster.eu-north-1.elb.amazonaws.com"
+
+# CFG-1: payments with a live frontend ingress -> the ALB, and nothing else.
+OUT=$(run_config payments postershop \
+    "STUB_INGRESS_HOST=$ALB" \
+    "STUB_KUBECTL_MISSING=deployment/payments")
+assert_eq "CFG-1 payments takes the live ALB" \
+    "--set frontendUrl=http://$ALB" "$(config_args "$OUT")"
+
+# CFG-2: the live defect. The Deployment still carries the dead hostname from a
+# previous cluster; the ingress must win so the ALB move self-heals.
+OUT=$(run_config payments postershop \
+    "STUB_INGRESS_HOST=$ALB" \
+    "STUB_PAYMENTS_FRONTEND_URL=$STALE")
+assert_eq "CFG-2 live ingress beats the stale deployment value" \
+    "--set frontendUrl=http://$ALB" "$(config_args "$OUT")"
+assert_not_contains "CFG-2 dead hostname not carried forward" "deadcluster" "$OUT"
+
+# CFG-3: no ingress yet (still provisioning) -> preserve what the pod has.
+OUT=$(run_config payments postershop \
+    "STUB_KUBECTL_MISSING=ingress/frontend" \
+    "STUB_PAYMENTS_FRONTEND_URL=http://preserved.example.com")
+assert_eq "CFG-3 live deployment value preserved when no ingress" \
+    "--set frontendUrl=http://preserved.example.com" "$(config_args "$OUT")"
+
+# CFG-4: nothing at all (first-ever deploy) -> chart default, no crash.
+OUT=$(run_config payments postershop \
+    "STUB_KUBECTL_MISSING=ingress/frontend deployment/payments")
+assert_eq "CFG-4 nothing live -> empty args" "" "$(config_args "$OUT")"
+
+# CFG-4b: an explicit FRONTEND_URL overrides even a live ingress.
+OUT=$(run_config payments postershop \
+    "STUB_INGRESS_HOST=$ALB" \
+    "FRONTEND_URL=http://explicit.example.com")
+assert_eq "CFG-4b explicit environment override wins" \
+    "--set frontendUrl=http://explicit.example.com" "$(config_args "$OUT")"
+
+# CFG-5: notifications with full-deploy.sh's SES detection in the environment.
+OUT=$(run_config notifications postershop \
+    "EMAIL_PROVIDER=ses" "EMAIL_FROM=a@b.c" "SES_REGION=eu-west-1" \
+    "NOTIFICATIONS_SA=notifications")
+assert_eq "CFG-5 SES config from the environment" \
+    "--set email.provider=ses --set email.from=a@b.c --set email.sesRegion=eu-west-1 --set serviceAccount.name=notifications" \
+    "$(config_args "$OUT")"
+
+# CFG-6: THE REGRESSION TEST for the reported CI defect. No environment hints at
+# all (CI has none), a live deployment already running SES -> the whole
+# configuration is reconstructed and carried through the upgrade.
+OUT=$(run_config notifications postershop \
+    "STUB_NOTIF_PROVIDER=ses" "STUB_NOTIF_FROM=live@example.com" \
+    "STUB_NOTIF_REGION=eu-north-1" "STUB_NOTIF_SA=notifications")
+assert_eq "CFG-6 SES config reconstructed from the live cluster" \
+    "--set email.provider=ses --set email.from=live@example.com --set email.sesRegion=eu-north-1 --set serviceAccount.name=notifications" \
+    "$(config_args "$OUT")"
+
+# CFG-7: Kubernetes materialises serviceAccountName: default even when the chart
+# omits it, so it carries no information and must never be echoed back.
+OUT=$(run_config notifications postershop \
+    "STUB_NOTIF_PROVIDER=ses" "STUB_NOTIF_FROM=live@example.com" \
+    "STUB_NOTIF_REGION=eu-north-1" "STUB_NOTIF_SA=default")
+assert_not_contains "CFG-7 literal 'default' ServiceAccount ignored" \
+    "serviceAccount.name" "$(config_args "$OUT")"
+assert_contains "CFG-7 the rest of the SES config still carried" \
+    "email.provider=ses" "$(config_args "$OUT")"
+
+# CFG-8: a live deployment on `logging` stays on `logging` (chart default).
+OUT=$(run_config notifications postershop "STUB_NOTIF_PROVIDER=logging")
+assert_eq "CFG-8 live 'logging' -> empty args" "" "$(config_args "$OUT")"
+
+# CFG-9: every other chart is self-describing and must be left alone.
+for svc in orders frontend inventory; do
+    OUT=$(run_config "$svc" postershop "STUB_INGRESS_HOST=$ALB" "STUB_NOTIF_PROVIDER=ses")
+    assert_eq "CFG-9 $svc -> empty args" "" "$(config_args "$OUT")"
+done
+
+# CFG-10: a totally unreachable cluster yields an empty array, not an error.
+# This is the CI-before-first-deploy case and must never fail the deploy step.
+OUT=$(run_config payments postershop "STUB_KUBECTL_FAIL=1")
+assert_eq "CFG-10 unreachable cluster (payments) -> empty args" "" "$(config_args "$OUT")"
+OUT=$(run_config notifications postershop "STUB_KUBECTL_FAIL=1")
+assert_eq "CFG-10 unreachable cluster (notifications) -> empty args" "" "$(config_args "$OUT")"
+
+# CFG-11: helm --set splits on commas, so a value containing one is refused
+# rather than mis-parsed into several assignments.
+OUT=$(run_config payments postershop "FRONTEND_URL=http://a.example.com,b")
+assert_eq       "CFG-11 comma value not emitted" "" "$(config_args "$OUT")"
+assert_contains "CFG-11 comma value is reported" "skipping --set frontendUrl" "$OUT"
+
+# ------------------------------------------------------------
+# CHART-1/2: the payments chart renders FRONTEND_URL only when told to.
+# ------------------------------------------------------------
+if command -v helm >/dev/null 2>&1; then
+    RENDERED=$(helm template "$DEPLOY_DIR/charts/payments" --set frontendUrl=http://$ALB 2>&1)
+    assert_eq "CHART-1 exactly one FRONTEND_URL when frontendUrl is set" \
+        "1" "$(printf '%s\n' "$RENDERED" | grep -c 'name: FRONTEND_URL')"
+    assert_contains "CHART-1 renders the value given" "http://$ALB" "$RENDERED"
+
+    RENDERED=$(helm template "$DEPLOY_DIR/charts/payments" 2>&1)
+    assert_eq "CHART-2 no FRONTEND_URL by default" \
+        "0" "$(printf '%s\n' "$RENDERED" | grep -c 'name: FRONTEND_URL')"
+else
+    echo "  skip helm chart render checks (helm not installed)"
+fi
+
+# ------------------------------------------------------------
+# GREP-2: no ALB hostname may be committed to any chart. This is the mistake
+# afbc972 made and the reason the frontendUrl scalar exists.
+# ------------------------------------------------------------
+if grep -rn "elb.amazonaws.com" "$DEPLOY_DIR/charts" >/dev/null 2>&1; then
+    fail "GREP-2 an ALB hostname is hardcoded under deploy/charts/"
+    grep -rn "elb.amazonaws.com" "$DEPLOY_DIR/charts"
+else
+    ok "GREP-2 no ALB hostname hardcoded under deploy/charts/"
 fi
 
 echo ""
