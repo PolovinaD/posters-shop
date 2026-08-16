@@ -36,7 +36,7 @@ kind: ClusterConfig
 metadata:
   name: postershop-dev
   region: eu-north-1
-  version: "1.29"
+  version: "1.32"
   tags:
     project: postershop
     environment: development

@@ -29,7 +29,7 @@ graph TB
         PRODUCTION[Production Service<br/>Job processing]
         LOGISTICS[Logistics Service<br/>Shipping]
         PAYMENTS[Payments Service<br/>Stripe mock]
-        NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>stateless, no DB]
+        NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>event dedup]
     end
     
     subgraph "Infrastructure"
@@ -66,11 +66,18 @@ graph TB
     INVENTORY --> PG
     PRODUCTION --> PG
     LOGISTICS --> PG
+    NOTIFICATIONS --> PG
 ```
 
-**Notifications has no edge to PostgreSQL.** It is stateless by design: no schema, no
-Alembic migrations, no `models.py`. Its only persistent-looking state is an in-memory
-set of processed `event_id` values, which is per-replica and lost on restart.
+**Notifications touches PostgreSQL for exactly one thing: idempotency.** It owns
+`notifications_schema`, whose only table is `processed_events(event_id PK)` — one row per
+outbox event whose email was sent successfully. On each delivery the handler first selects
+by `event_id`; a hit is acknowledged as `already_processed` without sending again, and a
+miss sends the mail and then records the row with `INSERT ... ON CONFLICT DO NOTHING`.
+Dedup therefore survives restarts and is shared across replicas, unlike the in-memory set
+it replaced. It keeps no other domain state — no message log, no templates in the database.
+The residual window is send-then-record: a crash between the two re-sends the mail on
+redelivery, which is the deliberate trade against dropping it.
 
 **Notifications is not ALB-exposed.** Its chart sets `ingress.enabled: false`, so it
 receives no ALB routing rule and appears in no routing table below. The orders outbox

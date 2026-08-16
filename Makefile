@@ -17,6 +17,11 @@ ifneq (,$(wildcard ./.env))
     export
 endif
 
+# AWS CLI v2 pipes output through a pager when stdout is a TTY, which stops any
+# recipe that prints JSON (create-stack, create-secret, …) dead until someone
+# presses q. Exported here so every recipe in this file is non-interactive.
+export AWS_PAGER :=
+
 # Configuration (can be overridden by .env or command line)
 AWS_PROFILE ?= private
 AWS_REGION ?= eu-north-1
@@ -193,9 +198,8 @@ cloud-up: check-account ## [cloud deploy] Spin up full cloud infrastructure
 	@echo "   This will create: EKS cluster, RDS, deploy all services"
 	@echo "   Estimated time: 25-30 minutes"
 	@echo "   Estimated cost: ~\$$3-4/day while running"
+	@echo "   Runs unattended — passwords are generated and stored in AWS Secrets Manager."
 	@echo ""
-	@read -sp "Enter RDS master password (min 8 chars): " DB_PASS; echo ""; \
-	export DB_PASSWORD=$$DB_PASS && \
 	AWS_PROFILE=$(AWS_PROFILE) ./deploy/full-deploy.sh
 
 .PHONY: cloud-down
@@ -241,12 +245,13 @@ cloud-status: ## [cloud deploy] Check status of cloud resources
 		--query 'SecretList[].Name' --output table 2>/dev/null || echo "  No postershop secrets found"
 
 .PHONY: rds-create
-rds-create: check-account ## [cloud] Create RDS instance
+rds-create: check-account ## [cloud] Create RDS instance (standalone; `make deploy` does this for you)
 	@read -sp "Enter RDS master password: " DB_PASS; echo ""; \
+	export AWS_PAGER=""; \
 	VPC=$$(AWS_PROFILE=$(AWS_PROFILE) aws eks describe-cluster --name $(CLUSTER_NAME) --query 'cluster.resourcesVpcConfig.vpcId' --output text); \
 	SUBNETS=$$(AWS_PROFILE=$(AWS_PROFILE) aws eks describe-cluster --name $(CLUSTER_NAME) --query 'cluster.resourcesVpcConfig.subnetIds[:2]' --output text | tr '\t' ','); \
-	SG=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text); \
-	aws cloudformation create-stack \
+	SG=$$(AWS_PROFILE=$(AWS_PROFILE) aws eks describe-cluster --name $(CLUSTER_NAME) --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text); \
+	AWS_PROFILE=$(AWS_PROFILE) aws cloudformation create-stack \
 		--stack-name postershop-rds \
 		--template-body file://deploy/infrastructure/rds.yaml \
 		--parameters \
@@ -259,7 +264,7 @@ rds-create: check-account ## [cloud] Create RDS instance
 rds-delete: ## [cloud] Delete RDS instance (DESTRUCTIVE!)
 	@read -p "Are you sure you want to delete RDS? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ]; then \
-		aws cloudformation delete-stack --stack-name postershop-rds; \
+		AWS_PAGER="" AWS_PROFILE=$(AWS_PROFILE) aws cloudformation delete-stack --stack-name postershop-rds; \
 	fi
 
 .PHONY: rds-init
