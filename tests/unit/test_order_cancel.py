@@ -57,7 +57,11 @@ _db_stub.Base = _RealBase
 _db_stub.engine = MagicMock()
 _db_stub.get_db = MagicMock()
 _db_stub.SessionLocal = MagicMock()
-sys.modules.setdefault("database", _db_stub)
+# Unconditional assignment, NOT setdefault: another test module may already
+# occupy the "database" slot, in which case setdefault would silently hand
+# orders/main.py a foreign get_db and make dependency_overrides[_db_stub.get_db]
+# a key FastAPI never looks up. Torn down in the finally block below.
+sys.modules["database"] = _db_stub
 
 # Ensure psycopg2 is stubbed
 sys.modules.setdefault("psycopg2", MagicMock())
@@ -182,8 +186,12 @@ try:
     _ord_main = _load_orders_module("main", alias="orders_main_cancel_test")
 finally:
     sys.path.remove(_ORDERS_DIR)
-    # Remove generic aliases to avoid polluting other test files
-    for _mod_name in ("models", "schemas", "logger", "metrics"):
+    # Remove generic aliases to avoid polluting other test files. "database" is
+    # included: leaving it installed leaks this file's Base (and its populated
+    # MetaData) into whatever test module imports next. The module-global
+    # _db_stub name is unaffected by the pop, so the dependency_overrides keys
+    # below still reference the exact object orders/main.py bound get_db from.
+    for _mod_name in ("models", "schemas", "logger", "metrics", "database"):
         sys.modules.pop(_mod_name, None)
 
 

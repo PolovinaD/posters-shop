@@ -78,7 +78,10 @@ try:
 finally:
     sys.path.remove(_INVENTORY_DIR)
     # Restore generic module aliases to None so order-tests can re-register their own.
-    # We keep "database" stub; orders test uses setdefault() which won't overwrite.
+    # The "database" stub is intentionally left installed: inventory/main.py holds a
+    # live reference to this exact stub's get_db, which the tests below depend on.
+    # That is safe because no consumer relies on inheriting it — every other test
+    # module installs its own "database" stub unconditionally and tears it down.
     # Remove inventory-specific aliases so test_order_state_machine.py can load its own.
     for _mod_name in ("models", "schemas", "logger", "metrics"):
         sys.modules.pop(_mod_name, None)
