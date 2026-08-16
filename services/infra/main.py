@@ -43,6 +43,7 @@ k8s_client = None
 k8s_apps_v1 = None
 k8s_core_v1 = None
 k8s_autoscaling_v1 = None
+k8s_autoscaling_v2 = None
 k8s_custom_api = None
 
 if IN_CLUSTER:
@@ -52,6 +53,7 @@ if IN_CLUSTER:
     k8s_apps_v1 = client.AppsV1Api()
     k8s_core_v1 = client.CoreV1Api()
     k8s_autoscaling_v1 = client.AutoscalingV1Api()
+    k8s_autoscaling_v2 = client.AutoscalingV2Api()
     k8s_custom_api = client.CustomObjectsApi()
 
 
@@ -511,6 +513,24 @@ def get_pod_logs(
 
 # ============== HPA ==============
 
+def _quantity(v) -> Optional[float]:
+    """Parse a Kubernetes quantity string into a float.
+
+    Metric values arrive as quantities, not numbers: a request rate of 0.423/s is
+    reported as "423m" (milli-units). Returning that string unparsed would make the
+    admin UI show "423m/5" as though the service were at 84x its target.
+    """
+    if v is None:
+        return None
+    t = str(v).strip()
+    try:
+        if t.endswith("m"):
+            return float(t[:-1]) / 1000.0
+        return float(t)
+    except ValueError:
+        return None
+
+
 @protected_router.get("/hpa", response_model=List[HPAInfo])
 def list_hpa():
     """List all HorizontalPodAutoscalers."""
@@ -530,22 +550,43 @@ def list_hpa():
             for name, data in MOCK_HPA.items()
         ]
 
-    # Real Kubernetes API
-    hpas = k8s_autoscaling_v1.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE)
+    # autoscaling/v2, not v1. The v1 API models CPU autoscaling ONLY, so a Pods
+    # metric (orders scales on http_requests_per_second) is simply absent from the
+    # v1 representation: target_cpu_utilization_percentage comes back None and the
+    # old `or 80` fallback then invented a CPU target that exists nowhere in the
+    # cluster, while the real metric was never reported at all.
+    hpas = k8s_autoscaling_v2.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE)
     result = []
 
     for hpa in hpas.items:
+        target = 0
         current_cpu = None
-        if hpa.status.current_cpu_utilization_percentage:
-            current_cpu = hpa.status.current_cpu_utilization_percentage
+        current_metric_value = None
+        metric_type = "cpu_percent"
+
+        for m in (hpa.spec.metrics or []):
+            if m.type == "Resource" and m.resource and m.resource.name == "cpu":
+                metric_type = "cpu_percent"
+                target = m.resource.target.average_utilization or 0
+            elif m.type == "Pods" and m.pods:
+                metric_type = "requests_per_second"
+                target = int(_quantity(m.pods.target.average_value) or 0)
+
+        for m in (hpa.status.current_metrics or []):
+            if m.type == "Resource" and m.resource and m.resource.name == "cpu":
+                current_cpu = m.resource.current.average_utilization
+            elif m.type == "Pods" and m.pods:
+                current_metric_value = _quantity(m.pods.current.average_value)
 
         result.append(HPAInfo(
             name=hpa.metadata.name,
             min_replicas=hpa.spec.min_replicas or 1,
             max_replicas=hpa.spec.max_replicas,
-            current_replicas=hpa.status.current_replicas,
-            target_cpu=hpa.spec.target_cpu_utilization_percentage or 80,
+            current_replicas=hpa.status.current_replicas or 0,
+            target_cpu=target,
             current_cpu=current_cpu,
+            metric_type=metric_type,
+            current_metric_value=current_metric_value,
         ))
 
     return result
@@ -575,7 +616,7 @@ def update_hpa(name: str, req: HPAUpdateRequest):
         patch["spec"]["targetCPUUtilizationPercentage"] = req.target_cpu
 
     try:
-        k8s_autoscaling_v1.patch_namespaced_horizontal_pod_autoscaler(
+        k8s_autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
             name=name,
             namespace=NAMESPACE,
             body=patch
