@@ -348,15 +348,43 @@ echo ""
 # ============================================================
 log_info "Step 3: Storing secrets in AWS Secrets Manager..."
 
+# Writes a secret, MERGING over whatever is already stored: keys present in the
+# existing value but absent from $secret_value are preserved.
+#
+# put-secret-value replaces the entire value, which silently destroyed
+# externally-supplied keys on every re-run. Concretely: postershop/stripe needs
+# SECRET_KEY (a real Stripe API key this script cannot generate), but the script
+# only ever writes WEBHOOK_SECRET — so run N+1 wiped the key a human had added,
+# and because ESO caches for an hour the breakage surfaced later, detached from
+# its cause. Merging keeps the script authoritative for what it owns without
+# clobbering what it does not.
 store_secrets_in_aws() {
     local secret_name=$1
     local secret_value=$2
-    
+
     if aws secretsmanager describe-secret --secret-id "$secret_name" --region "$AWS_REGION" &> /dev/null; then
         log_info "Updating existing secret: $secret_name"
+        local existing merged
+        existing=$(aws secretsmanager get-secret-value \
+            --secret-id "$secret_name" --region "$AWS_REGION" \
+            --query SecretString --output text 2>/dev/null || echo '{}')
+        # `*` puts the right-hand side last, so the script's values win on conflict
+        # while keys only present on the left survive.
+        merged=$(jq -s '.[0] * .[1]' <(printf '%s' "$existing") <(printf '%s' "$secret_value") 2>/dev/null)
+        if [ -z "$merged" ]; then
+            log_warn "  could not merge existing $secret_name; writing new value as-is"
+            merged=$secret_value
+        else
+            local kept
+            # bind the key before the pipe — inside `$new | has(.)` the pipe would
+            # rebind `.` to $new rather than the key being tested
+            kept=$(jq -r --argjson new "$secret_value" \
+                '[keys[] | . as $k | select(($new | has($k)) | not)] | join(", ")' <<<"$existing" 2>/dev/null)
+            [ -n "$kept" ] && log_info "  preserving externally-supplied keys: $kept"
+        fi
         aws secretsmanager put-secret-value \
             --secret-id "$secret_name" \
-            --secret-string "$secret_value" \
+            --secret-string "$merged" \
             --region "$AWS_REGION" > /dev/null
     else
         log_info "Creating new secret: $secret_name"
@@ -752,16 +780,37 @@ EOF
     # Wait for secrets to sync
     log_info "Waiting for secrets to sync from AWS Secrets Manager..."
     sleep 10
+    # This loop used to fall through silently when a secret never appeared, so the
+    # run logged "External Secrets configured" while postershop-stripe sat in
+    # SecretSyncedError — and the failure only surfaced later, when deploy.sh
+    # aborted. Fail here instead, and say why.
+    SYNC_FAILED=()
     for secret in postershop-db postershop-jwt postershop-stripe; do
+        synced=false
         for i in {1..30}; do
             if kubectl get secret "$secret" -n "$NAMESPACE" &> /dev/null; then
                 echo "  ✓ $secret synced"
+                synced=true
                 break
             fi
             sleep 2
         done
+        [ "$synced" = false ] && SYNC_FAILED+=("$secret")
     done
-    
+
+    if [ ${#SYNC_FAILED[@]} -gt 0 ]; then
+        log_error "These ExternalSecrets never produced a Kubernetes Secret: ${SYNC_FAILED[*]}"
+        for secret in "${SYNC_FAILED[@]}"; do
+            reason=$(kubectl get externalsecret "$secret" -n "$NAMESPACE" \
+                -o jsonpath='{.status.conditions[0].message}' 2>/dev/null || echo "no status")
+            log_error "  $secret: $reason"
+        done
+        log_error "Usually the AWS secret is missing a property the ExternalSecret requires."
+        log_error "Compare: aws secretsmanager get-secret-value --secret-id postershop/<name>"
+        log_error "against the 'property:' fields in deploy/secrets/external-secrets.yaml."
+        exit 1
+    fi
+
     log_success "External Secrets configured"
 fi
 echo ""
