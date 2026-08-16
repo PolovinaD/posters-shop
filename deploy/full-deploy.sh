@@ -54,6 +54,11 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Defines resolve_stripe_webhook_secret() and WHSEC_PLACEHOLDER. Functions only,
+# nothing runs at source time. Sourced after the log helpers above so the lib's
+# own fallback helpers are skipped and the coloured ones are used.
+source "$SCRIPT_DIR/lib/stripe-secret.sh"
+
 # Load .env if it exists
 if [ -f "$PROJECT_ROOT/.env" ]; then
     log_info "Loading configuration from .env"
@@ -143,8 +148,10 @@ load_or_generate_passwords() {
         export DB_PASSWORD=$(read_or_generate DB_PASSWORD)
         export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET // empty')
         [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32)
-        export STRIPE_WEBHOOK_SECRET=$(echo "$SECRET_JSON" | jq -r '.STRIPE_WEBHOOK_SECRET // empty')
-        [ -z "$STRIPE_WEBHOOK_SECRET" ] && export STRIPE_WEBHOOK_SECRET="whsec_$(openssl rand -hex 16)"
+        # STRIPE_WEBHOOK_SECRET is NOT handled here. It is the one value in this
+        # secret that cannot be generated (Stripe issues it), so it is resolved by
+        # resolve_stripe_webhook_secret() after this function returns — on both the
+        # existing-secret and the first-run path.
 
         log_success "Loaded passwords from AWS Secrets Manager"
         log_info "Any value missing above was generated; Step 3 rewrites the secret with the full set."
@@ -162,11 +169,17 @@ load_or_generate_passwords() {
     export NOTIFICATIONS_SVC_PASSWORD=$(generate_password)
     export DB_PASSWORD=$(generate_password)
     export JWT_SECRET=$(openssl rand -hex 32)
-    export STRIPE_WEBHOOK_SECRET="whsec_$(openssl rand -hex 16)"
+    # No STRIPE_WEBHOOK_SECRET here either — see the note on the load path above.
     log_success "Passwords generated (will be stored in AWS Secrets Manager)"
 }
 
 load_or_generate_passwords
+
+# Look the Stripe webhook signing secret up; never generate it (deploy/lib/stripe-secret.sh).
+# Deliberately outside load_or_generate_passwords so it runs on BOTH of that
+# function's paths — the existing-secret one and the first-run one.
+resolve_stripe_webhook_secret
+export STRIPE_WEBHOOK_SECRET
 
 # Banner
 echo "╔══════════════════════════════════════════════════════════════╗"
@@ -424,7 +437,13 @@ EOF
 )
     store_secrets_in_aws "postershop/jwt" "$JWT_JSON"
     
-    # Store Stripe secret
+    # Store Stripe secret.
+    # WEBHOOK_SECRET is ALWAYS written, even when no real value could be found
+    # (it then carries the placeholder from lib/stripe-secret.sh). The property
+    # must exist: deploy/secrets/external-secrets.yaml requires it, and an
+    # absent key stops the whole postershop-stripe Secret from syncing — which
+    # would also strip SECRET_KEY and leave payments and orders unable to start.
+    # store_secrets_in_aws merges, so a real value already in AWS is preserved.
     STRIPE_JSON=$(cat << EOF
 {
     "WEBHOOK_SECRET": "$STRIPE_WEBHOOK_SECRET"
@@ -1047,17 +1066,30 @@ if [ "$DRY_RUN" = false ]; then
     echo "   - postershop/passwords - all service & DB passwords"
     echo "   - postershop/database  - database connection URLs"
     echo "   - postershop/jwt       - JWT signing secret"
-    echo "   - postershop/stripe    - Stripe webhook secret"
+    echo "   - postershop/stripe    - Stripe API key (SECRET_KEY) + webhook signing secret (WEBHOOK_SECRET)"
     echo ""
-    
+
     # Important notes
     echo "⚠️  Important:"
     echo "   - All secrets stored in AWS Secrets Manager (no local files)"
     echo "   - Secrets synced to K8s via External Secrets Operator"
     echo "   - Enable RDS deletion protection for production"
     echo "   - ALB URL may take a few minutes to become available"
+
+    # The warning raised during resolution scrolls away during a 20-minute
+    # deploy, so repeat it here where it is actually read.
+    if [ "${STRIPE_WEBHOOK_SECRET_MISSING:-false}" = true ]; then
+        echo ""
+        echo "   ❗ NO STRIPE WEBHOOK SIGNING SECRET IS CONFIGURED"
+        echo "      postershop/stripe carries the placeholder, not a real secret, so"
+        echo "      Stripe webhook signature verification will fail (HTTP 400) and paid"
+        echo "      orders will stay in 'reserved'. A signing secret is issued by Stripe"
+        echo "      and cannot be generated."
+        echo "      Stripe Dashboard -> Developers -> Webhooks -> <endpoint> -> Signing secret -> Reveal"
+        echo "      Then run:  ./deploy/fix-stripe-webhook-secret.sh whsec_..."
+    fi
     echo ""
-    
+
     log_success "PosterShop platform is deployed!"
 else
     echo ""
