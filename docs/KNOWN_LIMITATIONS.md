@@ -45,3 +45,28 @@ Gaps kept out of scope for the thesis implementation but worth surfacing for com
 **Real-world impact**: moderate — it is the direct reason every consumer must be idempotent, and it is why the notifications idempotency gap above matters more than it otherwise would. It also means a single persistently failing subscriber can exhaust the retry budget for an event that other subscribers handled correctly, after which the event is abandoned entirely (there is no dead letter queue).
 
 **Fix shape**: per-subscriber delivery tracking — either a join table of (event_id, subscriber_url, delivered_at), or one outbox row fanned out at write time. The first preserves the single-write-per-business-event property of the outbox pattern and is the more faithful fix.
+
+## 5. CI redeploy of `notifications` silently reverts SES to `logging`
+
+`EMAIL_PROVIDER=ses` is chosen by detection logic in `deploy/full-deploy.sh`
+(a verified SES identity plus an IRSA-annotated ServiceAccount), and applied with
+`--set email.*`. `.github/workflows/deploy.yaml` has no equivalent, so any push
+touching `services/notifications/**` redeploys the chart with its default
+`email.provider: logging`, and real mail silently stops.
+
+**Why it persists:** the same shape as the `CORS_ORIGINS` patch — settings applied
+outside Helm's own values are invisible to a later `helm upgrade` driven by CI.
+
+**Fix when needed:** either teach `deploy.yaml` the same detection, or commit the
+values into the chart so they are not environment-derived.
+
+## 6. Default owner credential is reachable from the internet
+
+`services/users/init_db.py` seeds `admin@postershop.com` / `admin1234` whenever no
+owner exists. With the platform deployed behind a public ALB that account is
+internet-reachable with owner rights over catalog, inventory, orders and the infra
+service (which can scale and restart Deployments).
+
+**Accepted for a thesis demo cluster that is torn down between sessions.** Change
+the password or restrict the ingress before leaving a cluster running.
+
