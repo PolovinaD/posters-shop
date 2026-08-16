@@ -54,19 +54,24 @@ prometheus:
 # Grafana configuration
 grafana:
   enabled: true
+
   
   # Admin credentials (change in production!)
   adminUser: admin
   adminPassword: postershop-monitoring
   
   # Resource limits
+  # Raised from the original 128Mi/256Mi: Grafana was OOMKilled repeatedly with
+  # five dashboards plus Loki log queries, which drops any active port-forward
+  # with a misleading "connection refused inside namespace" error. The nodes sit
+  # at ~30% memory, so this is a container ceiling, not node pressure.
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 200m
       memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
   
   # Default dashboards
   defaultDashboardsEnabled: true

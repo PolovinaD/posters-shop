@@ -23,6 +23,10 @@ data:
     datasources:
     - name: Loki
       type: loki
+      # Pinned. Without an explicit uid Grafana generates a random one, while the
+      # dashboards in this directory reference the datasource as "loki" — the
+      # panels then fail with "datasource not found".
+      uid: loki
       access: proxy
       url: http://loki-gateway.monitoring.svc.cluster.local
       jsonData:
