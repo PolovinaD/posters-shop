@@ -1,7 +1,7 @@
 """Client for communicating with the orders service."""
 import os
 import httpx
-from logger import get_logger
+from logger import get_logger, correlation_headers
 
 logger = get_logger("orders_client")
 
@@ -18,7 +18,7 @@ class ServiceError(Exception):
 
 async def notify_order_producing(order_id: int) -> dict:
     """Notify orders service that production has started."""
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
         try:
             response = await client.post(f"{ORDERS_SERVICE_URL}/orders/{order_id}/produce")
             if response.status_code == 200:
@@ -33,7 +33,7 @@ async def notify_order_producing(order_id: int) -> dict:
 
 async def notify_order_shipped(order_id: int) -> dict:
     """Notify orders service that production is complete and trigger shipping."""
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
         try:
             # First, create shipment in logistics
             ship_response = await client.post(

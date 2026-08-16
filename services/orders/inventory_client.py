@@ -4,6 +4,7 @@ import httpx
 from typing import Optional
 
 from circuit_breaker import CircuitBreaker, CircuitOpenError  # noqa: F401
+from logger import correlation_headers
 
 INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://inventory:8000")
 
@@ -54,7 +55,7 @@ async def reserve_stock(order_id: int, sku: str, quantity: int, ttl_minutes: int
     Raises CircuitOpenError when inventory circuit is open.
     """
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
             try:
                 response = await client.post(
                     f"{INVENTORY_SERVICE_URL}/reserve",
@@ -90,7 +91,7 @@ async def release_stock(order_id: int, sku: Optional[str] = None) -> dict:
     Raises CircuitOpenError when inventory circuit is open.
     """
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
             try:
                 payload = {"order_id": order_id}
                 if sku:
@@ -122,7 +123,7 @@ async def commit_stock(order_id: int, sku: Optional[str] = None) -> dict:
     Raises CircuitOpenError when inventory circuit is open.
     """
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
             try:
                 payload = {"order_id": order_id}
                 if sku:
@@ -152,7 +153,7 @@ async def check_stock(skus: list[str]) -> dict:
     Raises CircuitOpenError when inventory circuit is open.
     """
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
             try:
                 response = await client.post(
                     f"{INVENTORY_SERVICE_URL}/stock/check",

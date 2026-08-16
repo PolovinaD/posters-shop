@@ -2,6 +2,8 @@ import os
 import httpx
 import logging
 
+from logger import correlation_headers
+
 logger = logging.getLogger(__name__)
 
 ORDERS_SERVICE_URL = os.getenv("ORDERS_SERVICE_URL", "http://orders:8000")
@@ -13,7 +15,7 @@ async def notify_order_delivered(order_id: int) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=correlation_headers()) as client:
             response = await client.post(
                 f"{ORDERS_SERVICE_URL}/orders/{order_id}/deliver"
             )
@@ -37,7 +39,7 @@ async def notify_order_shipped(order_id: int) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=correlation_headers()) as client:
             response = await client.post(
                 f"{ORDERS_SERVICE_URL}/orders/{order_id}/ship"
             )
