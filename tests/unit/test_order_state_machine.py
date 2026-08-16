@@ -9,7 +9,10 @@ import types
 import pytest
 
 # Insert the orders service directory so we can import models directly
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/orders"))
+_ORDERS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../services/orders")
+)
+sys.path.insert(0, _ORDERS_DIR)
 
 # Stub the `database` module so SQLAlchemy engine creation is skipped.
 # models.py imports `from database import Base` at module level, which triggers
@@ -24,9 +27,21 @@ class _StubBase:
 
 
 _db_stub.Base = _StubBase
-sys.modules.setdefault("database", _db_stub)
+# Unconditional assignment, NOT setdefault: another test module may have left a
+# real DeclarativeBase in the "database" slot whose MetaData already registered
+# orders_schema.orders, and re-importing models.py against it raises
+# InvalidRequestError. This file always gets its own lightweight _StubBase.
+sys.modules["database"] = _db_stub
 
-from models import OrderStatus
+try:
+    from models import OrderStatus
+finally:
+    # Leave sys.path and sys.modules exactly as we found them so this file
+    # cannot influence whatever pytest collects next. OrderStatus is already
+    # bound as a module global by now, so popping "models" is safe.
+    sys.path.remove(_ORDERS_DIR)
+    for _mod_name in ("models", "database"):
+        sys.modules.pop(_mod_name, None)
 
 
 # ---------------------------------------------------------------------------
