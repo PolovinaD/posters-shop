@@ -302,13 +302,45 @@ jobs:
 
           kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
 
+          # Some runtime config does not live in the chart's committed values:
+          # the notifications email transport (EMAIL_PROVIDER/EMAIL_FROM/
+          # SES_REGION plus the IRSA ServiceAccount), which full-deploy.sh
+          # DETECTS from the AWS account, and payments FRONTEND_URL, which is
+          # the ALB hostname and therefore only exists once the cluster does.
+          #
+          # Anything applied outside a chart's values is invisible to the next
+          # `helm upgrade`. This job deploys only the services whose code
+          # changed, and it has no SES detection and no ALB knowledge of its
+          # own — which is precisely why a push touching services/notifications
+          # used to revert real email to `logging`, and a push touching
+          # services/payments used to restore a hostname from a dead cluster.
+          #
+          # build_helm_config_args reads the LIVE cluster and returns the
+          # matching `--set` flags, so a deploy carries forward what is already
+          # running rather than resetting it. A service not included in this run
+          # is not touched at all. `--reuse-values` is NOT used and remains
+          # banned: it resurrects values from prior releases wholesale.
+          #
+          # An EMPTY result is the normal case (seven of the ten charts are
+          # fully self-describing) and must never fail the step — as must an
+          # unreachable resource, which the helper swallows.
+          # shellcheck source=deploy/lib/live-config.sh
+          source ./deploy/lib/live-config.sh
+
           FAILED=""
           for svc in $SVCS; do
             echo "::group::helm upgrade $svc"
+            build_helm_config_args "$svc" "$NS"
+            if [ -n "${HELM_CONFIG_ARGS[*]+${HELM_CONFIG_ARGS[*]}}" ]; then
+              echo "live config carried forward: ${HELM_CONFIG_ARGS[*]}"
+            else
+              echo "no out-of-chart config for $svc"
+            fi
             if ! helm upgrade --install "$svc" ./deploy/charts/"$svc" \
                  --namespace "$NS" \
                  --set image.repository="${ECR_REGISTRY}/${svc}" \
                  --set image.tag="$TAG" \
+                 "${HELM_CONFIG_ARGS[@]+"${HELM_CONFIG_ARGS[@]}"}" \
                  --wait --timeout 10m; then
               FAILED="$FAILED $svc"
               echo "::error::helm upgrade failed for $svc - diagnostics follow"

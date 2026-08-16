@@ -468,6 +468,121 @@ else
     ok "GREP-2 no ALB hostname hardcoded under deploy/charts/"
 fi
 
+# ============================================================
+# deploy.sh end-to-end, fully stubbed
+# ============================================================
+echo ""
+echo "-- deploy.sh (stubbed --dry-run) -------------"
+
+# helm STUB: records every invocation and succeeds.
+cat > "$STUB_DIR/helm" <<'STUB_HELM'
+#!/usr/bin/env bash
+# STUB - not the real helm.
+printf '%s\n' "$*" >> "$STUB_HELM_LOG"
+exit 0
+STUB_HELM
+chmod +x "$STUB_DIR/helm"
+
+# deploy.sh sources $PROJECT_ROOT/.env, and a developer's real .env would make
+# this test's result depend on their machine. Run it from a throwaway tree that
+# contains only what the script needs, and no .env.
+FAKE_ROOT="$STUB_DIR/repo"
+mkdir -p "$FAKE_ROOT/deploy"
+cp "$DEPLOY_DIR/deploy.sh" "$FAKE_ROOT/deploy/deploy.sh"
+cp -R "$SCRIPT_DIR" "$FAKE_ROOT/deploy/lib"
+cp -R "$DEPLOY_DIR/charts" "$FAKE_ROOT/deploy/charts"
+
+: > "$HELM_LOG"
+DEPLOY_OUT=$(
+    PATH="$STUB_DIR:$PATH" \
+    STUB_HELM_LOG="$HELM_LOG" \
+    STUB_INGRESS_HOST="$ALB" \
+    STUB_PAYMENTS_FRONTEND_URL="$STALE" \
+    STUB_NOTIF_PROVIDER=ses \
+    STUB_NOTIF_FROM=live@example.com \
+    STUB_NOTIF_REGION=eu-north-1 \
+    STUB_NOTIF_SA=notifications \
+    AWS_ACCOUNT_ID=123456789012 \
+    bash "$FAKE_ROOT/deploy/deploy.sh" postershop --dry-run 2>&1
+)
+DEPLOY_RC=$?
+
+assert_eq "DEPLOY-1 stubbed deploy.sh exits 0" "0" "$DEPLOY_RC"
+
+helm_line_for() {
+    grep -- "--install $1 " "$HELM_LOG" 2>/dev/null | tail -1
+}
+
+assert_contains "DEPLOY-2 payments gets the live ALB" \
+    "frontendUrl=http://$ALB" "$(helm_line_for payments)"
+assert_not_contains "DEPLOY-2 payments does not get the stale hostname" \
+    "deadcluster" "$(helm_line_for payments)"
+assert_contains "DEPLOY-3 notifications keeps SES from the live cluster" \
+    "email.provider=ses" "$(helm_line_for notifications)"
+assert_contains "DEPLOY-3 notifications keeps its IRSA ServiceAccount" \
+    "serviceAccount.name=notifications" "$(helm_line_for notifications)"
+assert_not_contains "DEPLOY-4 orders gets no frontendUrl" \
+    "frontendUrl" "$(helm_line_for orders)"
+assert_not_contains "DEPLOY-4 orders gets no email config" \
+    "email.provider" "$(helm_line_for orders)"
+assert_contains "DEPLOY-5 the SES decision is still echoed to the operator" \
+    "real email via SES" "$DEPLOY_OUT"
+
+# Every chart must still be upgraded with its ECR image, untouched by this change.
+UPGRADES=$(grep -c -- "--install" "$HELM_LOG")
+WITH_IMAGE=$(grep -c -- "--set image.repository=" "$HELM_LOG")
+assert_eq "DEPLOY-6 every helm upgrade still sets image.repository" "$UPGRADES" "$WITH_IMAGE"
+if [ "$UPGRADES" -ge 10 ]; then
+    ok "DEPLOY-6 all $UPGRADES charts upgraded"
+else
+    fail "DEPLOY-6 only $UPGRADES charts upgraded, expected at least 10"
+fi
+
+# ============================================================
+# CI workflow
+# ============================================================
+echo ""
+echo "-- .github/workflows/deploy.yaml -------------"
+
+WORKFLOW="$REPO_ROOT/.github/workflows/deploy.yaml"
+
+if python3 -c "import yaml" >/dev/null 2>&1; then
+    if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$WORKFLOW" >/dev/null 2>&1; then
+        ok "WF-1 workflow YAML parses"
+    else
+        fail "WF-1 workflow YAML does not parse"
+        python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$WORKFLOW"
+    fi
+else
+    echo "  skip WF-1 (PyYAML not installed)"
+fi
+
+if grep -q "deploy/lib/live-config.sh" "$WORKFLOW"; then
+    ok "WF-2 workflow sources the shared helper"
+else
+    fail "WF-2 workflow does not source deploy/lib/live-config.sh"
+fi
+
+if grep -q "build_helm_config_args" "$WORKFLOW" && grep -q 'HELM_CONFIG_ARGS\[@\]' "$WORKFLOW"; then
+    ok "WF-3 workflow calls the helper and splices its args into helm upgrade"
+else
+    fail "WF-3 workflow does not use HELM_CONFIG_ARGS in helm upgrade"
+fi
+
+# GREP-3: --reuse-values is banned. This file is excluded and comment lines are
+# filtered, so both the lib and the workflow may keep saying so out loud.
+reuse_values_uses() {
+    grep -rn --exclude=selftest.sh -- "--reuse-values" \
+        "$DEPLOY_DIR" "$REPO_ROOT/.github/workflows" 2>/dev/null \
+        | grep -v ':[[:space:]]*#'
+}
+if [ -n "$(reuse_values_uses)" ]; then
+    fail "GREP-3 --reuse-values is used somewhere"
+    reuse_values_uses
+else
+    ok "GREP-3 --reuse-values is not used anywhere"
+fi
+
 echo ""
 echo "=============================================="
 if [ "$FAILURES" -eq 0 ]; then
