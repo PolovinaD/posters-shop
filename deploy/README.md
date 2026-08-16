@@ -374,6 +374,30 @@ The chart ships `EMAIL_PROVIDER=logging` so that a plain `helm install` works wi
 no AWS setup at all. **Production must explicitly opt in to SES** by completing the
 three steps below and then setting `EMAIL_PROVIDER=ses`.
 
+### Shortcut: `./deploy/ses-setup.sh you@example.com`
+
+That script performs every step below that can be automated — requesting the identity
+verification, reporting sandbox status, creating a least-privilege `ses:SendEmail`
+policy and the IRSA ServiceAccount — and is idempotent, so it is safe to re-run. It
+stops at the one step that cannot be scripted: **clicking the confirmation link SES
+emails you**, which is the proof-of-control mechanism itself.
+
+Once both halves are in place, `full-deploy.sh` **detects** them (a verified identity
+in `SES_REGION` plus an IRSA-annotated `notifications` ServiceAccount) and deploys with
+`EMAIL_PROVIDER=ses` automatically. With either half missing it stays on `logging`.
+That default is deliberate: with SES half-configured every send raises, notifications
+answers `503`, and the orders outbox burns all five retries per event before abandoning
+it — there is no DLQ to catch the remains.
+
+Deliberately **not** part of `full-deploy.sh`: verification is one-time account setup
+that outlives cluster teardowns, and waiting on a human inbox would break the
+unattended single-command deploy.
+
+> The three steps below remain the manual reference, and are what the script automates.
+> Note that `EMAIL_PROVIDER`, `EMAIL_FROM` and `SES_REGION` are now rendered from the
+> chart's `email:` scalars rather than the `env` list, so `--set email.provider=ses`
+> is safe and the positional `env[N]` warning further down no longer applies to them.
+
 ### 1. Verify a sender identity in SES
 
 ```bash

@@ -46,14 +46,12 @@ env:
   # retryable, so each event burned all five retries before being abandoned. Defaulting
   # to "logging" keeps the failure mode safe and makes SES an explicit opt-in.
   # See deploy/README.md -> "Email Delivery Setup (SES via IRSA)".
-  - name: EMAIL_PROVIDER
-    value: "logging"
-  - name: EMAIL_FROM
-    value: "no-reply@postershop.example"
+  # EMAIL_PROVIDER / EMAIL_FROM / SES_REGION are NOT listed here. They are rendered
+  # from the `email:` block at the bottom of this file, because `env` is a list and
+  # `--set env[N].value=...` depends on positional indices that shift whenever the
+  # list changes. Scalars under `email:` can be set safely from the command line.
   # SES_REGION is intentionally independent of the cluster region (eu-north-1):
   # a verified SES sender identity need not live in the region of the calling workload.
-  - name: SES_REGION
-    value: "eu-central-1"
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
   - name: DATABASE_URL
@@ -96,3 +94,22 @@ migrations:
   enabled: true
   secretName: postershop-db
   secretKey: DATABASE_URL_NOTIFICATIONS
+
+# Email transport. Rendered into env by the Deployment template, so these can be
+# overridden with plain `--set email.provider=ses` without touching the env list.
+#
+#   provider: "logging" -> LoggingProvider; renders the mail into the structured log.
+#                          Needs no AWS access, so a plain `helm install` works.
+#   provider: "ses"     -> SesProvider; real delivery. REQUIRES a verified sender
+#                          identity in `sesRegion` AND the IRSA role wired through
+#                          the serviceAccount block above. If either is missing every
+#                          send raises, notifications answers 503, and the orders
+#                          outbox burns all five retries per event before abandoning
+#                          it — which is why "logging" is the default.
+#
+# `from` and `sesRegion` are only rendered when non-empty; the service falls back to
+# its own defaults otherwise (services/notifications/providers.py).
+email:
+  provider: "logging"
+  from: ""
+  sesRegion: ""

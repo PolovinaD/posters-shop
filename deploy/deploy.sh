@@ -94,9 +94,24 @@ for service in "${SERVICES[@]}"; do
         echo ""
         echo "   🔄 Deploying: $service"
 
+        # notifications takes its email transport from the environment, which
+        # full-deploy.sh fills in by detecting SES setup. These are `email.*`
+        # scalars rather than `env[N]` list indices, so they survive changes to
+        # the chart's env list. With nothing detected the flags are simply absent
+        # and the chart default (EMAIL_PROVIDER=logging) applies.
+        EMAIL_ARGS=()
+        if [ "$service" = "notifications" ] && [ "${EMAIL_PROVIDER:-logging}" = "ses" ]; then
+            EMAIL_ARGS=(--set email.provider=ses)
+            [ -n "${EMAIL_FROM:-}" ] && EMAIL_ARGS+=(--set "email.from=${EMAIL_FROM}")
+            [ -n "${SES_REGION:-}" ] && EMAIL_ARGS+=(--set "email.sesRegion=${SES_REGION}")
+            [ -n "${NOTIFICATIONS_SA:-}" ] && EMAIL_ARGS+=(--set "serviceAccount.name=${NOTIFICATIONS_SA}")
+            echo "   ✉  real email via SES as ${EMAIL_FROM} (${SES_REGION})"
+        fi
+
         helm upgrade --install "$service" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --set image.repository="${ECR_REGISTRY}/${service}" \
+            "${EMAIL_ARGS[@]+"${EMAIL_ARGS[@]}"}" \
             --wait \
             --timeout 5m \
             $DRY_RUN

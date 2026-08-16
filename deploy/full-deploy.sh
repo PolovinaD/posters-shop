@@ -871,6 +871,55 @@ if [ "$DRY_RUN" = false ]; then
     export CB_FAILURE_THRESHOLD="${CB_FAILURE_THRESHOLD:-5}"
     export CB_RECOVERY_TIMEOUT="${CB_RECOVERY_TIMEOUT:-30}"
 
+    # Decide the notifications email transport by DETECTING account state rather
+    # than by prompting or by a flag someone has to remember. SES is enabled only
+    # when BOTH halves that ./deploy/ses-setup.sh produces are present:
+    #   1. a verified sender identity in SES_REGION, and
+    #   2. a ServiceAccount carrying an eks.amazonaws.com/role-arn annotation.
+    # Enabling it with either half missing is worse than leaving it off: every send
+    # raises, notifications answers 503, and the orders outbox treats that as
+    # retryable — burning all five retries per event before abandoning it, with no
+    # DLQ to catch the remains. Hence the conservative default.
+    export SES_REGION="${SES_REGION:-$AWS_REGION}"
+    export EMAIL_PROVIDER="logging"
+    export EMAIL_FROM="${EMAIL_FROM:-}"
+    export NOTIFICATIONS_SA=""
+
+    SES_IDENTITY=""
+    if [ -n "$EMAIL_FROM" ]; then
+        # An explicit EMAIL_FROM is authoritative; check just that identity.
+        [ "$(aws ses get-identity-verification-attributes --identities "$EMAIL_FROM" \
+              --region "$SES_REGION" \
+              --query "VerificationAttributes.\"$EMAIL_FROM\".VerificationStatus" \
+              --output text 2>/dev/null)" = "Success" ] && SES_IDENTITY="$EMAIL_FROM"
+    else
+        # Otherwise adopt the first verified identity in the region, if any.
+        SES_IDENTITY=$(aws ses list-identities --region "$SES_REGION" \
+            --query 'Identities[0]' --output text 2>/dev/null || echo "")
+        [ "$SES_IDENTITY" = "None" ] && SES_IDENTITY=""
+        if [ -n "$SES_IDENTITY" ]; then
+            [ "$(aws ses get-identity-verification-attributes --identities "$SES_IDENTITY" \
+                  --region "$SES_REGION" \
+                  --query "VerificationAttributes.\"$SES_IDENTITY\".VerificationStatus" \
+                  --output text 2>/dev/null)" = "Success" ] || SES_IDENTITY=""
+        fi
+    fi
+
+    SA_ROLE=$(kubectl get sa notifications -n "$NAMESPACE" \
+        -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null || echo "")
+
+    if [ -n "$SES_IDENTITY" ] && [ -n "$SA_ROLE" ]; then
+        export EMAIL_PROVIDER="ses"
+        export EMAIL_FROM="$SES_IDENTITY"
+        export NOTIFICATIONS_SA="notifications"
+        log_success "SES detected: sending real email as $EMAIL_FROM via $SES_REGION"
+    else
+        log_info "notifications will use EMAIL_PROVIDER=logging (mail rendered into the pod log)"
+        [ -z "$SES_IDENTITY" ] && log_info "  no verified SES identity in $SES_REGION"
+        [ -z "$SA_ROLE" ] && log_info "  no IRSA-annotated 'notifications' ServiceAccount"
+        log_info "  run ./deploy/ses-setup.sh <address> to enable real delivery"
+    fi
+
     # NOTE: Production CPU HPA (K8S-04) is deployed via Helm chart deploy/charts/production/templates/hpa.yaml
     # Orders request-rate HPA (K8S-05) is deployed via deploy/charts/orders/templates/hpa.yaml
     # Verify both after deploy: kubectl describe hpa -n postershop

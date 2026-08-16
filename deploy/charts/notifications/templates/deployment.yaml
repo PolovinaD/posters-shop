@@ -27,6 +27,19 @@ spec:
             - containerPort: 8000
           env:
 {{ toYaml .Values.env | indent 12 }}
+            # Rendered from the `email:` scalars rather than the `env` list, so that
+            # `--set email.provider=ses` is safe: setting a list element by index
+            # breaks whenever the list above changes length.
+            - name: EMAIL_PROVIDER
+              value: {{ .Values.email.provider | default "logging" | quote }}
+{{- if .Values.email.from }}
+            - name: EMAIL_FROM
+              value: {{ .Values.email.from | quote }}
+{{- end }}
+{{- if .Values.email.sesRegion }}
+            - name: SES_REGION
+              value: {{ .Values.email.sesRegion | quote }}
+{{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
