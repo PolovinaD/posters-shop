@@ -201,6 +201,18 @@ finally:
 
 OrderStatus = _ord_models.OrderStatus
 
+# Claims a logged-in customer's token would decode to. Mirrors the real JWT
+# payload minted in services/users/auth.py ({"sub", "role", "exp"}); `exp` is
+# omitted because cancel_order never reads it. `sub` deliberately matches the
+# customer_email that _make_order() sets, so these tests traverse the genuine
+# ownership branch (order.customer_email == claims["sub"]) instead of
+# short-circuiting on the role == "owner" admin bypass. A bare {} yields 403.
+_STUB_CLAIMS = {"sub": "test@example.com", "role": "customer"}
+
+
+def _override_claims():
+    return _STUB_CLAIMS
+
 
 def _make_order(status: str, order_id: int = 1):
     """Create a minimal mock Order object."""
@@ -213,17 +225,31 @@ def _make_order(status: str, order_id: int = 1):
     return order
 
 
-def _get_client_for_order(order):
-    """Return TestClient with DB dependency overridden to return the given order."""
+def _client_with_db(override_get_db):
+    """
+    Return a TestClient with BOTH of cancel_order's dependencies overridden.
+
+    cancel_order declares Depends(get_db) and Depends(get_current_user_claims);
+    overriding only the first leaves every request answered with 401. main.py
+    does `from auth import get_current_user_claims`, so _ord_main's attribute is
+    the very function object FastAPI keyed the dependency on.
+    """
     from fastapi.testclient import TestClient
+
+    _ord_main.app.dependency_overrides[_db_stub.get_db] = override_get_db
+    _ord_main.app.dependency_overrides[_ord_main.get_current_user_claims] = _override_claims
+    return TestClient(_ord_main.app, raise_server_exceptions=False)
+
+
+def _get_client_for_order(order):
+    """Return TestClient with the DB dependency overridden to return the given order."""
 
     def override_get_db():
         db = MagicMock()
         db.get.return_value = order
         yield db
 
-    _ord_main.app.dependency_overrides[_db_stub.get_db] = override_get_db
-    return TestClient(_ord_main.app, raise_server_exceptions=False)
+    return _client_with_db(override_get_db)
 
 
 # ---------------------------------------------------------------------------
@@ -266,14 +292,12 @@ def test_cancel_non_cancellable_order_returns_400(status):
 
 def test_cancel_nonexistent_order_returns_404():
     """SHOP-02: cancel endpoint returns 404 when order does not exist."""
-    from fastapi.testclient import TestClient
 
     def override_get_db_none():
         db = MagicMock()
         db.get.return_value = None  # order not found
         yield db
 
-    _ord_main.app.dependency_overrides[_db_stub.get_db] = override_get_db_none
-    client = TestClient(_ord_main.app, raise_server_exceptions=False)
+    client = _client_with_db(override_get_db_none)
     response = client.post("/orders/999/cancel")
     assert response.status_code == 404
