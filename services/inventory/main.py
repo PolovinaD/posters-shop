@@ -25,7 +25,7 @@ from metrics import (
     metrics_endpoint, track_metrics,
     STOCK_LEVEL, ACTIVE_RESERVATIONS, RESERVATIONS_EXPIRED
 )
-from logger import get_logger, LoggingMiddleware
+from logger import get_logger, LoggingMiddleware, correlation_headers
 from auth import require_owner
 
 logger = get_logger(__name__)
@@ -51,7 +51,7 @@ async def notify_order_reservation_expired(order_id: int) -> None:
     """
     url = f"{ORDERS_SERVICE_URL}/internal/orders/{order_id}/reservation-expired"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, headers=correlation_headers()) as client:
             response = await client.post(url, json={})
             if response.status_code >= 400:
                 logger.warning(

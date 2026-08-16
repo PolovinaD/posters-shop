@@ -8,7 +8,7 @@ from sqlalchemy import Column, Integer, String, Numeric, Boolean, Text, select, 
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 
-from logger import get_logger, LoggingMiddleware
+from logger import get_logger, LoggingMiddleware, correlation_headers
 from database import Base, engine, get_db
 from metrics import metrics_endpoint, track_metrics
 from auth import require_owner
@@ -157,7 +157,7 @@ async def get_stock_levels(skus: list[str]) -> dict[str, dict]:
         return {}
     
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, headers=correlation_headers()) as client:
             response = await client.post(
                 f"{INVENTORY_SERVICE_URL}/stock/check",
                 json={"skus": skus}

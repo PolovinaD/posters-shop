@@ -49,6 +49,18 @@ def set_correlation_id(cid: str) -> None:
     correlation_id_var.set(cid)
 
 
+def correlation_headers() -> dict:
+    """
+    Headers to attach to outbound HTTP calls so the correlation ID follows
+    the request across services.
+
+    Returns an empty dict when no correlation ID is set, which makes it safe
+    to call from background workers and at import time.
+    """
+    cid = correlation_id_var.get()
+    return {"X-Correlation-ID": cid} if cid else {}
+
+
 class JSONFormatter(logging.Formatter):
     """
     Formats log records as JSON for structured logging.
