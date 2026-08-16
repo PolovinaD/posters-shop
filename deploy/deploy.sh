@@ -31,6 +31,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CHARTS_DIR="$SCRIPT_DIR/charts"
 
+# Defines build_helm_config_args(). Functions only, nothing runs at source time.
+# The CI workflow (.github/workflows/deploy.yaml) sources the same file, so
+# there is exactly one implementation of "what config must ride along with a
+# helm upgrade" for both deploy paths.
+source "$SCRIPT_DIR/lib/live-config.sh"
+
 # Load .env if it exists
 if [ -f "$PROJECT_ROOT/.env" ]; then
     echo "📄 Loading configuration from .env"
@@ -94,24 +100,24 @@ for service in "${SERVICES[@]}"; do
         echo ""
         echo "   🔄 Deploying: $service"
 
-        # notifications takes its email transport from the environment, which
-        # full-deploy.sh fills in by detecting SES setup. These are `email.*`
-        # scalars rather than `env[N]` list indices, so they survive changes to
-        # the chart's env list. With nothing detected the flags are simply absent
-        # and the chart default (EMAIL_PROVIDER=logging) applies.
-        EMAIL_ARGS=()
-        if [ "$service" = "notifications" ] && [ "${EMAIL_PROVIDER:-logging}" = "ses" ]; then
-            EMAIL_ARGS=(--set email.provider=ses)
-            [ -n "${EMAIL_FROM:-}" ] && EMAIL_ARGS+=(--set "email.from=${EMAIL_FROM}")
-            [ -n "${SES_REGION:-}" ] && EMAIL_ARGS+=(--set "email.sesRegion=${SES_REGION}")
-            [ -n "${NOTIFICATIONS_SA:-}" ] && EMAIL_ARGS+=(--set "serviceAccount.name=${NOTIFICATIONS_SA}")
-            echo "   ✉  real email via SES as ${EMAIL_FROM} (${SES_REGION})"
-        fi
+        # Config that is not committed to the chart's values — the notifications
+        # email transport that full-deploy.sh detects, and the payments
+        # FRONTEND_URL that only exists once the ALB does. Resolved from the
+        # environment first, then from the live cluster, so a re-deploy carries
+        # forward what is already running instead of reverting it. Empty for
+        # every other service. Shared with the CI workflow via lib/live-config.sh.
+        build_helm_config_args "$service" "$NAMESPACE"
+
+        case "${HELM_CONFIG_ARGS[*]+${HELM_CONFIG_ARGS[*]}}" in
+            *email.provider=ses*)
+                echo "   ✉  real email via SES as ${EMAIL_FROM:-<live>} (${SES_REGION:-<live>})"
+                ;;
+        esac
 
         helm upgrade --install "$service" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --set image.repository="${ECR_REGISTRY}/${service}" \
-            "${EMAIL_ARGS[@]+"${EMAIL_ARGS[@]}"}" \
+            "${HELM_CONFIG_ARGS[@]+"${HELM_CONFIG_ARGS[@]}"}" \
             --wait \
             --timeout 5m \
             $DRY_RUN
@@ -123,7 +129,14 @@ for service in "${SERVICES[@]}"; do
             kubectl set env deployment/"$service" -n "$NAMESPACE" CORS_ORIGINS="${CORS_ORIGINS}" 2>/dev/null || true
         fi
 
-        # After frontend deploys, resolve ALB hostname and patch payments FRONTEND_URL
+        # After frontend deploys, resolve ALB hostname and patch payments FRONTEND_URL.
+        #
+        # KEEP THIS — it is the bootstrap bridge, not a duplicate of
+        # build_helm_config_args. On a first-ever deploy payments is upgraded
+        # long before frontend, so no ingress exists yet, the helper finds
+        # nothing and the chart default applies; this block is what gets a usable
+        # value onto the running pod. From the next deploy onwards the helper
+        # reads that ALB from the ingress and hands it back to Helm properly.
         if [ "$service" = "frontend" ] && [ "$DRY_RUN" != "--dry-run" ]; then
             echo "   ⏳ Waiting for ALB hostname..."
             for i in $(seq 1 24); do

@@ -46,19 +46,40 @@ Gaps kept out of scope for the thesis implementation but worth surfacing for com
 
 **Fix shape**: per-subscriber delivery tracking — either a join table of (event_id, subscriber_url, delivered_at), or one outbox row fanned out at write time. The first preserves the single-write-per-business-event property of the outbox pattern and is the more faithful fix.
 
-## 5. CI redeploy of `notifications` silently reverts SES to `logging`
+## 5. CI redeploy reverting out-of-chart runtime config — RESOLVED (live-derived Helm values)
 
-`EMAIL_PROVIDER=ses` is chosen by detection logic in `deploy/full-deploy.sh`
-(a verified SES identity plus an IRSA-annotated ServiceAccount), and applied with
-`--set email.*`. `.github/workflows/deploy.yaml` has no equivalent, so any push
-touching `services/notifications/**` redeploys the chart with its default
-`email.provider: logging`, and real mail silently stops.
+**Resolved** (quick task 260817): both `deploy/deploy.sh` and
+`.github/workflows/deploy.yaml` now call `build_helm_config_args` from the shared
+`deploy/lib/live-config.sh` before every `helm upgrade`. The helper resolves each
+out-of-chart setting with the precedence **explicit environment > live cluster >
+chart default** and returns the matching `--set` flags, so a CI deploy that knows
+nothing about SES or about the ALB hands the running configuration back to Helm
+instead of resetting it. Helm remains the owner of the value; nothing is
+re-patched after the upgrade, and `--reuse-values` is still not used. A service
+that is not part of a deploy is not touched at all. Proven offline by
+`deploy/lib/selftest.sh` (cases CFG-1..11, in particular CFG-6, which
+reconstructs the whole SES configuration from a live deployment with no
+environment hints).
 
-**Why it persists:** the same shape as the `CORS_ORIGINS` patch — settings applied
+**Symptom (historical)**: `EMAIL_PROVIDER=ses` is chosen by detection logic in
+`deploy/full-deploy.sh` (a verified SES identity plus an IRSA-annotated
+ServiceAccount), and applied with `--set email.*`. `.github/workflows/deploy.yaml`
+had no equivalent, so any push touching `services/notifications/**` redeployed the
+chart with its default `email.provider: logging`, and real mail silently stopped.
+
+**Second instance of the same class**: `payments.FRONTEND_URL` — the address a
+customer's browser returns to after Stripe checkout. It was patched onto the
+Deployment with `kubectl set env` after the ALB appeared, so CI reverted it; and
+because the reverted-to value had been hardcoded into
+`deploy/charts/payments/values.yaml` (commit `afbc972`), what CI restored was an
+ALB hostname belonging to a cluster that no longer existed. Paying customers were
+redirected to nothing. Fixed the same way: the chart now carries an empty
+`frontendUrl` scalar and the deploy path fills it from the live `frontend`
+ingress, which also makes a re-created ALB self-heal on the next deploy.
+
+**Why it happened:** the same shape as the `CORS_ORIGINS` patch — settings applied
 outside Helm's own values are invisible to a later `helm upgrade` driven by CI.
-
-**Fix when needed:** either teach `deploy.yaml` the same detection, or commit the
-values into the chart so they are not environment-derived.
+See limitation 7 for what is left of that shape.
 
 ## 6. Default owner credential is reachable from the internet
 
@@ -69,4 +90,38 @@ service (which can scale and restart Deployments).
 
 **Accepted for a thesis demo cluster that is torn down between sessions.** Change
 the password or restrict the ingress before leaving a cluster running.
+
+## 7. Residual out-of-chart config, and the durable fix for the Stripe return URL
+
+Limitation 5 is resolved for the two settings that were actually breaking. Three
+related things were deliberately left alone.
+
+**(a) `CORS_ORIGINS` is still applied outside Helm.** `deploy/deploy.sh` patches it
+onto every Deployment with `kubectl set env` after the upgrade, so a CI deploy
+still reverts it to the chart default `http://localhost:3000`. This is the same
+class of bug as limitation 5, but it is *latent* rather than bleeding: in
+production the browser reaches every service same-origin through the frontend
+nginx proxy (`frontend/nginx.conf` routes `/api/{service}/`), so no cross-origin
+request is made and the wrong value is never consulted. Fixing it properly means
+adding a scalar to nine charts and rendering it in nine Deployment templates —
+a large, entirely mechanical change with no observable effect today, so it was
+not bundled with a fix for something that was actively broken.
+
+**(b) The durable fix for the Stripe return URL is caller-supplied URLs, not a
+server-side `FRONTEND_URL` at all.** `services/payments/main.py` already accepts
+`success_url` and `cancel_url` on `CreateSessionRequest` and prefers them when
+supplied; `services/orders/main.py` does not send them today. Having orders pass
+through the origin the customer is actually browsing removes the server-side
+guess entirely — it cannot go stale, and it is correct even with several
+front-ends. It was deferred because it touches frontend, orders and payments at
+once and can only be *proven* by a real Stripe checkout against a live cluster.
+The live-derived `frontendUrl` is the cheap, testable fix for the same symptom.
+
+**(c) Chart-only changes do not auto-deploy.** The build workflow's `paths:`
+filter is `services/**` and `frontend/**` (`docs/BACKLOG.md` §7b, a deliberate
+limitation), so the payments chart change described in limitation 5 reaches the
+cluster only on the next deploy that includes `payments` — a push touching
+`services/payments/**`, a manual **Deploy to EKS** `workflow_dispatch`, or a
+`deploy/deploy.sh` run. Until then the live Deployment keeps whatever
+`FRONTEND_URL` it currently has.
 

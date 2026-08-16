@@ -20,6 +20,14 @@ spec:
             - containerPort: 8000
           env:
 {{ toYaml .Values.env | indent 12 }}
+            # Rendered from the `frontendUrl` scalar rather than the `env` list,
+            # so that `--set frontendUrl=...` is safe: setting a list element by
+            # index breaks whenever the list above changes length. Left empty the
+            # variable is not rendered at all and the service uses its own default.
+{{- if .Values.frontendUrl }}
+            - name: FRONTEND_URL
+              value: {{ .Values.frontendUrl | quote }}
+{{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
