@@ -174,7 +174,7 @@
     {
       "type": "logs",
       "title": "Orders Logs (filter by correlation_id in Loki Explore)",
-      "description": "Structured log lines from the orders service. To filter by a specific request: use Loki Explore with query {namespace=\"postershop\", app=\"orders\"} | json | correlation_id=\"<your-id>\"",
+      "description": "Structured log lines from the orders service. To trace one request: use Loki Explore with query {job=\"postershop\", correlation_id=\"<your-id>\"} — correlation_id is a promoted stream label, so it goes inside the selector rather than in a | json filter.",
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -182,7 +182,7 @@
       "targets": [
         {
           "datasource": {"type": "loki", "uid": "loki"},
-          "expr": "{namespace=\"postershop\", app=\"orders\"} | json | line_format \"{{.message}}\"",
+          "expr": "{job=\"postershop\", service=\"orders\"} | json | line_format \"{{.message}}\"",
           "legendFormat": ""
         }
       ],
