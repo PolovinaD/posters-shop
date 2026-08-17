@@ -33,6 +33,30 @@ ingress:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # ONE Ingress annotation, EIGHT target groups. The AWS Load Balancer Controller applies
+    # healthcheck-path to every target group this Ingress creates — frontend:80 plus the seven
+    # /api/* backends — so the path has to be one that ALL of them answer.
+    #
+    # It was /health until 2026-08-17, and only nginx serves that. Measured on the live cluster
+    # that day: the frontend target group healthy, the other seven (users, catalog, orders,
+    # production, logistics, inventory, payments) ALL unhealthy — the Python services serve
+    # /healthz and /readyz, never /health. The platform kept working only because an ALB FAILS
+    # OPEN when every target in a group is unhealthy, so there was no usable health signal for
+    # any backend and no way to drain a bad pod during a rolling deploy. Cost in logs: a 404
+    # WARNING per probe per pod, ~180 lines per service per 15 min, ~5900/hour platform-wide —
+    # and because correlation_id is a promoted Loki stream label, each 404 became its own Loki
+    # stream (1470 streams/15min, essentially all remaining stream cardinality).
+    #
+    # /healthz answers on all eight WITHOUT a frontend rebuild: frontend/nginx.conf declares
+    # `location /health`, which is a PREFIX match, so /healthz lands in that block and returns
+    # 200 with access_log off — verified against the real conf in a real nginx container. Do NOT
+    # narrow that block to `location = /health`: it would silently drop the frontend target group
+    # back to fail-open.
+    #
+    # /readyz was rejected: on the frontend it falls through to the SPA fallback and returns
+    # index.html 200 with access_log ON (a new ~720 lines/hour of noise, and a health signal that
+    # tests nothing), and on the backends it touches the database, so one RDS blip would flip all
+    # seven target groups at once.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
   host: ""  # Set to your domain or leave empty for default ALB DNS
 
