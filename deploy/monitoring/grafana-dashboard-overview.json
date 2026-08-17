@@ -234,7 +234,7 @@
       "title": "Orders by Status",
       "targets": [
         {
-          "expr": "orders_by_status",
+          "expr": "max by (status) (orders_by_status)",
           "legendFormat": "{{status}}"
         }
       ],

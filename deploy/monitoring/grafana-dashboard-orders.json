@@ -27,7 +27,7 @@
       "type": "stat",
       "title": "Pending Orders",
       "targets": [
-        {"expr": "orders_by_status{status=\"created\"}", "legendFormat": "Pending"}
+        {"expr": "max(orders_by_status{status=\"created\"})", "legendFormat": "Pending"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -49,7 +49,7 @@
       "type": "stat",
       "title": "Paid Orders",
       "targets": [
-        {"expr": "orders_by_status{status=\"paid\"}", "legendFormat": "Paid"}
+        {"expr": "max(orders_by_status{status=\"paid\"})", "legendFormat": "Paid"}
       ],
       "fieldConfig": {
         "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
@@ -88,7 +88,7 @@
       "type": "timeseries",
       "title": "Orders by Status Over Time",
       "targets": [
-        {"expr": "orders_by_status", "legendFormat": "{{status}}"}
+        {"expr": "max by (status) (orders_by_status)", "legendFormat": "{{status}}"}
       ],
       "fieldConfig": {
         "defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}
