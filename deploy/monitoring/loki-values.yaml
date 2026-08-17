@@ -36,6 +36,31 @@ loki:
     ingestion_burst_size_mb: 20
     max_query_series: 5000
     max_entries_limit_per_query: 10000
+    # Backstop against unbounded query fan-out. Loki's default is 2,000,000 chunks
+    # (flag store.query-chunk-limit) — effectively no ceiling, so one wide-range query
+    # can pull more chunks into memory than the container allows and take the process
+    # down (observed 2026-08-17: loki-0 OOMKilled twice, HTTP 502 while it cycled).
+    # max_entries_limit_per_query above does NOT protect against this — the query that
+    # killed the pod asked for 5000 entries, well under that 10000 ceiling. That knob
+    # bounds the RESPONSE; Loki still decompresses every matching chunk before applying
+    # it. Chunks are the memory-proportional unit, so chunks are what we cap.
+    # 2000 is a crash guard, not a throttle: it converts an OOMKill (Loki gone, every
+    # dashboard 502s, restart loop) into one failed query — "maximum number of chunks
+    # exceeded" — with the process still serving everyone else. That trade is deliberate.
+    #
+    # Read this before changing the number. Fluent Bit still promotes the per-request
+    # correlation_id to a Loki stream label (fluent-bit-values.yaml, Label_Keys), so
+    # every HTTP request opens its own stream and therefore its own chunk. Chunk count
+    # here tracks REQUEST COUNT, not log volume. Two consequences:
+    #   - A pinned query, {job="postershop", correlation_id="<id>"}, reads a single
+    #     stream and is nowhere near this cap. Unaffected.
+    #   - A broad query, {job="postershop"} over hours, can pass 2000 chunks on traffic
+    #     alone and will now fail fast instead of returning logs.
+    # If a broad query you genuinely need hits the cap, narrow its time range first.
+    # Only if that is not enough, raise this — and watch `kubectl top pod loki-0`
+    # against the 1Gi limit below while you do, because this cap is the thing standing
+    # between a wide query and the OOM.
+    max_chunks_per_query: 2000
 
   query_scheduler:
     max_outstanding_requests_per_tenant: 2048
@@ -43,13 +68,29 @@ loki:
 singleBinary:
   replicas: 1
   
+  # Raised from 256Mi/512Mi: loki-0 was OOMKilled twice on 2026-08-17 under a
+  # Grafana-Explore-scale query (limit=5000 over a wide range), returning HTTP 502 while
+  # it restarted. `kubectl top pod loki-0` measured 267Mi at IDLE — 52% of the old 512Mi
+  # limit with nobody querying, leaving under ~245Mi for an entire query.
+  # 1Gi leaves ~750Mi above that measured idle floor. The 512Mi request covers the
+  # measured steady state, so the scheduler stops placing this as a 256Mi pod and Loki
+  # is not first out under node pressure. cpu is unchanged: 22m measured at idle against
+  # a 500m limit, so cpu was never the problem.
+  # That 267Mi was measured with the per-request correlation_id still promoted to a Loki
+  # stream label — i.e. against the index as it actually is today — so this sizing does
+  # not assume that label ever goes away. It also will not shrink on its own: idle RSS
+  # here tracks stream count, which grows with traffic. Re-measure if idle passes ~600Mi.
+  # Node budget checked before choosing: 2x t3.large, ~7.1Gi allocatable each.
+  # Memory requests 29%/32% -> ~33%/36%. Memory limits 77%/79% -> ~84%/86%.
+  # Still inside capacity, so this is a container ceiling, not node pressure.
+  # 1.5Gi was considered and rejected — it puts node memory limits at ~91-93%.
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 1Gi
   
   persistence:
     enabled: true
