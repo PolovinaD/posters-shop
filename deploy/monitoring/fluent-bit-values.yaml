@@ -48,7 +48,62 @@ config:
         Skip_Long_Lines On
         Refresh_Interval 10
 
-  # Filters: Parse and enrich logs
+  # Filters: parse and enrich, then drop health-probe traffic.
+  #
+  # Stage order matters — each one depends on the one above it:
+  #   kubernetes -> attaches pod/namespace/container metadata under a NESTED `kubernetes` map
+  #   parser     -> parses the app's JSON out of `log` and lifts its fields (level, service,
+  #                 correlation_id, path, message) to the ROOT of the record
+  #   modify     -> `Rename log message`, which only fires when the parser above did NOT
+  #                 consume `log` — i.e. the line was not JSON (shape 2 below)
+  #   nest/lift  -> flattens whatever the kubernetes filter merged under `log_parsed`
+  #   grep       -> drops probe traffic. LAST on purpose, so `path` and `message` are at their
+  #                 final names by the time its rules run.
+  #
+  # WHY the grep stage exists. MEASURED on the live cluster 2026-08-17: 102 of 200 log lines
+  # from an orders pod (51%) were health-probe traffic. That share is STRUCTURAL, not traffic-
+  # driven — deploy/charts/*/templates/deployment.yaml sets readinessProbe /readyz at
+  # periodSeconds 10 and livenessProbe /healthz at 20, and deploy/monitoring/servicemonitors.yaml
+  # scrapes /metrics every 15s: 6 + 3 + 4 = 13 requests per minute per pod, forever, with zero
+  # users. Across ~11 Python pods that is ~2145 requests per 15 minutes.
+  # It is expensive because probes carry no X-Correlation-ID, so LoggingMiddleware
+  # (services/shared/logger.py) mints a fresh UUID for each one, and the Loki output below
+  # promotes correlation_id to a stream label — so every single probe opens its own Loki stream.
+  # Hence {job="postershop"} measuring 2286 streams over 15 min and 9900 over 60 min, and hence
+  # loki-0 being OOMKilled twice (the 1Gi limit and the max_chunks_per_query backstop in
+  # loki-values.yaml exist because of this).
+  # The correlation_id label deliberately STAYS — it is what makes one request traceable across
+  # services, which is the entire point of this chain. We drop the requests that were never worth
+  # tracing rather than the label that makes tracing possible.
+  #
+  # TWO Exclude rules, because ONE probe produces TWO log lines of different shapes:
+  #   shape 1 — the app's own structured JSON line ("Request completed" from LoggingMiddleware).
+  #     The parser stage lifted its fields to the root, so `path` is a root key and `$path`
+  #     resolves. Proof this really happens in the cluster rather than being an assumption:
+  #     `Label_Keys $level, $service, $correlation_id` are root-key accessors produced by that
+  #     same parse and they demonstrably resolve — {job="postershop", service="orders"} matched
+  #     5 streams. `path` is only ever set from request.url.path in LoggingMiddleware, so it can
+  #     never hold a non-HTTP value.
+  #   shape 2 — uvicorn's default access line, plain text:
+  #       INFO:     10.0.173.85:49260 - "GET /healthz HTTP/1.1" 200 OK
+  #     Every services/*/Dockerfile runs `uvicorn main:app` with no --log-config, so this logger
+  #     is always on. The json parser FAILS on this line and filter_parser passes the record
+  #     through untouched on a parse failure, so the raw `log` key survives to the modify stage,
+  #     where `Rename log message` puts the text into `message`.
+  # Both patterns are anchored so near-misses survive: /healthz-report and /api/orders/healthz
+  # are KEPT, not dropped.
+  #
+  # SAFETY PROPERTY — read out of plugins/filter_grep/grep.c (grep_filter_data, legacy mode, the
+  # default): a rule whose key is MISSING from the record yields ret <= 0, which for an Exclude
+  # rule does nothing and falls through to `return GREP_RET_KEEP`. So any record with no `path`
+  # key and no matching `message` — worker logs, startup logs, business events, tracebacks —
+  # CANNOT be dropped here. Several Exclude rules therefore behave as an OR of drops.
+  # NEVER add a `Regex` (keep) rule or set `Logical_Op` in this stanza: in legacy mode a matching
+  # Regex rule returns KEEP immediately and would bypass every Exclude rule after it.
+  #
+  # NOT matched, on purpose: the frontend nginx access lines. They have a different shape, carry
+  # no correlation_id, and cost nothing anyway — frontend/nginx.conf sets `access_log off` on its
+  # /health location, so that pod contributes no probe lines at all.
   filters: |
     [FILTER]
         Name kubernetes
@@ -59,7 +114,7 @@ config:
         K8S-Logging.Exclude Off
         Labels On
         Annotations Off
-    
+
     [FILTER]
         Name parser
         Match kube.*
@@ -72,13 +127,6 @@ config:
         Name modify
         Match kube.*
         Rename log message
-        Rename kubernetes.pod_name pod
-        Rename kubernetes.container_name container
-        Rename kubernetes.namespace_name namespace
-        Remove kubernetes.container_hash
-        Remove kubernetes.pod_id
-        Remove kubernetes.host
-        Remove kubernetes.docker_id
 
     [FILTER]
         Name nest
@@ -86,14 +134,39 @@ config:
         Operation lift
         Nested_under log_parsed
 
-  # Output: Send to Loki
+    [FILTER]
+        Name grep
+        Match kube.*
+        Exclude path ^/(healthz|readyz|metrics)$
+        Exclude message ^INFO:\s+\S+ - "(GET|HEAD) /(healthz|readyz|metrics)(\?\S*)? HTTP/[0-9.]+
+
+  # Output: send to Loki.
+  #
+  # Every value on Labels and Label_Keys is a RECORD ACCESSOR, and out_loki's pack_kv() SKIPS a
+  # label for that record when the accessor cannot be translated — silently, at debug level, with
+  # no error and no crash. That is why this stayed broken without anything ever complaining:
+  # {job="postershop", service="orders"} returned 5 streams while {namespace="postershop"}
+  # returned 0, and /label/app/values returned null because `app` never existed at all.
+  # $namespace/$pod/$container used to point at ROOT keys that were never created. They were
+  # supposed to come from `Rename kubernetes.pod_name pod` and friends in the modify filter, but
+  # filter_modify matches rule keys with a literal top-level string compare
+  # (helper_msgpack_object_matches_str) and has no record-accessor support for rule keys — so it
+  # looked for a top-level key literally named "kubernetes.pod_name", found nothing, and no-opped
+  # (same for the four `Remove kubernetes.*` rules). Those seven dead rules are gone from the
+  # filters above; the nested metadata is now addressed directly with bracket notation, which is
+  # the accessor syntax — $kubernetes.namespace_name is NOT.
+  # Fixing pod/container does not multiply stream cardinality: a request already lives in exactly
+  # one pod, and container == service here.
+  # Label_Keys is LOCKED. $correlation_id stays — the thesis documents it as a promoted Loki
+  # stream label, and the screenshot queries are {job="postershop", correlation_id="<id>"}
+  # label selectors that only work because of it.
   outputs: |
     [OUTPUT]
         Name loki
         Match kube.*
         Host loki-gateway.monitoring.svc.cluster.local
         Port 80
-        Labels job=postershop, namespace=$namespace, pod=$pod, container=$container
+        Labels job=postershop, namespace=$kubernetes['namespace_name'], pod=$kubernetes['pod_name'], container=$kubernetes['container_name']
         Label_Keys $level, $service, $correlation_id
         Remove_Keys stream, logtag
         Auto_Kubernetes_Labels Off
