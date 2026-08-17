@@ -54,13 +54,24 @@ loki:
     # here tracks REQUEST COUNT, not log volume. Two consequences:
     #   - A pinned query, {job="postershop", correlation_id="<id>"}, reads a single
     #     stream and is nowhere near this cap. Unaffected.
-    #   - A broad query, {job="postershop"} over hours, can pass 2000 chunks on traffic
-    #     alone and will now fail fast instead of returning logs.
-    # If a broad query you genuinely need hits the cap, narrow its time range first.
-    # Only if that is not enough, raise this — and watch `kubectl top pod loki-0`
-    # against the 1Gi limit below while you do, because this cap is the thing standing
-    # between a wide query and the OOM.
-    max_chunks_per_query: 2000
+    #   - A broad query, {job="postershop"}, is bounded by how many streams exist,
+    #     and that is large here: correlation_id is promoted to a label, so every
+    #     HTTP request — health probes included — creates its own stream and thus
+    #     at least one chunk. MEASURED on the live cluster 2026-08-17 via
+    #     /loki/api/v1/series: 2286 streams over 15 min, 9900 over 60 min.
+    #
+    # Hence 20000, not the 2000 first proposed: 2000 would reject
+    # {job="postershop"} over as little as a quarter of an hour, breaking ordinary
+    # dashboard and Explore use. 20000 still admits a ~2h window while refusing the
+    # multi-day fan-out that actually caused the OOM (a 14h range at this rate is
+    # ~140k chunks). Treat it as a crash backstop, not a tuning knob: it fails one
+    # query instead of restarting the process and 502-ing every other query with it.
+    #
+    # This number is a consequence of the correlation_id label, not of log volume.
+    # Cut the cardinality — stop logging /healthz, /readyz and /metrics, which are
+    # the bulk of these streams — and both this cap and the memory limit below stop
+    # being load-bearing. Re-measure with the /series call above before changing it.
+    max_chunks_per_query: 20000
 
   query_scheduler:
     max_outstanding_requests_per_tenant: 2048
