@@ -10,7 +10,7 @@ from auth import get_current_user_claims
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 from pydantic import BaseModel
-from sqlalchemy import select, func as sql_func, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
@@ -21,8 +21,11 @@ from schemas import (
 )
 from metrics import (
     metrics_endpoint, track_metrics,
-    ORDERS_CREATED, ORDERS_BY_STATUS, ORDER_TOTAL_AMOUNT,
+    ORDERS_CREATED, ORDER_TOTAL_AMOUNT,
     INVENTORY_RESERVATION_FAILURES, SERVICE_NAME
+)
+from status_metrics import (
+    init_orders_by_status, compute_orders_by_status, orders_by_status_worker
 )
 import inventory_client
 from inventory_client import (
@@ -51,6 +54,7 @@ class CheckoutSessionResponse(BaseModel):
 
 # Background task control
 outbox_task = None
+status_task = None
 
 
 @asynccontextmanager
@@ -58,19 +62,33 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     # Startup - migrations should be run via 'alembic upgrade head' before starting
     logger.info("Service starting", note="Ensure migrations are applied via 'alembic upgrade head'")
-    
+
     # Start outbox worker
-    global outbox_task
+    global outbox_task, status_task
     outbox_task = asyncio.create_task(outbox_worker(poll_interval=2.0))
     logger.info("Outbox worker started", poll_interval=2.0)
-    
+
+    # Publish all eight orders_by_status labels at 0 BEFORE the first scrape can
+    # arrive, then keep them fresh on a timer. Every replica runs its own
+    # refresher: the gauge describes global database state, so it must not depend
+    # on which pod happened to serve a request.
+    init_orders_by_status()
+    status_task = asyncio.create_task(orders_by_status_worker(refresh_interval=15.0))
+    logger.info("Orders-by-status refresher started", refresh_interval=15.0)
+
     yield
-    
+
     # Shutdown
     if outbox_task:
         outbox_task.cancel()
         try:
             await outbox_task
+        except asyncio.CancelledError:
+            pass
+    if status_task:
+        status_task.cancel()
+        try:
+            await status_task
         except asyncio.CancelledError:
             pass
     logger.info("Shutdown complete")
@@ -777,18 +795,12 @@ def orders_by_status(
     db: Session = Depends(get_db),
     claims: dict = Depends(get_current_user_claims),
 ):
-    """Get count of orders by status."""
-    result = db.execute(
-        select(Order.status, sql_func.count(Order.id))
-        .group_by(Order.status)
-    ).all()
-    
-    stats = {status: count for status, count in result}
-    
-    # Update Prometheus metrics
-    for status_val in [OrderStatus.CREATED, OrderStatus.RESERVED, OrderStatus.PAID,
-                       OrderStatus.PRODUCING, OrderStatus.SHIPPED, OrderStatus.DELIVERED,
-                       OrderStatus.CANCELLED, OrderStatus.FAILED]:
-        ORDERS_BY_STATUS.labels(status=status_val).set(stats.get(status_val, 0))
-    
-    return stats
+    """Get count of orders by status.
+
+    The orders_by_status Prometheus gauge is NOT written here -- it describes
+    global database state and is owned by status_metrics.orders_by_status_worker,
+    which runs on every replica. Writing it from a request handler is what left
+    the metric absent (rendering as "No data") on any pod that had never served
+    this endpoint. See .planning/quick/260817-orders-status-gauge/.
+    """
+    return compute_orders_by_status(db)
