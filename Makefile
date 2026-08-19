@@ -267,11 +267,6 @@ rds-delete: check-account ## [cloud] Delete RDS instance (DESTRUCTIVE!)
 		AWS_PAGER="" AWS_PROFILE=$(AWS_PROFILE) aws cloudformation delete-stack --stack-name postershop-rds; \
 	fi
 
-.PHONY: rds-init
-rds-init: ## [cloud] Initialize RDS schemas and users
-	chmod +x deploy/rds/init-all.sh
-	./deploy/rds/init-all.sh
-
 # ============================================================
 # Docker / ECR
 # ============================================================

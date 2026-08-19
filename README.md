@@ -145,7 +145,6 @@ shop-platform/
 ├── deploy/                 # Deployment resources
 │   ├── charts/             # Helm charts
 │   ├── infrastructure/     # EKS/RDS configs
-│   ├── rds/                # Database init scripts
 │   ├── secrets/            # AWS Secrets Manager
 │   └── monitoring/         # Prometheus/Grafana
 ├── .github/workflows/      # CI/CD pipelines
@@ -170,7 +169,6 @@ shop-platform/
 
 ### Deployment
 - [Deployment Guide](deploy/README.md) - EKS deployment instructions (includes AWS setup, OIDC, ECR)
-- [Database Initialization](deploy/rds/README.md) - Schema setup
 - [Secrets Management](deploy/secrets/README.md) - AWS Secrets Manager
 - [Monitoring](deploy/monitoring/README.md) - Prometheus/Grafana
 - [Centralized Logging](deploy/monitoring/LOGGING.md) - Loki + Fluent Bit
