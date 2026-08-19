@@ -19,11 +19,13 @@ The platform uses a single PostgreSQL database with **schema-per-service** isola
 | `orders_schema` | Orders | orders, order_items, outbox_events |
 | `production_schema` | Production | jobs |
 | `logistics_schema` | Logistics | shipments |
+| `notifications_schema` | Notifications | processed_events |
 
-**Three services are stateless and own no schema:** `payments` (in-memory checkout
-sessions), `infra` (reads live Kubernetes state) and `notifications` (renders and sends
-email, holding only an in-memory idempotency set). They have no Alembic migrations and
-appear nowhere in this document.
+**Two services are stateless and own no schema:** `payments` (in-memory checkout
+sessions) and `infra` (reads live Kubernetes state). They have no Alembic migrations and
+appear nowhere in this document. `notifications` was a third until it was given durable
+idempotency: it now owns `notifications_schema`, has its own Alembic migration, and is
+documented below.
 
 ---
 
@@ -255,6 +257,30 @@ Shipment tracking records.
 
 ---
 
+## notifications_schema
+
+### processed_events
+
+Durable consumer-side idempotency: one row per outbox event whose email was sent successfully.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| event_id | BIGINT | PK, NOT AUTO | Outbox envelope `event_id` |
+| event_type | VARCHAR | NOT NULL | Event name (e.g., ORDER_PAID) |
+| sent_at | TIMESTAMP | DEFAULT now() | When the send was recorded |
+
+**The primary key is a natural key, not a sequence.** `event_id` is the orders outbox
+event's own id, supplied in the delivered envelope rather than generated here — which is
+exactly why the column is declared `autoincrement=False`. It is the one primary key in
+this document that is not a local sequence.
+
+**Dedup flow:** the handler first selects by `event_id`; a hit is acknowledged as
+`already_processed` without sending again, and a miss sends the email and then records the
+row with `INSERT ... ON CONFLICT DO NOTHING`. Dedup therefore survives restarts and is
+shared across replicas.
+
+---
+
 ## Migrations
 
 Migrations are managed with **Alembic** (per-service):
@@ -287,6 +313,7 @@ CREATE SCHEMA IF NOT EXISTS inventory_schema;
 CREATE SCHEMA IF NOT EXISTS orders_schema;
 CREATE SCHEMA IF NOT EXISTS production_schema;
 CREATE SCHEMA IF NOT EXISTS logistics_schema;
+CREATE SCHEMA IF NOT EXISTS notifications_schema;
 
 -- Tables are created by Alembic migrations
 ```

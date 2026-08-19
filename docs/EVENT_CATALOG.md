@@ -44,7 +44,7 @@ Events are delivered using the **Transactional Outbox Pattern**:
 - Production service creates a `Job` in `queued` status
 - Idempotency: Checks if job already exists for order_id before creating
 - Notifications service sends the order-confirmation email
-- Idempotency: In-memory `event_id` set (per replica, non-durable)
+- Idempotency: `notifications_schema.processed_events` lookup by `event_id` (durable, shared across replicas)
 
 ---
 
@@ -287,8 +287,12 @@ emit_event(
    matters more now that email delivery rides the outbox: a subscriber outage
    longer than the retry window silently drops customer email.
 2. **No Event Idempotency** - Consumers should check for duplicates but don't have a
-   standardized mechanism. Production uses a database lookup; notifications uses an
-   in-memory set that does not survive a pod restart.
+   standardized mechanism; production and notifications each rolled their own. Both now
+   dedup against the database — production looks up the existing job for the order,
+   notifications selects `notifications_schema.processed_events` by `event_id` and records
+   the row with `INSERT ... ON CONFLICT DO NOTHING` after a successful send. The residual
+   is notifications' send-then-record window: a crash between handing the mail to the
+   provider and writing the row re-sends it on redelivery.
 3. **Retry Is Per-Event, Not Per-Subscriber** - Fan-out to multiple consumers is in
    use (`ORDER_PAID` and `ORDER_CANCELLED` each go to two services), but the retry
    unit is the whole event, not the individual subscriber. If any one subscriber

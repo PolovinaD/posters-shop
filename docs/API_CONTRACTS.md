@@ -365,15 +365,17 @@ case precisely so that a permanently unfixable input does not consume the retry 
 
 ### Idempotency
 
-Guarded by an in-memory set of processed `event_id` values
-(`services/notifications/main.py`). This is per-replica and does not survive a restart,
-so a duplicate email is possible after a pod restart or with `replicaCount > 1`.
+Guarded by the durable `notifications_schema.processed_events` table, keyed by `event_id`
+(`services/notifications/main.py`): select first, send, then record with
+`INSERT ... ON CONFLICT DO NOTHING`. Dedup survives restarts and is shared across
+replicas. The residual window is send-then-record — a crash between the two re-sends the
+mail on redelivery (see `docs/KNOWN_LIMITATIONS.md` #3).
 
 ### Health & Metrics
 
 ```http
 GET /healthz    # liveness
-GET /readyz     # readiness — always ready, no DB to check
+GET /readyz     # readiness — SELECT 1, returns 503 when the database is unreachable
 GET /metrics    # Prometheus
 ```
 
