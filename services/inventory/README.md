@@ -49,7 +49,7 @@ Stock management with reservation system and automatic expiry.
 | GET | /stock | List all stock | - |
 | GET | /stock/{sku} | Get stock for SKU | - |
 | POST | /stock | Create stock item | Admin |
-| PUT | /stock/{sku} | Update stock | Admin |
+| PATCH | /stock/{sku} | Update stock | Admin |
 | POST | /stock/check | Bulk stock check | - |
 | POST | /reserve | Reserve stock | Internal |
 | POST | /release | Release reservation | Internal |
