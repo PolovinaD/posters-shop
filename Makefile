@@ -174,8 +174,8 @@ cluster-create: check-account ## [cloud] Create EKS cluster (production)
 	AWS_PROFILE=$(AWS_PROFILE) eksctl create cluster -f deploy/infrastructure/eksctl-cluster.yaml
 
 .PHONY: cluster-create-dev
-cluster-create-dev: ## [cloud] Create EKS cluster (dev - spot instances, cheaper)
-	eksctl create cluster -f deploy/infrastructure/eksctl-cluster-dev.yaml
+cluster-create-dev: check-account ## [cloud] Create EKS cluster (dev - spot instances, cheaper)
+	AWS_PROFILE=$(AWS_PROFILE) eksctl create cluster -f deploy/infrastructure/eksctl-cluster-dev.yaml
 
 .PHONY: cluster-delete
 cluster-delete: check-account ## [cloud] Delete EKS cluster (DESTRUCTIVE!)
