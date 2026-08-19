@@ -109,7 +109,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | production | 8004 | PostgreSQL (production schema) | httpx |
 | logistics | 8005 | PostgreSQL (logistics schema) | boto3, python-jose, httpx |
 | inventory | 8006 | PostgreSQL (inventory schema) | - |
-| payments | 8007 | None (in-memory mock) | httpx |
+| payments | 8007 | None — sessions live at Stripe | httpx |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |

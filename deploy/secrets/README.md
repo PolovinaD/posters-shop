@@ -22,9 +22,9 @@ and the External Secrets Operator (ESO).
 | Secret Name            | Description                    | Keys                                                    |
 |------------------------|--------------------------------|---------------------------------------------------------|
 | `postershop/passwords` | All service & RDS passwords    | `USERS_SVC_PASSWORD`, `DB_PASSWORD`, `JWT_SECRET`, etc. |
-| `postershop/database`  | Database connection strings    | `DATABASE_URL_USERS`, `DATABASE_URL_CATALOG`, etc.      |
+| `postershop/database`  | Database connection strings    | `DATABASE_URL_USERS`, `DATABASE_URL_CATALOG`, `DATABASE_URL_ORDERS`, `DATABASE_URL_PRODUCTION`, `DATABASE_URL_LOGISTICS`, `DATABASE_URL_INVENTORY`, `DATABASE_URL_NOTIFICATIONS` |
 | `postershop/jwt`       | JWT signing secret             | `JWT_SECRET`                                            |
-| `postershop/stripe`    | Stripe webhook secret          | `WEBHOOK_SECRET`                                        |
+| `postershop/stripe`    | Stripe API key + webhook signing secret | `SECRET_KEY`, `WEBHOOK_SECRET`                 |
 
 ## How It Works
 
