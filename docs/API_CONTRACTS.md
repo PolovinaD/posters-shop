@@ -16,6 +16,7 @@ This document defines the APIs used for service-to-service communication.
 | Production | Logistics | Create shipment | Sync HTTP |
 | Logistics | Orders | Delivery notification | Sync HTTP |
 | Catalog | Inventory | Stock check | Sync HTTP |
+| Inventory | Orders | Reservation expiry notification | Sync HTTP (fire-and-forget) |
 | Payments | Orders | Webhook | Async HTTP |
 
 ---
@@ -239,6 +240,39 @@ the status can never advance without its notification event being queued.
 **Error Responses:**
 - `400 Bad Request` - Invalid state transition
 - `404 Not Found` - Order not found
+
+### Reservation Expired
+
+**Called by:** Inventory Service (expiry worker)
+**When:** A stock reservation passes its 15-minute TTL and the worker releases it
+
+```http
+POST /internal/orders/{order_id}/reservation-expired
+Content-Type: application/json
+
+{}
+```
+
+The inventory worker (`services/inventory/main.py`) posts this with a 5-second timeout
+after it has already returned the stock to the free pool. The call is fire-and-forget:
+inventory swallows every exception and only logs a warning on a transport failure or a
+`>= 400` response, because the stock release has already succeeded and a missed
+notification is a non-fatal divergence rather than a lost update. It fires only on the
+worker tick that actually flipped the reservation to `expired`, so later ticks do not
+re-send it.
+
+There is no auth dependency — this is service-to-service traffic over the cluster
+network, reachable only from inside the cluster.
+
+**Response — always `200 OK`.** The handler is deliberately idempotent and never returns
+4xx or 5xx, because duplicate, unknown and wrong-state calls are all expected rather than
+errors:
+
+| Condition | Body |
+|-----------|------|
+| Order not found | `{"status": "not_found", "order_id": ...}` |
+| Order not in `reserved` | `{"status": "no_action", "current_status": ...}` |
+| Order in `reserved` | Order flips to `cancelled` and an `ORDER_CANCELLED` event is written to the outbox |
 
 ---
 
