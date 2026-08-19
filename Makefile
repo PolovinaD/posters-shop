@@ -178,10 +178,10 @@ cluster-create-dev: ## [cloud] Create EKS cluster (dev - spot instances, cheaper
 	eksctl create cluster -f deploy/infrastructure/eksctl-cluster-dev.yaml
 
 .PHONY: cluster-delete
-cluster-delete: ## [cloud] Delete EKS cluster (DESTRUCTIVE!)
+cluster-delete: check-account ## [cloud] Delete EKS cluster (DESTRUCTIVE!)
 	@read -p "Are you sure you want to delete the cluster? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ]; then \
-		eksctl delete cluster -f deploy/infrastructure/eksctl-cluster.yaml; \
+		AWS_PROFILE=$(AWS_PROFILE) eksctl delete cluster -f deploy/infrastructure/eksctl-cluster.yaml; \
 	fi
 
 .PHONY: cluster-kubeconfig
@@ -261,7 +261,7 @@ rds-create: check-account ## [cloud] Create RDS instance (standalone; `make depl
 			ParameterKey=MasterPassword,ParameterValue=$$DB_PASS
 
 .PHONY: rds-delete
-rds-delete: ## [cloud] Delete RDS instance (DESTRUCTIVE!)
+rds-delete: check-account ## [cloud] Delete RDS instance (DESTRUCTIVE!)
 	@read -p "Are you sure you want to delete RDS? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ]; then \
 		AWS_PAGER="" AWS_PROFILE=$(AWS_PROFILE) aws cloudformation delete-stack --stack-name postershop-rds; \
