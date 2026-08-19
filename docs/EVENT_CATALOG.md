@@ -11,7 +11,11 @@ Events are delivered using the **Transactional Outbox Pattern**:
 
 **Delivery guarantees:**
 - At-least-once delivery (consumers must be idempotent)
-- Max 5 retries with delays: 5s, 15s, 1m, 5m, 15m
+- 5 delivery attempts separated by 4 waits: 5s, 15s, 1m, 5m
+- `RETRY_DELAYS = [5, 15, 60, 300, 900]` carries a fifth delay of 15m that is never
+  applied: `retry_count` is incremented *before* it is compared against `MAX_RETRIES = 5`,
+  so the fifth failure retires the event instead of scheduling a sixth attempt, and the
+  last index is never reached (`services/orders/outbox.py:180-184`)
 - Events exceeding retries are abandoned (no DLQ currently)
 
 ---

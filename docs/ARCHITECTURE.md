@@ -81,7 +81,9 @@ redelivery, which is the deliberate trade against dropping it.
 
 **Notifications is not ALB-exposed.** Its chart sets `ingress.enabled: false`, so it
 receives no ALB routing rule and appears in no routing table below. The orders outbox
-worker reaches it over cluster-internal DNS (`http://notifications:8000`).
+worker reaches it over cluster-internal DNS at `http://notifications` — port 80, since
+every backend Service maps `port: 80` to `targetPort: 8000` (the `:8000` form is only the
+docker-compose fallback default at `services/orders/outbox.py:32`).
 
 ---
 
