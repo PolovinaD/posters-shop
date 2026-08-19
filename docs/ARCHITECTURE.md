@@ -405,6 +405,18 @@ graph TB
 | `/infra/*` | infra | 8000 |
 | `/*` (default) | frontend | 80 |
 
+### Why the ALB health check targets `/healthz`
+
+One Ingress annotation configures the health check for every target group the Ingress creates, so `alb.ingress.kubernetes.io/healthcheck-path` has to name a path that all of them answer. `deploy/charts/frontend/templates/ingress.yaml` declares eight path rules — `/` to frontend:80 plus seven `/api/*` backends (users, catalog, orders, production, logistics, inventory, payments) — and the AWS Load Balancer Controller turns those into eight target groups, all sharing the one annotation. (`infra` has no rule of its own; it is reached through the `/` catch-all and the `/api/infra/` proxy block in `frontend/nginx.conf`.)
+
+The annotation was `/health` until commit `a1014dd`, and only the frontend nginx serves that path — the Python services expose `/healthz` and `/readyz`. Measured on the live cluster before the fix: the frontend target group healthy, all seven backend target groups `unhealthy`. The platform kept working only because an ALB fails open when every target in a group is unhealthy, so traffic still flowed while two properties were quietly missing — there was no usable health signal for any backend, and no way to drain a bad pod during a rolling deploy, since a group that is entirely unhealthy cannot take a member out of rotation. It also cost roughly 5900 404s per hour platform-wide, which dominated Loki stream cardinality.
+
+Switching the annotation to `/healthz` fixed all eight target groups without rebuilding the frontend, because `frontend/nginx.conf:15` declares `location /health` — a **prefix** match, so `/healthz` lands in that block. That is the trap worth knowing before editing nginx: narrowing it to `location = /health` would silently return the frontend target group to fail-open, with nothing failing loudly to say so.
+
+The ALB health check and the kubelet probes are separate mechanisms and are deliberately not aligned. The frontend's own readiness and liveness probes in `deploy/charts/frontend/templates/deployment.yaml` remain on `/health` and should stay there.
+
+The fuller in-place note — including why `/readyz` was rejected for this annotation — is the comment above the annotation in `deploy/charts/frontend/values.yaml` (lines 36-60).
+
 ---
 
 ## Logging Architecture
