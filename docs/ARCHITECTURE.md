@@ -393,17 +393,25 @@ graph TB
 
 ## Path-Based Routing (ALB Ingress)
 
-| Path Pattern | Service | Port |
-|--------------|---------|------|
-| `/users/*` | users | 8000 |
-| `/catalog/*` | catalog | 8000 |
-| `/orders/*` | orders | 8000 |
-| `/inventory/*` | inventory | 8000 |
-| `/production/*` | production | 8000 |
-| `/logistics/*` | logistics | 8000 |
-| `/payments/*` | payments | 8000 |
-| `/infra/*` | infra | 8000 |
-| `/*` (default) | frontend | 80 |
+Source of truth: `deploy/charts/frontend/templates/ingress.yaml`.
+
+| Path Pattern | Path Type | Service | Port |
+|--------------|-----------|---------|------|
+| `/api/users` | Prefix | users | 80 |
+| `/api/catalog` | Prefix | catalog | 80 |
+| `/api/orders` | Prefix | orders | 80 |
+| `/api/production` | Prefix | production | 80 |
+| `/api/logistics` | Prefix | logistics | 80 |
+| `/api/inventory` | Prefix | inventory | 80 |
+| `/api/payments` | Prefix | payments | 80 |
+| `/` (catch-all) | Prefix | frontend | 80 |
+
+Two services are absent from that list by design. `infra` has no Ingress rule of
+its own — a request for it matches the `/` catch-all, lands on the frontend pod,
+and nginx proxies it onward from its `location /api/infra/` block
+(`frontend/nginx.conf:78`). `notifications` has neither an Ingress rule nor an
+nginx block, so it is not reachable from outside the cluster at all; it is only
+ever called service-to-service, by the orders outbox worker.
 
 ### Why the ALB health check targets `/healthz`
 
