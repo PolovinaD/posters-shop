@@ -111,7 +111,7 @@ helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 
 ## Database Configuration
 
-The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (in-memory checkout sessions) and `infra` (reads live Kubernetes state) are stateless and own no schema:
+The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe) and `infra` (reads live Kubernetes state) are stateless and own no schema:
 
 ```
 postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3D<schema>

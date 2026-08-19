@@ -21,8 +21,8 @@ The platform uses a single PostgreSQL database with **schema-per-service** isola
 | `logistics_schema` | Logistics | shipments |
 | `notifications_schema` | Notifications | processed_events |
 
-**Two services are stateless and own no schema:** `payments` (in-memory checkout
-sessions) and `infra` (reads live Kubernetes state). They have no Alembic migrations and
+**Two services are stateless and own no schema:** `payments` (checkout sessions live
+at Stripe) and `infra` (reads live Kubernetes state). They have no Alembic migrations and
 appear nowhere in this document. `notifications` was a third until it was given durable
 idempotency: it now owns `notifications_schema`, has its own Alembic migration, and is
 documented below.
