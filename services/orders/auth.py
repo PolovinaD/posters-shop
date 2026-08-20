@@ -41,6 +41,16 @@ def require_courier_or_admin(claims: dict = Depends(get_current_user_claims)):
     return claims
 
 
+def require_owner(claims: dict = Depends(get_current_user_claims)):
+    """Require owner role."""
+    if claims.get("role") != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner role required"
+        )
+    return claims
+
+
 def optional_auth(token: str = Depends(oauth2_scheme)):
     """Optional authentication - returns claims if authenticated, None otherwise."""
     if not token:
