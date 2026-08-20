@@ -249,7 +249,7 @@ environment variables so the same map works in docker-compose and in Kubernetes.
 
 ## Monitoring
 
-**Outbox stats endpoint:** `GET /orders/outbox/stats`
+**Outbox stats endpoint:** `GET /outbox/stats` on the orders service (`/api/orders/outbox/stats` through the ALB)
 
 Returns:
 - `pending_count`: Events awaiting delivery

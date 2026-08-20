@@ -90,7 +90,6 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 |----------|-------------|---------|----------|
 | `STRIPE_SECRET_KEY` | Stripe API key used to create checkout sessions | - | Yes (in prod) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | `whsec_test_secret_key_12345` | No |
-| `ORDERS_WEBHOOK_URL` | Orders webhook endpoint | `http://orders:8000/webhooks/stripe` | No |
 | `FRONTEND_URL` | Base URL a customer returns to after Stripe checkout | `http://localhost:3000` | No |
 
 **Note:** Payments service is stateless (no database) - uses in-memory storage for sessions.

@@ -119,7 +119,7 @@ authoritative `EVENT_SUBSCRIBERS` map (`outbox.py:36-51`).
 2. Background worker polls every 2 seconds
 3. Delivers via HTTP POST to subscribers
 4. Marks delivered or schedules retry (max 5 attempts)
-5. Exponential backoff: 5s, 15s, 1m, 5m, 15m
+5. Exponential backoff between the 5 attempts: 5s, 15s, 1m, 5m (`RETRY_DELAYS` has a fifth 15m value that is never reached)
 
 ## Dependencies
 
