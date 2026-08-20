@@ -60,9 +60,9 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | Alembic | >=1.13.0 | Database schema migrations | Low |
 | prometheus-client | >=0.15.0, newest pin 0.23.1 | Metrics exposition for Prometheus scraping | Low |
 | httpx | >=0.25.0 | Async HTTP client for inter-service calls | Low |
-| python-jose | 3.5.0 | JWT token creation/validation (users, catalog, logistics) | Medium - unmaintained library |
+| PyJWT | 2.10.1 (catalog, orders, inventory), 2.12.1 (users, logistics, infra) | JWT token creation/validation | Low |
 | passlib | 1.7.4 | Password hashing (users service) | Medium - unmaintained |
-| boto3 | 1.38.0 | AWS SDK (catalog, logistics, notifications services) | Low - pinned |
+| boto3 | 1.38.0 | AWS SDK — SES email in notifications; pinned but never imported in catalog and logistics | Low - pinned |
 | kubernetes | unpinned | K8s Python client (infra service) | Low |
 | websockets | unpinned | WebSocket support (infra service) | Low |
 | Tailwind CSS | ^3.4.19 | Utility-first CSS framework (frontend) | Low |
@@ -103,12 +103,12 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Service Architecture Overview
 | Service | Port (local) | Database | Key Dependencies |
 |---------|-------------|----------|-----------------|
-| users | 8001 | PostgreSQL (users schema) | python-jose, passlib |
-| catalog | 8002 | PostgreSQL (catalog schema) | boto3, httpx |
+| users | 8001 | PostgreSQL (users schema) | PyJWT, passlib, slowapi |
+| catalog | 8002 | PostgreSQL (catalog schema) | httpx, PyJWT |
 | orders | 8003 | PostgreSQL (orders schema) | httpx (inventory, payment clients) |
 | production | 8004 | PostgreSQL (production schema) | httpx |
-| logistics | 8005 | PostgreSQL (logistics schema) | boto3, python-jose, httpx |
-| inventory | 8006 | PostgreSQL (inventory schema) | - |
+| logistics | 8005 | PostgreSQL (logistics schema) | httpx, PyJWT |
+| inventory | 8006 | PostgreSQL (inventory schema) | httpx, PyJWT |
 | payments | 8007 | None — sessions live at Stripe | stripe |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
