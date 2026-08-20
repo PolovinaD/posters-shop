@@ -217,7 +217,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ```
 - Server-side: Each service owns its state in its PostgreSQL schema
 - Frontend: React Query for server state (5s refetch interval), React Context for auth and cart
-- Payments service uses in-memory storage (sessions dict) -- not persistent
+- Payments service keeps no local state at all -- checkout sessions live at Stripe (`list_sessions()` returns `[]`)
 ## Key Abstractions
 - Purpose: Typed async HTTP clients for inter-service calls
 - Examples: `services/orders/inventory_client.py`, `services/orders/payment_client.py`, `services/production/orders_client.py`, `services/logistics/orders_client.py`
