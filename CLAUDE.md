@@ -109,7 +109,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | production | 8004 | PostgreSQL (production schema) | httpx |
 | logistics | 8005 | PostgreSQL (logistics schema) | boto3, python-jose, httpx |
 | inventory | 8006 | PostgreSQL (inventory schema) | - |
-| payments | 8007 | None — sessions live at Stripe | httpx |
+| payments | 8007 | None — sessions live at Stripe | stripe |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |
@@ -218,6 +218,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Server-side: Each service owns its state in its PostgreSQL schema
 - Frontend: React Query for server state (5s refetch interval), React Context for auth and cart
 - Payments service keeps no local state at all -- checkout sessions live at Stripe (`list_sessions()` returns `[]`)
+- Notifications service dedups events durably in its own `processed_events` table -- the guard survives pod restarts and is shared across replicas; the only residual is the narrow send-then-record crash window
 ## Key Abstractions
 - Purpose: Typed async HTTP clients for inter-service calls
 - Examples: `services/orders/inventory_client.py`, `services/orders/payment_client.py`, `services/production/orders_client.py`, `services/logistics/orders_client.py`
