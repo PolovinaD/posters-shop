@@ -17,7 +17,7 @@ This document defines the APIs used for service-to-service communication.
 | Logistics | Orders | Delivery notification | Sync HTTP |
 | Catalog | Inventory | Stock check | Sync HTTP |
 | Inventory | Orders | Reservation expiry notification | Sync HTTP (fire-and-forget) |
-| Payments | Orders | Webhook | Async HTTP |
+| Stripe (external) | Orders | `checkout.session.completed`, signature-verified | Async HTTP |
 
 ---
 
@@ -445,8 +445,8 @@ Content-Type: application/json
 
 ### checkout.session.completed
 
-**Called by:** Payments Service  
-**When:** Customer completes payment
+**Called by:** Stripe (external — not the payments service)  
+**When:** Customer completes payment on Stripe's hosted checkout page
 
 ```http
 POST /webhooks/stripe
