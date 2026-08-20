@@ -390,7 +390,7 @@ floods the retry budget.
 |----------|---------|---------------|
 | `200 {"status": "sent", "event_id": 42}` | Email handed to the provider | Success; outbox marks the event delivered |
 | `200 {"status": "already_processed", "event_id": 42}` | This `event_id` was seen before | Duplicate delivery is expected under at-least-once semantics and is not an error |
-| `200 {"status": "skipped", "reason": "no_customer_email"}` | Payload carried no address | **Deliberately 200, not 4xx.** Retrying cannot make a missing address appear, so a non-2xx here would burn all five retries and then abandon the event for no reason |
+| `200 {"status": "skipped", "reason": "no_customer_email"}` | Payload carried no address | **Deliberately 200, not 4xx.** Retrying cannot make a missing address appear, so a non-2xx here would burn all five delivery attempts and then abandon the event for no reason |
 | `503` | The email provider raised on send | **Deliberately retryable.** A transient SES failure should be retried with backoff, so the event is left undelivered and the worker tries again |
 
 The distinction reduces to: **200 means "do not retry, there is nothing more to do";

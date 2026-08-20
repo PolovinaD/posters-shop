@@ -287,7 +287,7 @@ emit_event(
 
 ## Known Limitations
 
-1. **No Dead Letter Queue** - Failed events are abandoned after 5 retries. This
+1. **No Dead Letter Queue** - Failed events are abandoned after 5 delivery attempts. This
    matters more now that email delivery rides the outbox: a subscriber outage
    longer than the retry window silently drops customer email.
 2. **No Event Idempotency** - Consumers should check for duplicates but don't have a
