@@ -677,7 +677,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """
     Handle Stripe webhooks.
     
-    This endpoint receives events from Stripe (or our mock payment service):
+    This endpoint receives events sent directly by Stripe:
     - checkout.session.completed: Payment successful
     - checkout.session.expired: Checkout session expired
     

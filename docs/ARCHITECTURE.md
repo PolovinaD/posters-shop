@@ -28,7 +28,7 @@ graph TB
     subgraph "Processing Services"
         PRODUCTION[Production Service<br/>Job processing]
         LOGISTICS[Logistics Service<br/>Shipping]
-        PAYMENTS[Payments Service<br/>Stripe mock]
+        PAYMENTS[Payments Service<br/>Stripe Checkout]
         NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>event dedup]
     end
     
