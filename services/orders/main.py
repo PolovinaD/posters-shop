@@ -517,19 +517,25 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
             detail=f"Cannot cancel order in status '{order.status}'. Orders can only be cancelled before production starts."
         )
     
+    # Capture the prior status BEFORE the mutation below: the outbox payload
+    # reports what the order was cancelled *from*, and reading order.status after
+    # the assignment always yields "cancelled". notifications keys the "this order
+    # had already been paid" wording off this field.
+    previous_status = order.status
+
     released_stock = False
-    
+
     # If order was reserved, release the stock
-    if order.status == OrderStatus.RESERVED:
+    if previous_status == OrderStatus.RESERVED:
         try:
             result = await inventory_client.release_stock(order_id)
             released_stock = result.get("released_count", 0) > 0
         except InventoryServiceError:
             # Best effort - continue with cancellation
             pass
-    
+
     order.status = OrderStatus.CANCELLED
-    
+
     # Emit ORDER_CANCELLED event
     emit_event(
         db=db,
@@ -539,7 +545,7 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
         payload={
             "order_id": order_id,
             "customer_email": order.customer_email,
-            "previous_status": order.status,
+            "previous_status": previous_status,
             "released_stock": released_stock
         }
     )

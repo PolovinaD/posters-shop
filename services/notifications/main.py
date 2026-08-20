@@ -164,7 +164,11 @@ def render_email(event_type: str, payload: dict) -> tuple[str, str]:
         # An order cancelled after payment has billing consequences this service
         # cannot observe or confirm, so point the customer at support instead of
         # asserting any payment outcome. See docs/KNOWN_LIMITATIONS.md.
-        if payload.get("previous_status") in ("PAID", "PRODUCING", "SHIPPED"):
+        # Compared case-insensitively against the lowercase values OrderStatus
+        # actually emits ("paid"/"producing"/"shipped"); the previous uppercase
+        # tuple matched nothing, so this paragraph never reached a customer.
+        previous_status = (payload.get("previous_status") or "").lower()
+        if previous_status in ("paid", "producing", "shipped"):
             body += (
                 "This order had already been paid. Please contact our support team "
                 "with any questions about the payment for this order.\n"
