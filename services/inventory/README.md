@@ -50,6 +50,7 @@ Stock management with reservation system and automatic expiry.
 | GET | /stock/{sku} | Get stock for SKU | - |
 | POST | /stock | Create stock item | Admin |
 | PATCH | /stock/{sku} | Update stock | Admin |
+| POST | /stock/{sku}/restock | Add to available stock (`quantity` query param, required, > 0) | Admin |
 | POST | /stock/check | Bulk stock check | - |
 | POST | /reserve | Reserve stock | Internal |
 | POST | /release | Release reservation | Internal |
