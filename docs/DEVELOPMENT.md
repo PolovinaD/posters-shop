@@ -315,7 +315,9 @@ docker system prune -a
 
 ### Events not being delivered
 
-1. Check outbox stats: `curl http://localhost:8003/outbox/stats`
+1. Check outbox stats: `curl -H "Authorization: Bearer $TOKEN" http://localhost:8003/outbox/stats`
+   (requires the **owner** role — the endpoint returns 401 without a token and
+   403 for a non-owner. Get `$TOKEN` from `POST http://localhost:8001/login`.)
 2. Verify `PRODUCTION_SERVICE_URL` and `NOTIFICATIONS_SERVICE_URL` are correct
 3. Check that both subscriber services are running and healthy
 4. Look for errors in outbox `last_error` field

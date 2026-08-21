@@ -58,18 +58,25 @@ Order lifecycle management with outbox pattern for reliable event delivery.
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| POST | /orders | Create order | - |
-| GET | /orders | List orders | - |
-| GET | /orders/{id} | Get order | - |
-| POST | /orders/{id}/pay | Mark as paid | Internal |
-| POST | /orders/{id}/produce | Start production | Internal |
-| POST | /orders/{id}/ship | Mark shipped | Internal |
-| POST | /orders/{id}/deliver | Mark delivered | Internal |
-| POST | /orders/{id}/cancel | Cancel order | - |
-| POST | /orders/{id}/checkout | Create payment session | - |
-| GET | /orders/{id}/checkout-status | Get payment status | - |
-| POST | /webhooks/stripe | Stripe webhook | - |
-| GET | /outbox/stats | Outbox monitoring | Admin |
+| POST | /orders | Create order | Auth — `customer_email` comes from the JWT `sub`, never the body |
+| GET | /orders | List orders | Auth |
+| GET | /orders/{id} | Get order | Auth + ownership (owner/courier any; customer only their own) |
+| POST | /orders/{id}/pay | Mark as paid (bypasses Stripe) | **Owner** (`require_owner`) |
+| POST | /orders/{id}/produce | Start production | Internal (service-to-service, no JWT) |
+| POST | /orders/{id}/ship | Mark shipped | Internal (service-to-service, no JWT) |
+| POST | /orders/{id}/deliver | Mark delivered | Internal (service-to-service, no JWT) |
+| POST | /orders/{id}/cancel | Cancel order | Auth + ownership |
+| POST | /orders/{id}/checkout | Create payment session | Auth + ownership |
+| GET | /orders/{id}/checkout-status | Get payment status | Auth + ownership |
+| GET | /orders/stats/by-status | Order counts per status | Auth |
+| POST | /webhooks/stripe | Stripe webhook | Stripe signature (`stripe.Webhook.construct_event`) |
+| POST | /internal/orders/{order_id}/reservation-expired | Inventory reports an expired reservation | Internal (no JWT; idempotent, always 200) |
+| GET | /outbox/stats | Outbox monitoring | **Owner** (`require_owner`) |
+
+`/produce`, `/ship` and `/deliver` carry no auth dependency because the
+production and logistics workers call them with no JWT — adding one would stop
+the pipeline. They are reachable through the ALB, so this is an open item
+awaiting a service-token design, not a decision that they need no protection.
 
 ## Environment Variables
 
