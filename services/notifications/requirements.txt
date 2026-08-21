@@ -6,3 +6,4 @@ boto3==1.38.0
 sqlalchemy==2.0.44
 psycopg2-binary==2.9.11
 alembic==1.15.2
+PyJWT==2.12.1

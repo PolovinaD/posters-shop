@@ -4,6 +4,39 @@ Shared utilities used across all Python services.
 
 ## Contents
 
+### service_auth.py
+
+Service-to-service authentication for the endpoints only another service is
+meant to call. The ALB routes `/api/<service>` straight to each Service, so
+those routes are reachable from the internet; they cannot take the customer JWT
+dependency because the callers are background workers with no user in context.
+
+A caller mints a short-lived HS256 token carrying `role="service"`, signed with
+the `JWT_SECRET` the platform already distributes — no new secret. A callee
+accepts that or a genuine owner token.
+
+**Usage — caller:**
+
+```python
+from service_auth import internal_headers
+async with httpx.AsyncClient(headers=internal_headers()) as client:
+    ...
+```
+
+**Usage — callee:**
+
+```python
+from service_auth import require_service_or_owner
+
+@app.post("/events/order-paid")
+def handle(event: Payload, claims: dict = Depends(require_service_or_owner)):
+    ...
+```
+
+Requires `JWT_SECRET` and `PyJWT` in the service. Note the trade-off documented
+in the module: the secret is symmetric, so any holder can *mint* any role, not
+just verify one. Asymmetric signing is the proper end state.
+
 ### logger.py
 
 Structured JSON logging with correlation ID support.
