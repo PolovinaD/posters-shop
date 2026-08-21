@@ -3,7 +3,13 @@ kind: Deployment
 metadata:
   name: production
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # No `replicas` here on purpose: templates/hpa.yaml owns the replica count
+  # (minReplicas: 1, maxReplicas: 5) and this chart always installs it. Unlike
+  # orders this does not churn at rest, because 1 == minReplicas -- it bites
+  # under load. If the CPU HPA has scaled production out to several pods, a
+  # `helm upgrade` writes replicas back to 1 and kills the extra pods
+  # mid-workload, and the HPA then has to scale up again from scratch. This is
+  # the CPU-bound service, so a deploy is most likely to land exactly then.
   selector:
     matchLabels:
       app: production
