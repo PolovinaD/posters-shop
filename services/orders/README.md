@@ -6,7 +6,7 @@ Order lifecycle management with outbox pattern for reliable event delivery.
 
 - Create and manage customer orders
 - Coordinate stock reservation with inventory
-- Handle payment flow with Stripe (mock)
+- Handle payment flow with real Stripe Hosted Checkout — the session is created through the payments service, and Stripe posts the signed `checkout.session.completed` webhook back here at `/webhooks/stripe`, verified with `stripe.Webhook.construct_event` (`stripe_webhook.py`)
 - Emit events via transactional outbox pattern
 
 ## Tech Stack
@@ -119,7 +119,7 @@ authoritative `EVENT_SUBSCRIBERS` map (`outbox.py:36-51`).
 2. Background worker polls every 2 seconds
 3. Delivers via HTTP POST to subscribers
 4. Marks delivered or schedules retry (max 5 attempts)
-5. Exponential backoff: 5s, 15s, 1m, 5m, 15m
+5. Exponential backoff between the 5 attempts: 5s, 15s, 1m, 5m (`RETRY_DELAYS` has a fifth 15m value that is never reached)
 
 ## Dependencies
 

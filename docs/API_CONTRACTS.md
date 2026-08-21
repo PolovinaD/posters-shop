@@ -16,7 +16,8 @@ This document defines the APIs used for service-to-service communication.
 | Production | Logistics | Create shipment | Sync HTTP |
 | Logistics | Orders | Delivery notification | Sync HTTP |
 | Catalog | Inventory | Stock check | Sync HTTP |
-| Payments | Orders | Webhook | Async HTTP |
+| Inventory | Orders | Reservation expiry notification | Sync HTTP (fire-and-forget) |
+| Stripe (external) | Orders | `checkout.session.completed`, signature-verified | Async HTTP |
 
 ---
 
@@ -240,6 +241,39 @@ the status can never advance without its notification event being queued.
 - `400 Bad Request` - Invalid state transition
 - `404 Not Found` - Order not found
 
+### Reservation Expired
+
+**Called by:** Inventory Service (expiry worker)
+**When:** A stock reservation passes its 15-minute TTL and the worker releases it
+
+```http
+POST /internal/orders/{order_id}/reservation-expired
+Content-Type: application/json
+
+{}
+```
+
+The inventory worker (`services/inventory/main.py`) posts this with a 5-second timeout
+after it has already returned the stock to the free pool. The call is fire-and-forget:
+inventory swallows every exception and only logs a warning on a transport failure or a
+`>= 400` response, because the stock release has already succeeded and a missed
+notification is a non-fatal divergence rather than a lost update. It fires only on the
+worker tick that actually flipped the reservation to `expired`, so later ticks do not
+re-send it.
+
+There is no auth dependency — this is service-to-service traffic over the cluster
+network, reachable only from inside the cluster.
+
+**Response — always `200 OK`.** The handler is deliberately idempotent and never returns
+4xx or 5xx, because duplicate, unknown and wrong-state calls are all expected rather than
+errors:
+
+| Condition | Body |
+|-----------|------|
+| Order not found | `{"status": "not_found", "order_id": ...}` |
+| Order not in `reserved` | `{"status": "no_action", "current_status": ...}` |
+| Order in `reserved` | Order flips to `cancelled` and an `ORDER_CANCELLED` event is written to the outbox |
+
 ---
 
 ## Production Service APIs
@@ -356,7 +390,7 @@ floods the retry budget.
 |----------|---------|---------------|
 | `200 {"status": "sent", "event_id": 42}` | Email handed to the provider | Success; outbox marks the event delivered |
 | `200 {"status": "already_processed", "event_id": 42}` | This `event_id` was seen before | Duplicate delivery is expected under at-least-once semantics and is not an error |
-| `200 {"status": "skipped", "reason": "no_customer_email"}` | Payload carried no address | **Deliberately 200, not 4xx.** Retrying cannot make a missing address appear, so a non-2xx here would burn all five retries and then abandon the event for no reason |
+| `200 {"status": "skipped", "reason": "no_customer_email"}` | Payload carried no address | **Deliberately 200, not 4xx.** Retrying cannot make a missing address appear, so a non-2xx here would burn all five delivery attempts and then abandon the event for no reason |
 | `503` | The email provider raised on send | **Deliberately retryable.** A transient SES failure should be retried with backoff, so the event is left undelivered and the worker tries again |
 
 The distinction reduces to: **200 means "do not retry, there is nothing more to do";
@@ -365,15 +399,17 @@ case precisely so that a permanently unfixable input does not consume the retry 
 
 ### Idempotency
 
-Guarded by an in-memory set of processed `event_id` values
-(`services/notifications/main.py`). This is per-replica and does not survive a restart,
-so a duplicate email is possible after a pod restart or with `replicaCount > 1`.
+Guarded by the durable `notifications_schema.processed_events` table, keyed by `event_id`
+(`services/notifications/main.py`): select first, send, then record with
+`INSERT ... ON CONFLICT DO NOTHING`. Dedup survives restarts and is shared across
+replicas. The residual window is send-then-record — a crash between the two re-sends the
+mail on redelivery (see `docs/KNOWN_LIMITATIONS.md` #3).
 
 ### Health & Metrics
 
 ```http
 GET /healthz    # liveness
-GET /readyz     # readiness — always ready, no DB to check
+GET /readyz     # readiness — SELECT 1, returns 503 when the database is unreachable
 GET /metrics    # Prometheus
 ```
 
@@ -409,8 +445,8 @@ Content-Type: application/json
 
 ### checkout.session.completed
 
-**Called by:** Payments Service  
-**When:** Customer completes payment
+**Called by:** Stripe (external — not the payments service)  
+**When:** Customer completes payment on Stripe's hosted checkout page
 
 ```http
 POST /webhooks/stripe

@@ -60,9 +60,9 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | Alembic | >=1.13.0 | Database schema migrations | Low |
 | prometheus-client | >=0.15.0, newest pin 0.23.1 | Metrics exposition for Prometheus scraping | Low |
 | httpx | >=0.25.0 | Async HTTP client for inter-service calls | Low |
-| python-jose | 3.5.0 | JWT token creation/validation (users, catalog, logistics) | Medium - unmaintained library |
+| PyJWT | 2.10.1 (catalog, orders, inventory), 2.12.1 (users, logistics, infra) | JWT token creation/validation | Low |
 | passlib | 1.7.4 | Password hashing (users service) | Medium - unmaintained |
-| boto3 | 1.38.0 | AWS SDK (catalog, logistics, notifications services) | Low - pinned |
+| boto3 | 1.38.0 | AWS SDK — SES email in notifications; pinned but never imported in catalog and logistics | Low - pinned |
 | kubernetes | unpinned | K8s Python client (infra service) | Low |
 | websockets | unpinned | WebSocket support (infra service) | Low |
 | Tailwind CSS | ^3.4.19 | Utility-first CSS framework (frontend) | Low |
@@ -103,13 +103,13 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Service Architecture Overview
 | Service | Port (local) | Database | Key Dependencies |
 |---------|-------------|----------|-----------------|
-| users | 8001 | PostgreSQL (users schema) | python-jose, passlib |
-| catalog | 8002 | PostgreSQL (catalog schema) | boto3, httpx |
+| users | 8001 | PostgreSQL (users schema) | PyJWT, passlib, slowapi |
+| catalog | 8002 | PostgreSQL (catalog schema) | httpx, PyJWT |
 | orders | 8003 | PostgreSQL (orders schema) | httpx (inventory, payment clients) |
 | production | 8004 | PostgreSQL (production schema) | httpx |
-| logistics | 8005 | PostgreSQL (logistics schema) | boto3, python-jose, httpx |
-| inventory | 8006 | PostgreSQL (inventory schema) | - |
-| payments | 8007 | None (in-memory mock) | httpx |
+| logistics | 8005 | PostgreSQL (logistics schema) | httpx, PyJWT |
+| inventory | 8006 | PostgreSQL (inventory schema) | httpx, PyJWT |
+| payments | 8007 | None — sessions live at Stripe | stripe |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |
@@ -217,14 +217,15 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ```
 - Server-side: Each service owns its state in its PostgreSQL schema
 - Frontend: React Query for server state (5s refetch interval), React Context for auth and cart
-- Payments service uses in-memory storage (sessions dict) -- not persistent
+- Payments service keeps no local state at all -- checkout sessions live at Stripe (`list_sessions()` returns `[]`)
+- Notifications service dedups events durably in its own `processed_events` table -- the guard survives pod restarts and is shared across replicas; the only residual is the narrow send-then-record crash window
 ## Key Abstractions
 - Purpose: Typed async HTTP clients for inter-service calls
 - Examples: `services/orders/inventory_client.py`, `services/orders/payment_client.py`, `services/production/orders_client.py`, `services/logistics/orders_client.py`
 - Pattern: Each client module defines a base URL from env vars, custom exception classes, and async functions using `httpx.AsyncClient`
 - Purpose: Reliable at-least-once event delivery between services
 - Examples: `services/orders/outbox.py`
-- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry (5s, 15s, 1m, 5m, 15m). Max 5 retries. Multi-subscriber fan-out: `EVENT_SUBSCRIBERS` maps 4 event types to 6 URLs — `ORDER_PAID` and `ORDER_CANCELLED` go to both production and notifications, `ORDER_SHIPPED` and `ORDER_DELIVERED` to notifications only. Retry is per-event, not per-subscriber, so a failure at one subscriber re-delivers to those that already succeeded.
+- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry: 5 delivery attempts separated by 4 waits (5s, 15s, 1m, 5m). `RETRY_DELAYS` carries a fifth value of 15m that is never reached, because `retry_count` is incremented before it is compared against `MAX_RETRIES`. Multi-subscriber fan-out: `EVENT_SUBSCRIBERS` maps 4 event types to 6 URLs — `ORDER_PAID` and `ORDER_CANCELLED` go to both production and notifications, `ORDER_SHIPPED` and `ORDER_DELIVERED` to notifications only. Retry is per-event, not per-subscriber, so a failure at one subscriber re-delivers to those that already succeeded.
 - Purpose: Swappable email transport so local development needs no AWS credentials
 - Examples: `services/notifications/providers.py` (`EmailProvider` ABC, `LoggingProvider`, `SesProvider`)
 - Pattern: Abstract base class with a single `send(to, subject, body)` method, selected at startup by the `EMAIL_PROVIDER` env var (`get_provider()`). LoggingProvider renders into the structured log for docker-compose and demos; SesProvider calls AWS SES via boto3 with credentials from IRSA rather than any stored key.

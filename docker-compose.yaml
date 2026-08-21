@@ -205,7 +205,6 @@ services:
     environment:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
-      ORDERS_WEBHOOK_URL: http://orders:8000/webhooks/stripe
       SERVICE_NAME: payments
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:

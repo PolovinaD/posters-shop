@@ -11,7 +11,11 @@ Events are delivered using the **Transactional Outbox Pattern**:
 
 **Delivery guarantees:**
 - At-least-once delivery (consumers must be idempotent)
-- Max 5 retries with delays: 5s, 15s, 1m, 5m, 15m
+- 5 delivery attempts separated by 4 waits: 5s, 15s, 1m, 5m
+- `RETRY_DELAYS = [5, 15, 60, 300, 900]` carries a fifth delay of 15m that is never
+  applied: `retry_count` is incremented *before* it is compared against `MAX_RETRIES = 5`,
+  so the fifth failure retires the event instead of scheduling a sixth attempt, and the
+  last index is never reached (`services/orders/outbox.py:180-184`)
 - Events exceeding retries are abandoned (no DLQ currently)
 
 ---
@@ -44,7 +48,7 @@ Events are delivered using the **Transactional Outbox Pattern**:
 - Production service creates a `Job` in `queued` status
 - Idempotency: Checks if job already exists for order_id before creating
 - Notifications service sends the order-confirmation email
-- Idempotency: In-memory `event_id` set (per replica, non-durable)
+- Idempotency: `notifications_schema.processed_events` lookup by `event_id` (durable, shared across replicas)
 
 ---
 
@@ -245,7 +249,7 @@ environment variables so the same map works in docker-compose and in Kubernetes.
 
 ## Monitoring
 
-**Outbox stats endpoint:** `GET /orders/outbox/stats`
+**Outbox stats endpoint:** `GET /outbox/stats` on the orders service (`/api/orders/outbox/stats` through the ALB)
 
 Returns:
 - `pending_count`: Events awaiting delivery
@@ -283,12 +287,16 @@ emit_event(
 
 ## Known Limitations
 
-1. **No Dead Letter Queue** - Failed events are abandoned after 5 retries. This
+1. **No Dead Letter Queue** - Failed events are abandoned after 5 delivery attempts. This
    matters more now that email delivery rides the outbox: a subscriber outage
    longer than the retry window silently drops customer email.
 2. **No Event Idempotency** - Consumers should check for duplicates but don't have a
-   standardized mechanism. Production uses a database lookup; notifications uses an
-   in-memory set that does not survive a pod restart.
+   standardized mechanism; production and notifications each rolled their own. Both now
+   dedup against the database — production looks up the existing job for the order,
+   notifications selects `notifications_schema.processed_events` by `event_id` and records
+   the row with `INSERT ... ON CONFLICT DO NOTHING` after a successful send. The residual
+   is notifications' send-then-record window: a crash between handing the mail to the
+   provider and writing the row re-sends it on redelivery.
 3. **Retry Is Per-Event, Not Per-Subscriber** - Fan-out to multiple consumers is in
    use (`ORDER_PAID` and `ORDER_CANCELLED` each go to two services), but the retry
    unit is the whole event, not the individual subscriber. If any one subscriber

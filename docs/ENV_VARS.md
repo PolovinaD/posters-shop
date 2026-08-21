@@ -8,10 +8,11 @@ This document lists all environment variables used by each service.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | - | Yes (except payments, infra, notifications) |
+| `DATABASE_URL` | PostgreSQL connection string | - | Yes (except payments, infra) |
 | `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) | `INFO` | No |
 | `SERVICE_NAME` | Service identifier for logging | Service-specific | No |
 | `ROOT_PATH` | API path prefix (for ALB routing) | `""` | No |
+| `CORS_ORIGINS` | Comma-separated list of allowed browser origins | `http://localhost:3000` | No |
 
 ---
 
@@ -51,7 +52,14 @@ This document lists all environment variables used by each service.
 | `PRODUCTION_SERVICE_URL` | Production service base URL | `http://production:8000` | No |
 | `PAYMENT_SERVICE_URL` | Payment service base URL | `http://payments:8000` | No |
 | `NOTIFICATIONS_SERVICE_URL` | Notifications service base URL (outbox email fan-out) | `http://notifications:8000` | No |
+| `STRIPE_SECRET_KEY` | Stripe API key used to create and read checkout sessions | - | Yes (in prod) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature verification | `whsec_test_secret_key_12345` | Yes (in prod) |
+| `CB_FAILURE_THRESHOLD` | Consecutive failures that open the inventory/payment circuit breaker | `5` | No |
+| `CB_RECOVERY_TIMEOUT` | Seconds the circuit stays open before a trial call | `30` | No |
+
+**`CB_FAILURE_THRESHOLD` counts per process, not per platform.** Each orders replica keeps
+its own failure counter, so the effective platform-wide threshold is 5 x the current
+replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 
 ---
 
@@ -72,6 +80,7 @@ This document lists all environment variables used by each service.
 | `DATABASE_URL` | PostgreSQL connection string | - | Yes |
 | `ORDERS_SERVICE_URL` | Orders service base URL | `http://orders:8000` | No |
 | `JWT_SECRET` | JWT secret (for courier auth) | `change_me` | No |
+| `LOGISTICS_AUTO_ADVANCE_INTERVAL` | Seconds a shipment sits in a status before the worker advances it | `120` | No |
 
 ---
 
@@ -79,8 +88,9 @@ This document lists all environment variables used by each service.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
+| `STRIPE_SECRET_KEY` | Stripe API key used to create checkout sessions | - | Yes (in prod) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | `whsec_test_secret_key_12345` | No |
-| `ORDERS_WEBHOOK_URL` | Orders webhook endpoint | `http://orders:8000/webhooks/stripe` | No |
+| `FRONTEND_URL` | Base URL a customer returns to after Stripe checkout | `http://localhost:3000` | No |
 
 **Note:** Payments service is stateless (no database) - uses in-memory storage for sessions.
 
@@ -91,6 +101,8 @@ This document lists all environment variables used by each service.
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `NAMESPACE` | Kubernetes namespace to manage | `postershop` | No |
+| `LOKI_URL` | Loki gateway base URL for the log-query proxy | `http://loki-gateway.monitoring.svc.cluster.local` | No |
+| `LOKI_SERVICE_LABEL` | Loki stream label carrying the service name | `service` | No |
 
 **Note:** Infra service automatically detects if running in Kubernetes cluster.
 
@@ -100,6 +112,7 @@ This document lists all environment variables used by each service.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
+| `DATABASE_URL` | PostgreSQL connection string (the service raises at import when unset) | - | Yes |
 | `EMAIL_PROVIDER` | Transport selector: `ses` for AWS SES, anything else for the logging provider | `logging` | No |
 | `EMAIL_FROM` | Sender address — must be a verified SES identity when using SES | `no-reply@postershop.example` | Yes (when `EMAIL_PROVIDER=ses`) |
 | `SES_REGION` | Region holding the verified SES sender identity | `eu-central-1` | No |

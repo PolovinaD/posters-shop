@@ -26,7 +26,7 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
                     │                                                    │
               ┌─────┴─────┐     ┌─────────┐     ┌─────────────────┐     │
               │ payments  │     │  infra  │     │  notifications  │     │
-              │ (mock)    │     │ (k8s)   │     │  (email/SES)    │     │
+              │ (Stripe)  │     │ (k8s)   │     │  (email/SES)    │     │
               └───────────┘     └─────────┘     └─────────────────┘     │
     └───────────────────────────────────────────────────────────────────┘
                                       │
@@ -46,7 +46,7 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
 | **orders** | 8000 | Order lifecycle, outbox event emission |
 | **production** | 8000 | Print job management (event-driven) |
 | **logistics** | 8000 | Shipment tracking |
-| **payments** | 8000 | Mock Stripe-like checkout sessions |
+| **payments** | 8000 | Real Stripe Hosted Checkout sessions |
 | **infra** | 8000 | Kubernetes cluster introspection API |
 | **notifications** | 8000 | Transactional email on order events (pluggable: logging / AWS SES) |
 | **frontend** | 80 | React SPA (shop + admin panel) |
@@ -111,7 +111,7 @@ helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 
 ## Database Configuration
 
-All services use PostgreSQL with **schema-per-service** isolation via `search_path`:
+The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe) and `infra` (reads live Kubernetes state) are stateless and own no schema:
 
 ```
 postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3D<schema>
@@ -125,7 +125,7 @@ postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3
 | orders | `orders_schema` | `orders_svc` |
 | production | `production_schema` | `production_svc` |
 | logistics | `logistics_schema` | `logistics_svc` |
-| payments | `payments_schema` | `payments_svc` |
+| notifications | `notifications_schema` | `notifications_svc` |
 
 ## Project Structure
 
@@ -145,7 +145,6 @@ shop-platform/
 ├── deploy/                 # Deployment resources
 │   ├── charts/             # Helm charts
 │   ├── infrastructure/     # EKS/RDS configs
-│   ├── rds/                # Database init scripts
 │   ├── secrets/            # AWS Secrets Manager
 │   └── monitoring/         # Prometheus/Grafana
 ├── .github/workflows/      # CI/CD pipelines
@@ -155,12 +154,10 @@ shop-platform/
 ## Documentation
 
 ### Architecture & Design
-- [Project Planning Index](.planning/INDEX.md) - Roadmap, decisions, phase plans
 - [Architecture Diagrams](docs/ARCHITECTURE.md) - Mermaid diagrams for system overview
 - [Event Catalog](docs/EVENT_CATALOG.md) - All events, payloads, producers/consumers
 - [API Contracts](docs/API_CONTRACTS.md) - Inter-service API specifications
 - [Database Schema](docs/DATABASE_SCHEMA.md) - Tables, columns, relationships
-- [Thesis Snapshot](THESIS_SNAPSHOT.md) - Research context and decisions
 - [Known Limitations](docs/KNOWN_LIMITATIONS.md) - Deliberately deferred features
 
 ### Development
@@ -172,7 +169,6 @@ shop-platform/
 
 ### Deployment
 - [Deployment Guide](deploy/README.md) - EKS deployment instructions (includes AWS setup, OIDC, ECR)
-- [Database Initialization](deploy/rds/README.md) - Schema setup
 - [Secrets Management](deploy/secrets/README.md) - AWS Secrets Manager
 - [Monitoring](deploy/monitoring/README.md) - Prometheus/Grafana
 - [Centralized Logging](deploy/monitoring/LOGGING.md) - Loki + Fluent Bit

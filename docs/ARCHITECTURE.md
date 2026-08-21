@@ -28,7 +28,7 @@ graph TB
     subgraph "Processing Services"
         PRODUCTION[Production Service<br/>Job processing]
         LOGISTICS[Logistics Service<br/>Shipping]
-        PAYMENTS[Payments Service<br/>Stripe mock]
+        PAYMENTS[Payments Service<br/>Stripe Checkout]
         NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>event dedup]
     end
     
@@ -81,7 +81,9 @@ redelivery, which is the deliberate trade against dropping it.
 
 **Notifications is not ALB-exposed.** Its chart sets `ingress.enabled: false`, so it
 receives no ALB routing rule and appears in no routing table below. The orders outbox
-worker reaches it over cluster-internal DNS (`http://notifications:8000`).
+worker reaches it over cluster-internal DNS at `http://notifications` — port 80, since
+every backend Service maps `port: 80` to `targetPort: 8000` (the `:8000` form is only the
+docker-compose fallback default at `services/orders/outbox.py:32`).
 
 ---
 
@@ -393,17 +395,37 @@ graph TB
 
 ## Path-Based Routing (ALB Ingress)
 
-| Path Pattern | Service | Port |
-|--------------|---------|------|
-| `/users/*` | users | 8000 |
-| `/catalog/*` | catalog | 8000 |
-| `/orders/*` | orders | 8000 |
-| `/inventory/*` | inventory | 8000 |
-| `/production/*` | production | 8000 |
-| `/logistics/*` | logistics | 8000 |
-| `/payments/*` | payments | 8000 |
-| `/infra/*` | infra | 8000 |
-| `/*` (default) | frontend | 80 |
+Source of truth: `deploy/charts/frontend/templates/ingress.yaml`.
+
+| Path Pattern | Path Type | Service | Port |
+|--------------|-----------|---------|------|
+| `/api/users` | Prefix | users | 80 |
+| `/api/catalog` | Prefix | catalog | 80 |
+| `/api/orders` | Prefix | orders | 80 |
+| `/api/production` | Prefix | production | 80 |
+| `/api/logistics` | Prefix | logistics | 80 |
+| `/api/inventory` | Prefix | inventory | 80 |
+| `/api/payments` | Prefix | payments | 80 |
+| `/` (catch-all) | Prefix | frontend | 80 |
+
+Two services are absent from that list by design. `infra` has no Ingress rule of
+its own — a request for it matches the `/` catch-all, lands on the frontend pod,
+and nginx proxies it onward from its `location /api/infra/` block
+(`frontend/nginx.conf:78`). `notifications` has neither an Ingress rule nor an
+nginx block, so it is not reachable from outside the cluster at all; it is only
+ever called service-to-service, by the orders outbox worker.
+
+### Why the ALB health check targets `/healthz`
+
+One Ingress annotation configures the health check for every target group the Ingress creates, so `alb.ingress.kubernetes.io/healthcheck-path` has to name a path that all of them answer. `deploy/charts/frontend/templates/ingress.yaml` declares eight path rules — `/` to frontend:80 plus seven `/api/*` backends (users, catalog, orders, production, logistics, inventory, payments) — and the AWS Load Balancer Controller turns those into eight target groups, all sharing the one annotation. (`infra` has no rule of its own; it is reached through the `/` catch-all and the `/api/infra/` proxy block in `frontend/nginx.conf`.)
+
+The annotation was `/health` until commit `a1014dd`, and only the frontend nginx serves that path — the Python services expose `/healthz` and `/readyz`. Measured on the live cluster before the fix: the frontend target group healthy, all seven backend target groups `unhealthy`. The platform kept working only because an ALB fails open when every target in a group is unhealthy, so traffic still flowed while two properties were quietly missing — there was no usable health signal for any backend, and no way to drain a bad pod during a rolling deploy, since a group that is entirely unhealthy cannot take a member out of rotation. It also cost roughly 5900 404s per hour platform-wide, which dominated Loki stream cardinality.
+
+Switching the annotation to `/healthz` fixed all eight target groups without rebuilding the frontend, because `frontend/nginx.conf:15` declares `location /health` — a **prefix** match, so `/healthz` lands in that block. That is the trap worth knowing before editing nginx: narrowing it to `location = /health` would silently return the frontend target group to fail-open, with nothing failing loudly to say so.
+
+The ALB health check and the kubelet probes are separate mechanisms and are deliberately not aligned. The frontend's own readiness and liveness probes in `deploy/charts/frontend/templates/deployment.yaml` remain on `/health` and should stay there.
+
+The fuller in-place note — including why `/readyz` was rejected for this annotation — is the comment above the annotation in `deploy/charts/frontend/values.yaml` (lines 36-60).
 
 ---
 

@@ -1,14 +1,7 @@
-"""
-Payment Service Client
+"""Client for communicating with the payments service.
 
-Interacts with the payment service (Stripe mock) to create checkout sessions.
-
-In production, you would use the official Stripe SDK:
-```python
-import stripe
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-session = stripe.checkout.Session.create(...)
-```
+Stripe is never called from here: payments owns the Stripe SDK and creates the
+Hosted Checkout session; this module only speaks HTTP to that service.
 """
 import os
 from typing import Optional

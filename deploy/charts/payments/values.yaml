@@ -33,8 +33,6 @@ env:
       secretKeyRef:
         name: postershop-stripe
         key: WEBHOOK_SECRET
-  - name: ORDERS_WEBHOOK_URL
-    value: "http://orders/webhooks/stripe"
   # FRONTEND_URL is NOT listed here. It is rendered from the `frontendUrl:`
   # scalar at the bottom of this file — see the comment there for why.
   - name: CORS_ORIGINS

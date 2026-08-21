@@ -1,6 +1,6 @@
 apiVersion: v2
 name: payments
-description: Payments service chart - Stripe mock for payment processing
+description: Payments service chart - Stripe Hosted Checkout session creation
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

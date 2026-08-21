@@ -236,7 +236,7 @@ services are stateless and deliberately have no migrations:
 
 | Service | State |
 |---------|-------|
-| payments | In-memory checkout sessions |
+| payments | None — checkout sessions live at Stripe |
 | infra | None — reads live Kubernetes state |
 | ~~notifications~~ | No longer applies — now DB-backed (`notifications_schema`, `processed_events`); has a migration job (quick-260815-m0m) |
 

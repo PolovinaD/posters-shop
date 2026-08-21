@@ -69,16 +69,13 @@ make cluster-create
 # 2. Create RDS instance (~10 min)
 make rds-create
 
-# 3. Initialize database
-make rds-init
-
-# 4. Build and push images
+# 3. Build and push images
 make build-all push-all
 
-# 5. Deploy services
+# 4. Deploy services
 make deploy-services
 
-# 6. Install monitoring
+# 5. Install monitoring
 make monitoring-install
 ```
 
@@ -106,15 +103,6 @@ deploy/
 │   ├── notifications/
 │   ├── infra/
 │   └── frontend/
-│
-├── rds/                         # Database initialization
-│   ├── README.md
-│   ├── init-all.sh              # Run all SQL scripts
-│   ├── 01-create-schemas.sql
-│   ├── 02-create-users.sql
-│   ├── 03-grant-permissions.sql
-│   ├── cleanup.sql
-│   └── init-job.yaml            # K8s Job for in-cluster init
 │
 ├── secrets/                     # Secrets management (AWS Secrets Manager)
 │   ├── README.md

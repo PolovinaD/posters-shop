@@ -315,7 +315,7 @@ docker system prune -a
 
 ### Events not being delivered
 
-1. Check outbox stats: `curl http://localhost:8003/orders/outbox/stats`
+1. Check outbox stats: `curl http://localhost:8003/outbox/stats`
 2. Verify `PRODUCTION_SERVICE_URL` and `NOTIFICATIONS_SERVICE_URL` are correct
 3. Check that both subscriber services are running and healthy
 4. Look for errors in outbox `last_error` field
