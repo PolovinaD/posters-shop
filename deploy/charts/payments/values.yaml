@@ -19,6 +19,11 @@ resources:
 env:
   - name: SERVICE_NAME
     value: "payments"
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: postershop-jwt
+        key: JWT_SECRET
   - name: LOG_LEVEL
     value: "INFO"
   - name: ROOT_PATH

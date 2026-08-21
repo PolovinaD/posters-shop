@@ -132,6 +132,7 @@ services:
       ORDERS_SERVICE_URL: http://orders:8000
       LOGISTICS_SERVICE_URL: http://logistics:8000
       SERVICE_NAME: production
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       production-migrate:
@@ -206,6 +207,7 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       SERVICE_NAME: payments
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "8007:8000"
@@ -227,6 +229,7 @@ services:
     environment:
       DATABASE_URL: postgresql://notifications_svc:notifications_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dnotifications_schema
       SERVICE_NAME: notifications
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-logging}
       EMAIL_FROM: ${EMAIL_FROM:-no-reply@postershop.local}
       SES_REGION: ${SES_REGION:-eu-central-1}

@@ -70,6 +70,7 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 | `DATABASE_URL` | PostgreSQL connection string | - | Yes |
 | `ORDERS_SERVICE_URL` | Orders service base URL | `http://orders:8000` | No |
 | `LOGISTICS_SERVICE_URL` | Logistics service base URL | `http://logistics:8000` | No |
+| `JWT_SECRET` | Signs and verifies service-to-service tokens (`service_auth.py`) | `change_me` | Yes |
 
 ---
 
@@ -91,6 +92,7 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 | `STRIPE_SECRET_KEY` | Stripe API key used to create checkout sessions | - | Yes (in prod) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | `whsec_test_secret_key_12345` | No |
 | `FRONTEND_URL` | Base URL a customer returns to after Stripe checkout | `http://localhost:3000` | No |
+| `JWT_SECRET` | Signs and verifies service-to-service tokens (`service_auth.py`) | `change_me` | Yes |
 
 **Note:** Payments service is stateless (no database) - uses in-memory storage for sessions.
 
@@ -116,6 +118,7 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 | `EMAIL_PROVIDER` | Transport selector: `ses` for AWS SES, anything else for the logging provider | `logging` | No |
 | `EMAIL_FROM` | Sender address — must be a verified SES identity when using SES | `no-reply@postershop.example` | Yes (when `EMAIL_PROVIDER=ses`) |
 | `SES_REGION` | Region holding the verified SES sender identity | `eu-central-1` | No |
+| `JWT_SECRET` | Signs and verifies service-to-service tokens (`service_auth.py`) | `change_me` | Yes |
 
 **Note:** Notifications service is now DB-backed (`notifications_schema`, one `processed_events` table for durable idempotency) — set `DATABASE_URL` and run its Alembic migration like the other DB services (quick-260815-m0m).
 

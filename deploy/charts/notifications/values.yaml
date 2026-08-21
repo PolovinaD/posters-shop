@@ -19,6 +19,11 @@ resources:
 env:
   - name: SERVICE_NAME
     value: "notifications"
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: postershop-jwt
+        key: JWT_SECRET
   - name: LOG_LEVEL
     value: "INFO"
   # ROOT_PATH is deliberately NOT set here.
