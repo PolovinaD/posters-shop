@@ -40,7 +40,7 @@ from payment_client import PaymentServiceError
 from circuit_breaker import CircuitOpenError
 from stripe_webhook import process_webhook, WebhookError
 from logger import get_logger, LoggingMiddleware
-from auth import get_current_user_claims
+from auth import get_current_user_claims, require_owner
 
 logger = get_logger(__name__)
 
@@ -314,10 +314,19 @@ def get_order(
 # ============== Order State Transitions ==============
 
 @app.post("/orders/{order_id}/pay", response_model=OrderOut)
-async def pay_order(order_id: int, db: Session = Depends(get_db)):
+async def pay_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_owner),
+):
     """
     Mark order as paid and commit inventory reservations.
-    
+
+    Owner-only. This is the synchronous path that bypasses Stripe entirely, so a
+    customer must never reach it — marking your own order paid without paying is
+    exactly the abuse it enables. Customers pay through POST /orders/{id}/checkout
+    and Stripe's webhook. The admin dashboard is the only caller.
+
     Uses OUTBOX PATTERN: Instead of calling production directly,
     we emit an ORDER_PAID event to the outbox. The outbox worker
     will deliver this event reliably to the production service.
@@ -508,19 +517,25 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
             detail=f"Cannot cancel order in status '{order.status}'. Orders can only be cancelled before production starts."
         )
     
+    # Capture the prior status BEFORE the mutation below: the outbox payload
+    # reports what the order was cancelled *from*, and reading order.status after
+    # the assignment always yields "cancelled". notifications keys the "this order
+    # had already been paid" wording off this field.
+    previous_status = order.status
+
     released_stock = False
-    
+
     # If order was reserved, release the stock
-    if order.status == OrderStatus.RESERVED:
+    if previous_status == OrderStatus.RESERVED:
         try:
             result = await inventory_client.release_stock(order_id)
             released_stock = result.get("released_count", 0) > 0
         except InventoryServiceError:
             # Best effort - continue with cancellation
             pass
-    
+
     order.status = OrderStatus.CANCELLED
-    
+
     # Emit ORDER_CANCELLED event
     emit_event(
         db=db,
@@ -530,7 +545,7 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
         payload={
             "order_id": order_id,
             "customer_email": order.customer_email,
-            "previous_status": order.status,
+            "previous_status": previous_status,
             "released_stock": released_stock
         }
     )
@@ -630,12 +645,23 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: 
 
 
 @app.get("/orders/{order_id}/checkout-status")
-async def get_checkout_status(order_id: int, db: Session = Depends(get_db)):
-    """Get the status of an order's checkout session."""
+async def get_checkout_status(
+    order_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    """Get the status of an order's checkout session.
+
+    Same visibility rule as GET /orders/{order_id}: owners and couriers may view
+    any order, a customer only their own.
+    """
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    if claims.get("role") not in ("owner", "courier") and order.customer_email != claims.get("sub"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if not order.checkout_session_id:
         return {
             "order_id": order_id,
@@ -758,8 +784,12 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db)):
 # ============== Outbox Monitoring ==============
 
 @app.get("/outbox/stats")
-def outbox_stats(db: Session = Depends(get_db)):
-    """Get outbox statistics for monitoring."""
+def outbox_stats(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_owner),
+):
+    """Get outbox statistics for monitoring. Owner-only — operational internals
+    (undelivered events, last_error strings) are not customer-facing."""
     pending = get_pending_event_count(db)
     failed = get_failed_event_count(db)
     

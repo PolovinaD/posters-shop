@@ -32,13 +32,17 @@ class OutboxEventPayload(BaseModel):
     created_at: str | None = None
 from metrics import (
     metrics_endpoint, track_metrics, SERVICE_NAME,
-    JOBS_CREATED, JOBS_COMPLETED, JOBS_BY_STATUS,
+    JOBS_CREATED, JOBS_COMPLETED,
     JOB_PROCESSING_TIME, JOBS_IN_QUEUE
+)
+from status_metrics import (
+    init_jobs_by_status, compute_jobs_by_status, jobs_by_status_worker
 )
 import orders_client
 
 # Background worker control
 background_task = None
+status_task = None
 WORKER_POLL_INTERVAL = 5  # seconds
 
 
@@ -143,16 +147,30 @@ async def lifespan(app: FastAPI):
     logger.info("Production service starting, migrations managed by Alembic")
     
     # Start background worker
-    global background_task
+    global background_task, status_task
     background_task = asyncio.create_task(job_worker())
-    
+
+    # Publish all four jobs_by_status labels at 0 BEFORE the first scrape can
+    # arrive, then keep them fresh on a timer. Every replica runs its own
+    # refresher: the gauge describes global database state, so it must not depend
+    # on which pod happened to serve a request.
+    init_jobs_by_status()
+    status_task = asyncio.create_task(jobs_by_status_worker(refresh_interval=15.0))
+    logger.info("Jobs-by-status refresher started", refresh_interval=15.0)
+
     yield
-    
+
     # Shutdown
     if background_task:
         background_task.cancel()
         try:
             await background_task
+        except asyncio.CancelledError:
+            pass
+    if status_task:
+        status_task.cancel()
+        try:
+            await status_task
         except asyncio.CancelledError:
             pass
     logger.info("Shutdown complete")
@@ -389,24 +407,26 @@ def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_
 
 @app.get("/jobs/stats/summary")
 def job_stats(db: Session = Depends(get_db)):
-    """Get job statistics."""
+    """Get job statistics.
+
+    The production_jobs_by_status Prometheus gauge is NOT written here -- it
+    describes global database state and is owned by
+    status_metrics.jobs_by_status_worker, which runs on every replica. Writing it
+    from a request handler is what left the metric absent (rendering as
+    "No data") on any pod that had never served this endpoint.
+    """
     all_jobs = db.execute(select(Job)).scalars().all()
-    
+
     stats = {
         "total": len(all_jobs),
-        "by_status": {},
+        "by_status": compute_jobs_by_status(db),
         "avg_processing_time_ms": 0
     }
-    
-    processing_times = []
-    for job in all_jobs:
-        stats["by_status"][job.status] = stats["by_status"].get(job.status, 0) + 1
-        if job.processing_time_ms:
-            processing_times.append(job.processing_time_ms)
-        
-        # Update Prometheus gauge
-        JOBS_BY_STATUS.labels(status=job.status).set(stats["by_status"][job.status])
-    
+
+    processing_times = [
+        job.processing_time_ms for job in all_jobs if job.processing_time_ms
+    ]
+
     if processing_times:
         stats["avg_processing_time_ms"] = sum(processing_times) // len(processing_times)
     

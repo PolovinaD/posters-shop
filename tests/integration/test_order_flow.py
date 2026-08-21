@@ -53,7 +53,10 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     5. Poll until status == "producing" (outbox delivers order_paid event to production)
     6. Assert PRODUCING state reached within 30s
 
-    No auth required: POST /orders and POST /orders/{id}/pay use only Depends(get_db).
+    NOTE: this test does not authenticate and therefore cannot pass as written.
+    POST /orders requires a JWT (Depends(get_current_user_claims)) and
+    POST /orders/{id}/pay requires the owner role (Depends(require_owner)).
+    It needs a register/login step producing an owner token before it can run.
     """
     # Step 1: Seed (idempotent — safe to call multiple times)
     seed_catalog = http.post(f"{catalog_url}/seed")

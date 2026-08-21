@@ -3,7 +3,12 @@ kind: Deployment
 metadata:
   name: orders
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # No `replicas` here on purpose: templates/hpa.yaml owns the replica count
+  # (minReplicas: 2, maxReplicas: 5) and this chart always installs it. Setting
+  # replicas here means every `helm upgrade` writes the chart's value back onto
+  # the Deployment, scaling down, after which the HPA scales straight back up --
+  # an avoidable scale-down/scale-up churn on every deploy. On a first install
+  # Kubernetes defaults to 1 and the HPA immediately raises it to minReplicas.
   selector:
     matchLabels:
       app: orders

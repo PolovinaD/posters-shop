@@ -2,7 +2,10 @@ image:
   # Override with: --set image.repository=$ECR_REGISTRY/production
   repository: YOUR_ECR_REGISTRY/production
   tag: "latest"
-replicaCount: 1
+
+# No replicaCount: the replica count is governed by templates/hpa.yaml
+# (minReplicas: 1, maxReplicas: 5), not by this file. A key here would be an
+# authoritative-looking knob that changes nothing.
 
 service:
   port: 80

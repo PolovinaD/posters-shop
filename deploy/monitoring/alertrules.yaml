@@ -143,8 +143,21 @@ spec:
     - name: production
       rules:
         - alert: ProductionBacklog
+          # Was: production_jobs_by_status{status="pending"} > 20 — which could
+          # never fire, for three independent reasons. (1) "pending" is not a
+          # JobStatus; the only values are queued/processing/completed/failed
+          # (services/production/models.py), so the selector matched nothing.
+          # (2) production_jobs_by_status is written only inside the
+          # GET /jobs/stats/summary handler, and prometheus_client does not
+          # materialise a LABELLED child until .labels() is called — so the
+          # series is ABSENT, not zero, until someone happens to call that
+          # endpoint. (3) no aggregation, so at 1->5 replicas it read one pod.
+          # production_jobs_queued is the gauge actually maintained for this:
+          # unlabelled (present from the first scrape) and kept current by the
+          # worker. max() because it is per-replica but describes a global
+          # queue — same convention as the orders alerts above.
           expr: |
-            production_jobs_by_status{status="pending"} > 20
+            max(production_jobs_queued) > 20
           for: 15m
           labels:
             severity: warning
@@ -153,8 +166,12 @@ spec:
             description: "{{ $value }} production jobs pending for >15 minutes."
 
         - alert: SlowProductionJobs
+          # Was: production_job_duration_seconds_bucket — a metric that exists
+          # nowhere in the codebase. The histogram is declared as
+          # production_job_processing_seconds (services/production/metrics.py),
+          # so this alert was querying an empty series and stayed silent.
           expr: |
-            histogram_quantile(0.95, sum(rate(production_job_duration_seconds_bucket[15m])) by (le))
+            histogram_quantile(0.95, sum(rate(production_job_processing_seconds_bucket[15m])) by (le))
             > 300
           for: 10m
           labels:
