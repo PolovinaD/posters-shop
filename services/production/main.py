@@ -18,6 +18,7 @@ from database import Base, engine, get_db, SessionLocal
 from models import Job, JobStatus, SCHEMA_NAME
 from schemas import JobCreate, JobOut, JobSummary, ProcessResult
 from logger import get_logger, LoggingMiddleware
+from service_auth import require_service_or_owner
 
 logger = get_logger(__name__)
 
@@ -217,7 +218,7 @@ def metrics():
 # ============== Job Management ==============
 
 @app.post("/jobs", response_model=JobOut, status_code=201)
-def create_job(payload: JobCreate, db: Session = Depends(get_db)):
+def create_job(payload: JobCreate, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Create a new production job for an order.
     Called by orders service when order is paid.
@@ -295,7 +296,7 @@ def get_job_by_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/jobs/{job_id}/retry", response_model=JobOut)
-def retry_job(job_id: int, db: Session = Depends(get_db)):
+def retry_job(job_id: int, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """Retry a failed job."""
     job = db.get(Job, job_id)
     if not job:
@@ -323,7 +324,7 @@ def retry_job(job_id: int, db: Session = Depends(get_db)):
 # ============== Event Listeners (Outbox Pattern) ==============
 
 @app.post("/events/order-paid")
-def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db)):
+def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Handle ORDER_PAID event from orders service outbox.
     
@@ -369,7 +370,7 @@ def handle_order_paid(event: OutboxEventPayload, db: Session = Depends(get_db)):
 
 
 @app.post("/events/order-cancelled")
-def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_db)):
+def handle_order_cancelled(event: OutboxEventPayload, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Handle ORDER_CANCELLED event from orders service outbox.
     

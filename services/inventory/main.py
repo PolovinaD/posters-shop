@@ -26,7 +26,7 @@ from metrics import (
     STOCK_LEVEL, ACTIVE_RESERVATIONS, RESERVATIONS_EXPIRED
 )
 from logger import get_logger, LoggingMiddleware
-from service_auth import internal_headers
+from service_auth import internal_headers, require_service_or_owner
 from auth import require_owner
 
 logger = get_logger(__name__)
@@ -323,7 +323,7 @@ def check_stock_bulk(payload: BulkStockCheck, db: Session = Depends(get_db)):
 # ============== Reservation Management ==============
 
 @app.post("/reserve", response_model=ReserveResponse)
-def reserve_stock(payload: ReserveRequest, db: Session = Depends(get_db)):
+def reserve_stock(payload: ReserveRequest, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Reserve stock for an order. Uses atomic update to prevent overselling.
     
@@ -391,7 +391,7 @@ def reserve_stock(payload: ReserveRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/release", response_model=ReleaseResponse)
-def release_reservation(payload: ReleaseRequest, db: Session = Depends(get_db)):
+def release_reservation(payload: ReleaseRequest, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Release reservations for an order (e.g., on order cancellation or payment failure).
     Returns stock to available pool.
@@ -446,7 +446,7 @@ def release_reservation(payload: ReleaseRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/commit", response_model=CommitResponse)
-def commit_reservation(payload: CommitRequest, db: Session = Depends(get_db)):
+def commit_reservation(payload: CommitRequest, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Commit reservations for an order (after successful payment).
     Stock is permanently deducted (reserved -> sold).

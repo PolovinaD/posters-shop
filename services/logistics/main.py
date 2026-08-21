@@ -8,6 +8,7 @@ from sqlalchemy import Column, Integer, String, DateTime, text
 from sqlalchemy.orm import Session
 
 from logger import get_logger, LoggingMiddleware
+from service_auth import require_service_or_owner
 from database import Base, engine, get_db, SessionLocal
 from metrics import metrics_endpoint, track_metrics
 from auth import require_courier_or_admin, optional_auth
@@ -142,7 +143,7 @@ def metrics():
 # --- Endpoints ---
 
 @app.post("/ship")
-def create_shipment(order_id: int = Body(...), db: Session = Depends(get_db)):
+def create_shipment(order_id: int = Body(...), db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Create a new shipment for an order.
     Called internally by the production service when an order is ready to ship.
@@ -244,6 +245,7 @@ async def external_delivery_webhook(
     tracking_number: str = Body(...),
     status: str = Body(...),
     db: Session = Depends(get_db),
+    claims: dict = Depends(require_service_or_owner),
 ):
     """
     Webhook endpoint for external delivery companies (DHL, FedEx, etc.)

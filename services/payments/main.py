@@ -17,11 +17,12 @@ from enum import Enum
 from typing import Optional
 
 import stripe
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from logger import get_logger, LoggingMiddleware
+from service_auth import require_service_or_owner
 from metrics import track_metrics, metrics_endpoint
 
 SERVICE_NAME = "payments"
@@ -106,7 +107,7 @@ def readyz():
 # ============== Checkout Sessions ==============
 
 @app.post("/v1/checkout/sessions", response_model=CheckoutSession)
-def create_checkout_session(payload: CreateSessionRequest):
+def create_checkout_session(payload: CreateSessionRequest, claims: dict = Depends(require_service_or_owner)):
     """
     Create a real Stripe Hosted Checkout session.
     The customer is redirected to Stripe's hosted page to enter card details.

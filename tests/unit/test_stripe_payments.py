@@ -59,6 +59,18 @@ def _load_payments():
         spec.loader.exec_module(mod)
     finally:
         sys.path.remove(_PAYMENTS_DIR)
+
+    # POST /v1/checkout/sessions is service-to-service and now requires a
+    # service or owner token. These tests exercise the Stripe mapping, not the
+    # authorization, so the guard is overridden rather than a token minted --
+    # keeping the test focused and independent of JWT_SECRET being set.
+    # Keyed off the module's own reference, not a fresh import: payments/main.py
+    # did `from service_auth import require_service_or_owner`, so mod holds the
+    # exact function object FastAPI registered the dependency on -- and this
+    # works after sys.path has been unwound.
+    mod.app.dependency_overrides[mod.require_service_or_owner] = lambda: {
+        "sub": "service:test", "role": "service"
+    }
     return mod
 
 

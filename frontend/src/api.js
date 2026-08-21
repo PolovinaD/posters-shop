@@ -171,7 +171,9 @@ export const productionApi = {
   },
   getJob: (id) => fetchJSON(`${API_BASE}/production/jobs/${id}`),
   getJobByOrder: (orderId) => fetchJSON(`${API_BASE}/production/jobs/order/${orderId}`),
-  retryJob: (id) => fetchJSON(`${API_BASE}/production/jobs/${id}/retry`, { method: 'POST' }),
+  // authFetchJSON, not fetchJSON: POST /jobs/{id}/retry now requires a service
+  // or owner token. The admin dashboard is the only UI caller and runs as owner.
+  retryJob: (id) => authFetchJSON(`${API_BASE}/production/jobs/${id}/retry`, { method: 'POST' }),
   getJobStats: () => fetchJSON(`${API_BASE}/production/jobs/stats/summary`),
 };
 

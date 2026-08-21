@@ -40,6 +40,7 @@ from payment_client import PaymentServiceError
 from circuit_breaker import CircuitOpenError
 from stripe_webhook import process_webhook, WebhookError
 from logger import get_logger, LoggingMiddleware
+from service_auth import require_service_or_owner
 from auth import get_current_user_claims, require_owner
 
 logger = get_logger(__name__)
@@ -393,7 +394,7 @@ async def pay_order(
 
 
 @app.post("/orders/{order_id}/produce", response_model=OrderOut)
-def start_production(order_id: int, db: Session = Depends(get_db)):
+def start_production(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """Mark order as in production."""
     order = db.get(Order, order_id)
     if not order:
@@ -412,7 +413,7 @@ def start_production(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/orders/{order_id}/ship", response_model=OrderOut)
-def ship_order(order_id: int, db: Session = Depends(get_db)):
+def ship_order(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """Mark order as shipped."""
     order = db.get(Order, order_id)
     if not order:
@@ -455,7 +456,7 @@ def ship_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/orders/{order_id}/deliver", response_model=OrderOut)
-def deliver_order(order_id: int, db: Session = Depends(get_db)):
+def deliver_order(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """Mark order as delivered."""
     order = db.get(Order, order_id)
     if not order:
@@ -727,7 +728,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 # ============== Internal Service-to-Service ==============
 
 @app.post("/internal/orders/{order_id}/reservation-expired")
-async def reservation_expired(order_id: int, db: Session = Depends(get_db)):
+async def reservation_expired(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Internal endpoint called by the inventory service when a reservation
     expires. Auto-cancels the order if it is still in 'reserved' state.
