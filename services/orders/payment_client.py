@@ -9,7 +9,7 @@ from typing import Optional
 import httpx
 
 from circuit_breaker import CircuitBreaker, CircuitOpenError  # noqa: F401
-from logger import correlation_headers
+from service_auth import internal_headers
 
 PAYMENT_SERVICE_URL = os.getenv("PAYMENT_SERVICE_URL", "http://payments:8000")
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -60,7 +60,7 @@ async def create_checkout_session(
         payload["cancel_url"] = cancel_url
 
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=internal_headers()) as client:
             try:
                 response = await client.post(
                     f"{PAYMENT_SERVICE_URL}/v1/checkout/sessions",
@@ -86,7 +86,7 @@ async def get_checkout_session(session_id: str) -> dict:
     Raises CircuitOpenError when payments circuit is open.
     """
     async def _call() -> dict:
-        async with httpx.AsyncClient(timeout=TIMEOUT, headers=correlation_headers()) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=internal_headers()) as client:
             try:
                 response = await client.get(
                     f"{PAYMENT_SERVICE_URL}/v1/checkout/sessions/{session_id}"

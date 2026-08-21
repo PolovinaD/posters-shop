@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from database import Base, SessionLocal
-from logger import get_logger, set_correlation_id, correlation_headers
+from logger import get_logger, set_correlation_id
+from service_auth import internal_headers
 
 logger = get_logger("outbox")
 
@@ -129,7 +130,7 @@ async def deliver_event(event: OutboxEvent) -> tuple[bool, Optional[str]]:
     }
     
     errors = []
-    async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT, headers=correlation_headers()) as client:
+    async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT, headers=internal_headers()) as client:
         for subscriber_url in subscribers:
             try:
                 response = await client.post(subscriber_url, json=payload)
