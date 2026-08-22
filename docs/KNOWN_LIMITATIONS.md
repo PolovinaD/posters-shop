@@ -147,3 +147,44 @@ cluster only on the next deploy that includes `payments` — a push touching
 
 **Fix shape**: shared breaker state. Either a Redis-backed failure counter keyed by dependency that every replica increments and reads, keeping `circuit_breaker.py`'s state machine but moving its two fields out of the process; or a service mesh that owns outlier detection outside the application entirely. Both are infrastructure additions rather than patches, which is why the per-process version ships as-is with the multiplier documented here.
 
+## 10. Internal endpoints were internet-reachable — RESOLVED (service tokens)
+
+**Symptom (historical)**: the ALB routes `/api/<service>` straight to each
+Service, so every route a service declared was reachable from the internet —
+including the ones only another service was meant to call. An AST sweep of all
+routes against the ingress found **14** unauthenticated, externally reachable,
+state-mutating endpoints: `inventory` `/reserve` `/release` `/commit`; `orders`
+`/produce` `/ship` `/deliver` and `/internal/{id}/reservation-expired`;
+`production` `/jobs`, `/jobs/{id}/retry`, `/events/order-paid`,
+`/events/order-cancelled`; `logistics` `/ship` and `/webhooks/delivery-update`;
+`payments` `POST /v1/checkout/sessions`. An anonymous caller could free or
+permanently consume stock, drive any order to `delivered`, or fabricate
+production jobs.
+
+Note that nginx is **not** in the path in production — `frontend/nginx.conf`
+only proxies `/api/` under docker-compose — so an nginx rule would have fixed
+nothing in the cluster.
+
+**Resolution**: `services/shared/service_auth.py`. A caller mints a short-lived
+HS256 token carrying `role="service"`, signed with the `JWT_SECRET` the platform
+already distributes; the callee accepts that or a genuine owner token. No new
+secret — `postershop-jwt` already existed as a Kubernetes Secret. Rolled out as
+env → senders → guards so the system worked after every commit.
+
+Verified end-to-end in docker compose rather than by unit test alone: all probed
+endpoints return 401 anonymously, 403 for a customer token, 200 for a service
+token, and the full chain still completes `reserved → paid → shipped →
+delivered` with three notification emails.
+
+**Deliberately still open, and only these**: `inventory /stock/check`
+(read-only despite POST), `orders /webhooks/stripe` (Stripe signature),
+`payments /complete` and `/expire` (dev stubs that change nothing), and `users`
+`/register` `/login` `/auth/refresh` (public by design, rate-limited).
+
+**Residual risk — the reason this is a compromise, not a cure**: `JWT_SECRET` is
+symmetric, so every service holding it can **mint** any role, not merely verify
+one. A compromised service could forge an owner token. Asymmetric signing
+(RS256: private key at the issuer, public key everywhere else) is the correct end
+state and is recorded in `docs/BACKLOG.md`, along with ALB-level path denial as
+defence in depth.
+

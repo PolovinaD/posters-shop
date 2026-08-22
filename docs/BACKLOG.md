@@ -276,3 +276,33 @@ AWS**. Remaining gaps are tracked as items 2 and 3 above and in
 - Priorities are based on thesis relevance and system stability
 - Time estimates are rough guides, not commitments
 - Items may be reprioritized based on emerging needs
+
+## Harden service-to-service auth beyond a shared symmetric secret
+
+`services/shared/service_auth.py` closed the 14 internet-reachable internal
+endpoints (see `KNOWN_LIMITATIONS.md` #10) by having callers mint a token with
+`role="service"` signed with the platform's existing `JWT_SECRET`. Two follow-ups
+were deliberately left out of that change:
+
+**1. Asymmetric signing (RS256).** `JWT_SECRET` is symmetric, so every service
+holding it can *mint* any role, not merely verify one — a compromised service
+could forge an owner token. The proper end state is a private signing key held
+only by `users` (the issuer) and a public verification key distributed to
+everyone else. Cost: a new keypair in Secrets Manager, `users` signs with the
+private key, the other services verify with the public one, plus a migration
+window where both are accepted. Roughly a day's work, and it removes the single
+sharpest edge in the current design.
+
+**2. Deny internal paths at the ALB, as defence in depth.** More-specific
+Ingress path rules with `fixed-response` actions would reject
+`/api/inventory/reserve` and friends before they ever reach a pod, so the
+application check is not the only thing standing between the internet and those
+handlers. Deliberately NOT done yet: the annotation behaviour cannot be verified
+without a live cluster, and shipping load-balancer rules blind is how you find
+out at the worst moment that the syntax was wrong. Revisit when the cluster is
+next up. Note that an nginx-level rule is not an alternative — in production the
+ALB routes `/api/*` straight to each Service and `frontend/nginx.conf` is not in
+the path at all.
+
+Neither is required for the platform to be correct today; both reduce blast
+radius if something else goes wrong.

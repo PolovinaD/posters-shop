@@ -62,21 +62,23 @@ Order lifecycle management with outbox pattern for reliable event delivery.
 | GET | /orders | List orders | Auth |
 | GET | /orders/{id} | Get order | Auth + ownership (owner/courier any; customer only their own) |
 | POST | /orders/{id}/pay | Mark as paid (bypasses Stripe) | **Owner** (`require_owner`) |
-| POST | /orders/{id}/produce | Start production | Internal (service-to-service, no JWT) |
-| POST | /orders/{id}/ship | Mark shipped | Internal (service-to-service, no JWT) |
-| POST | /orders/{id}/deliver | Mark delivered | Internal (service-to-service, no JWT) |
+| POST | /orders/{id}/produce | Start production | Service or owner (`require_service_or_owner`) |
+| POST | /orders/{id}/ship | Mark shipped | Service or owner (`require_service_or_owner`) |
+| POST | /orders/{id}/deliver | Mark delivered | Service or owner (`require_service_or_owner`) |
 | POST | /orders/{id}/cancel | Cancel order | Auth + ownership |
 | POST | /orders/{id}/checkout | Create payment session | Auth + ownership |
 | GET | /orders/{id}/checkout-status | Get payment status | Auth + ownership |
 | GET | /orders/stats/by-status | Order counts per status | Auth |
 | POST | /webhooks/stripe | Stripe webhook | Stripe signature (`stripe.Webhook.construct_event`) |
-| POST | /internal/orders/{order_id}/reservation-expired | Inventory reports an expired reservation | Internal (no JWT; idempotent, always 200) |
+| POST | /internal/orders/{order_id}/reservation-expired | Inventory reports an expired reservation | Service or owner; idempotent, always 200 |
 | GET | /outbox/stats | Outbox monitoring | **Owner** (`require_owner`) |
 
-`/produce`, `/ship` and `/deliver` carry no auth dependency because the
-production and logistics workers call them with no JWT — adding one would stop
-the pipeline. They are reachable through the ALB, so this is an open item
-awaiting a service-token design, not a decision that they need no protection.
+The ALB routes `/api/orders` straight to this Service, so every route here is
+internet-reachable. The routes only another service should call therefore take
+`require_service_or_owner` (`service_auth.py`): callers mint a short-lived token
+carrying `role="service"`, signed with the `JWT_SECRET` the platform already
+distributes. Owner is accepted too, so an operator can drive them by hand and the
+admin dashboard keeps working.
 
 ## Environment Variables
 

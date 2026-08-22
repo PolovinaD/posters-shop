@@ -261,7 +261,7 @@ notification is a non-fatal divergence rather than a lost update. It fires only 
 worker tick that actually flipped the reservation to `expired`, so later ticks do not
 re-send it.
 
-There is no auth dependency — this is service-to-service traffic over the cluster
+This endpoint takes `require_service_or_owner`: the caller mints a short-lived token carrying `role="service"` (see `services/shared/service_auth.py`). It is service-to-service traffic, but the ALB makes it internet-reachable, so it is not left open
 network, reachable only from inside the cluster.
 
 **Response — always `200 OK`.** The handler is deliberately idempotent and never returns
