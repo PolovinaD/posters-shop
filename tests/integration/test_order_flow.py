@@ -2,9 +2,10 @@
 Integration test: full order flow via outbox pattern.
 Requires all services running: make dev (or docker compose up -d)
 
-Flow: seed → create order → pay → poll until PRODUCING
-The PRODUCING transition is delivered by the outbox worker (~2s poll interval).
-This test confirms the event-driven outbox path end-to-end.
+Flow: log in → seed → create order → pay → poll until the order leaves PAID
+The transition out of PAID is driven by the outbox worker (~2s poll interval)
+delivering ORDER_PAID to the production service, so observing it confirms the
+event-driven outbox path end-to-end.
 
 Run with:
     pytest tests/integration/test_order_flow.py -v -s
@@ -13,9 +14,21 @@ import time
 import pytest
 import httpx
 
-POLL_INTERVAL = 2   # seconds between status checks
-POLL_TIMEOUT = 30   # seconds before giving up
+POLL_INTERVAL = 0.25   # seconds between status checks
+POLL_TIMEOUT = 30      # seconds before giving up
 
+# States that prove the ORDER_PAID event was delivered by the outbox and acted on
+# by the production service. PRODUCING itself is NOT a reliable assertion target:
+# services/production/main.py:process_job calls notify_order_producing, then runs
+# simulate_production_work (31 ms for a single item), then notify_order_shipped —
+# so an order sits in PRODUCING for roughly a tenth of a second. Asserting on that
+# instant makes the test a coin flip; asserting that the order moved past PAID
+# along the production path is what the outbox actually guarantees.
+POST_PRODUCTION_STATES = ("producing", "shipped", "delivered")
+
+# The orders service takes the customer e-mail from the JWT `sub` claim and
+# ignores the value in the body (services/orders/main.py:152-153), so the order
+# is created against the logged-in owner regardless of what is sent here.
 TEST_CUSTOMER_EMAIL = "integration-test@example.com"
 
 
@@ -23,18 +36,21 @@ TEST_CUSTOMER_EMAIL = "integration-test@example.com"
 # Helper: poll order status until target reached or timeout
 # ---------------------------------------------------------------------------
 
-def wait_for_status(client: httpx.Client, orders_url: str, order_id: int, target: str) -> bool:
+def wait_for_any_status(client: httpx.Client, orders_url: str, order_id: int,
+                        targets: tuple[str, ...]) -> str | None:
     """
     Poll GET /orders/{order_id} every POLL_INTERVAL seconds.
-    Returns True when status == target, False on timeout.
+    Returns the first status seen that is in `targets`, or None on timeout.
     """
     deadline = time.monotonic() + POLL_TIMEOUT
     while time.monotonic() < deadline:
         resp = client.get(f"{orders_url}/orders/{order_id}")
-        if resp.status_code == 200 and resp.json().get("status") == target:
-            return True
+        if resp.status_code == 200:
+            status = resp.json().get("status")
+            if status in targets:
+                return status
         time.sleep(POLL_INTERVAL)
-    return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -43,20 +59,22 @@ def wait_for_status(client: httpx.Client, orders_url: str, order_id: int, target
 
 def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url):
     """
-    Full order lifecycle: create → pay → PRODUCING via outbox.
+    Full order lifecycle: create → pay → past PAID via the outbox.
 
     Steps:
+    0. Log in as the owner (the `http` fixture) so the guarded endpoints accept us
     1. Seed catalog and inventory (idempotent)
     2. Discover a SKU from the seeded catalog
     3. Create an order using catalog product data
     4. Pay the order (transitions RESERVED → PAID, emits ORDER_PAID to outbox)
-    5. Poll until status == "producing" (outbox delivers order_paid event to production)
-    6. Assert PRODUCING state reached within 30s
+    5. Poll until the order leaves "paid" (outbox delivers order_paid to production)
+    6. Assert a post-production state was reached within 30s
 
-    NOTE: this test does not authenticate and therefore cannot pass as written.
-    POST /orders requires a JWT (Depends(get_current_user_claims)) and
-    POST /orders/{id}/pay requires the owner role (Depends(require_owner)).
-    It needs a register/login step producing an owner token before it can run.
+    Authentication: the `http` fixture logs in as the bootstrap owner
+    (services/users/init_db.py) and carries the bearer token on every request.
+    An owner token is required throughout — /seed on catalog and inventory and
+    POST /orders/{id}/pay are guarded by require_owner, and POST /orders needs
+    an authenticated caller (Depends(get_current_user_claims)).
     """
     # Step 1: Seed (idempotent — safe to call multiple times)
     seed_catalog = http.post(f"{catalog_url}/seed")
@@ -116,18 +134,20 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
         f"Expected 'paid' after payment but got: {paid_order.get('status')}"
     )
 
-    # Step 5: Poll until PRODUCING (outbox worker delivers order_paid event)
-    # The outbox worker polls every 2s; production service handles ORDER_PAID event
-    # and transitions order to PRODUCING via POST /orders/{id}/produce
-    reached = wait_for_status(http, orders_url, order_id, "producing")
-    assert reached, (
-        f"Order {order_id} did not reach 'producing' within {POLL_TIMEOUT}s. "
+    # Step 5: Poll until the order has moved past PAID along the production path.
+    # The outbox worker polls every 2s and POSTs ORDER_PAID to the production
+    # service, whose job worker then drives producing -> shipped.
+    observed = wait_for_any_status(http, orders_url, order_id, POST_PRODUCTION_STATES)
+    assert observed, (
+        f"Order {order_id} never left 'paid' within {POLL_TIMEOUT}s. "
         "Check that the outbox worker is running and the production service is up."
     )
 
-    # Step 6: Final assertion — confirm the order is in PRODUCING state
+    # Step 6: Final assertion — the order is in a post-production state, which is
+    # only reachable if the ORDER_PAID event was delivered and consumed.
     final = http.get(f"{orders_url}/orders/{order_id}")
     assert final.status_code == 200, f"Could not get final order state: {final.text}"
-    assert final.json()["status"] == "producing", (
-        f"Expected producing but got: {final.json()['status']}"
+    assert final.json()["status"] in POST_PRODUCTION_STATES, (
+        f"Expected one of {POST_PRODUCTION_STATES} but got: {final.json()['status']}"
     )
+    print(f"\n  outbox path confirmed: order {order_id} reached '{observed}'")
