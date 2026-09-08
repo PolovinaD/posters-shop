@@ -4,10 +4,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-# Connection budget: pool_size=3, max_overflow=5 → max 8 connections per pod.
-# At HPA max scale (3 pods): 3 × 8 = 24 orders connections.
-# Other 5 services × 1 pod × 10 = 50 connections.
-# Total: 74 < 87 usable connections on RDS db.t3.micro.
+# Connection budget (RDS db.t3.micro, ~87 usable). Per pod = pool_size + max_overflow;
+# replica ranges come from the HPA manifests, not from replicaCount.
+#   orders      2-5 pods x 8   -> steady 15, peak 40   (charts/orders/templates/hpa.yaml)
+#   production  1-5 pods x 10  -> steady 25, peak 50   (charts/production/templates/hpa.yaml)
+#   5 others    1 pod   x 10   -> steady 25, peak 50
+# At max replicas: steady 65 fits, peak 140 does not. Reaching the peak needs both
+# autoscalers saturated at once and is untested. readyz reuses this pool and Alembic
+# uses NullPool, so neither adds to the total.
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
