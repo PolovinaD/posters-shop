@@ -31,6 +31,17 @@ POST_PRODUCTION_STATES = ("producing", "shipped", "delivered")
 # is created against the logged-in owner regardless of what is sent here.
 TEST_CUSTOMER_EMAIL = "integration-test@example.com"
 
+# Unlike the e-mail (replaced from the JWT sub claim), the address is taken from
+# the body as sent — it is required and validated, never overridden.
+TEST_SHIPPING_ADDRESS = {
+    "recipient_name": "Integration Test",
+    "street": "Knez Mihailova 42",
+    "city": "Beograd",
+    "postal_code": "11000",
+    "country": "Serbia",
+    "phone": "+381601234567",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helper: poll order status until target reached or timeout
@@ -107,6 +118,7 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     # OrderCreate schema: {customer_email, items: [{sku, name, quantity, unit_price}]}
     order_payload = {
         "customer_email": TEST_CUSTOMER_EMAIL,
+        "shipping_address": TEST_SHIPPING_ADDRESS,
         "items": [{"sku": sku, "name": name, "quantity": 1, "unit_price": unit_price}],
     }
     create_resp = http.post(f"{orders_url}/orders", json=order_payload)
@@ -121,6 +133,10 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     # (inventory reservation happens synchronously during create_order)
     assert order.get("status") == "reserved", (
         f"Expected 'reserved' after creation but got: {order.get('status')}"
+    )
+
+    assert order.get("shipping_address") == TEST_SHIPPING_ADDRESS, (
+        f"Order did not echo the shipping address back: {order.get('shipping_address')}"
     )
 
     # Step 4: Pay the order

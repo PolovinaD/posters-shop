@@ -21,8 +21,20 @@ class OrderItemOut(BaseModel):
     unit_price: Decimal
 
 
+class ShippingAddress(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    recipient_name: str = Field(..., min_length=2, max_length=120)
+    street: str = Field(..., min_length=3, max_length=200)
+    city: str = Field(..., min_length=2, max_length=100)
+    postal_code: str = Field(..., min_length=3, max_length=12, pattern=r"^[A-Za-z0-9][A-Za-z0-9 \-]{1,11}$")
+    country: str = Field(..., min_length=2, max_length=56)
+    phone: str = Field(..., min_length=6, max_length=20, pattern=r"^\+?[0-9][0-9 \-()]{4,19}$")
+
+
 class OrderCreate(BaseModel):
     customer_email: EmailStr
+    shipping_address: ShippingAddress
     items: list[OrderItemCreate] = Field(..., min_length=1)
 
 
@@ -35,6 +47,7 @@ class OrderOut(BaseModel):
     total_amount: Decimal
     created_at: datetime
     updated_at: datetime
+    shipping_address: Optional[ShippingAddress] = None
     items: list[OrderItemOut]
 
 

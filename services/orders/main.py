@@ -152,11 +152,21 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
     # Set customer_email from JWT sub — never trust client-supplied email
     customer_email = claims["sub"]
 
+    # The address IS customer-supplied — unlike the e-mail there is no server-side
+    # source to override it with, so it is validated by ShippingAddress instead.
+    addr = payload.shipping_address
+
     # Create order
     order = Order(
         customer_email=customer_email,
         status=OrderStatus.CREATED,
-        total_amount=total
+        total_amount=total,
+        shipping_recipient_name=addr.recipient_name,
+        shipping_street=addr.street,
+        shipping_city=addr.city,
+        shipping_postal_code=addr.postal_code,
+        shipping_country=addr.country,
+        shipping_phone=addr.phone,
     )
     db.add(order)
     db.flush()  # Get order ID
@@ -780,6 +790,26 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db), clai
         order_id=order_id,
     )
     return {"status": "cancelled", "order_id": order_id}
+
+
+@app.get("/internal/orders/{order_id}/shipping-address")
+def get_order_shipping_address(
+    order_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_service_or_owner),
+):
+    """Shipping address for one order, for the logistics service.
+
+    Called exactly once per shipment, at shipment creation — logistics then keeps
+    its own delivery copy, so no courier read ever depends on this service.
+    GET /orders/{id} cannot serve this: its guard only admits owner/courier, and
+    the caller holds a service token.
+    """
+    order = db.get(Order, order_id)
+    if order is None:
+        logger.warning("Shipping address requested for unknown order", order_id=order_id)
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"order_id": order_id, "shipping_address": order.shipping_address}
 
 
 # ============== Outbox Monitoring ==============

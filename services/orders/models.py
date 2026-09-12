@@ -56,9 +56,40 @@ class Order(Base):
     # Payment fields
     checkout_session_id = Column(String, nullable=True)  # Stripe checkout session
     payment_intent_id = Column(String, nullable=True)    # Stripe payment intent
+
+    # Shipping address — the authoritative record of what the customer agreed to
+    # at checkout. Nullable: orders created before this column existed have none.
+    shipping_recipient_name = Column(String, nullable=True)
+    shipping_street = Column(String, nullable=True)
+    shipping_city = Column(String, nullable=True)
+    shipping_postal_code = Column(String, nullable=True)
+    shipping_country = Column(String, nullable=True)
+    shipping_phone = Column(String, nullable=True)
     
     # Relationships
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+
+    @property
+    def shipping_address(self):
+        """Nested view of the shipping_* columns; None for pre-address orders."""
+        # Guard on ALL six: OrderOut validates this against the full
+        # ShippingAddress model, so a half-populated row would raise
+        # ValidationError and turn GET /orders/{id} into a 500. Unreachable
+        # through the API today (all six are written together from one
+        # validated model) — this is cheap insurance for hand-edited rows.
+        if not all((
+            self.shipping_recipient_name, self.shipping_street, self.shipping_city,
+            self.shipping_postal_code, self.shipping_country, self.shipping_phone,
+        )):
+            return None
+        return {
+            "recipient_name": self.shipping_recipient_name,
+            "street": self.shipping_street,
+            "city": self.shipping_city,
+            "postal_code": self.shipping_postal_code,
+            "country": self.shipping_country,
+            "phone": self.shipping_phone,
+        }
 
 
 class OrderItem(Base):
