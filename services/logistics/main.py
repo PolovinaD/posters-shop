@@ -35,6 +35,16 @@ class Shipment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Delivery copy, written once at shipment creation (event-carried state
+    # transfer). Schema-per-service means logistics cannot read orders_schema,
+    # and a courier read must not depend on the orders service being up.
+    recipient_name = Column(String, nullable=True)
+    street = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    postal_code = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    recipient_phone = Column(String, nullable=True)
+
 
 # --- Helpers ---
 
@@ -46,6 +56,14 @@ def shipment_to_dict(s):
         "tracking": s.tracking,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "shipping_address": {
+            "recipient_name": s.recipient_name,
+            "street": s.street,
+            "city": s.city,
+            "postal_code": s.postal_code,
+            "country": s.country,
+            "phone": s.recipient_phone,
+        } if s.recipient_name else None,
     }
 
 
@@ -143,17 +161,35 @@ def metrics():
 # --- Endpoints ---
 
 @app.post("/ship")
-def create_shipment(order_id: int = Body(...), db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
+async def create_shipment(order_id: int = Body(...), db: Session = Depends(get_db), claims: dict = Depends(require_service_or_owner)):
     """
     Create a new shipment for an order.
     Called internally by the production service when an order is ready to ship.
+
+    The delivery address is fetched from orders exactly here, once, and then
+    copied into this schema — every later courier read is served locally.
     """
     # Check if shipment already exists for this order
     existing = db.query(Shipment).filter(Shipment.order_id == order_id).first()
     if existing:
         return {"shipment_id": existing.id, "tracking": existing.tracking}
 
-    s = Shipment(order_id=order_id, status="dispatched", tracking=f"TRK-{order_id:06d}")
+    address = await orders_client.fetch_shipping_address(order_id)
+    if not address:
+        logger.warning("Creating shipment without a delivery address", order_id=order_id)
+        address = {}
+
+    s = Shipment(
+        order_id=order_id,
+        status="dispatched",
+        tracking=f"TRK-{order_id:06d}",
+        recipient_name=address.get("recipient_name"),
+        street=address.get("street"),
+        city=address.get("city"),
+        postal_code=address.get("postal_code"),
+        country=address.get("country"),
+        recipient_phone=address.get("phone"),
+    )
     db.add(s)
     db.commit()
     db.refresh(s)

@@ -68,7 +68,7 @@ def wait_for_any_status(client: httpx.Client, orders_url: str, order_id: int,
 # Integration test
 # ---------------------------------------------------------------------------
 
-def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url):
+def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url, logistics_url):
     """
     Full order lifecycle: create → pay → past PAID via the outbox.
 
@@ -80,6 +80,7 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     4. Pay the order (transitions RESERVED → PAID, emits ORDER_PAID to outbox)
     5. Poll until the order leaves "paid" (outbox delivers order_paid to production)
     6. Assert a post-production state was reached within 30s
+    7. Assert the shipment carries its own copy of the delivery address
 
     Authentication: the `http` fixture logs in as the bootstrap owner
     (services/users/init_db.py) and carries the bearer token on every request.
@@ -167,3 +168,20 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
         f"Expected one of {POST_PRODUCTION_STATES} but got: {final.json()['status']}"
     )
     print(f"\n  outbox path confirmed: order {order_id} reached '{observed}'")
+
+    # Step 7: the delivery copy. production calls POST /ship on its way to
+    # 'shipped', so once the order is shipped the shipment row exists and must
+    # already carry its own copy of the address — read from logistics_schema
+    # alone, with orders not involved.
+    shipped = wait_for_any_status(http, orders_url, order_id, ("shipped", "delivered"))
+    assert shipped, f"Order {order_id} never reached 'shipped' within {POLL_TIMEOUT}s"
+
+    shipment_resp = http.get(f"{logistics_url}/shipments/order/{order_id}")
+    assert shipment_resp.status_code == 200, (
+        f"No shipment for order {order_id}: {shipment_resp.status_code} {shipment_resp.text}"
+    )
+    assert shipment_resp.json()["shipping_address"] == TEST_SHIPPING_ADDRESS, (
+        "Shipment is missing the delivery copy of the address: "
+        f"{shipment_resp.json().get('shipping_address')}"
+    )
+    print(f"  delivery copy confirmed: shipment for order {order_id} carries the address")

@@ -25,6 +25,11 @@ def orders_url():
 
 
 @pytest.fixture(scope="session")
+def logistics_url():
+    return "http://localhost:8005"
+
+
+@pytest.fixture(scope="session")
 def inventory_url():
     return "http://localhost:8006"
 
