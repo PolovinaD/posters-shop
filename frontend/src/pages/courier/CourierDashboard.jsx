@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Truck, LogOut } from 'lucide-react';
+import { Loader2, Truck, LogOut, MapPin } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { authFetchJSON } from '../../api';
+import { formatAddressLines } from '../../lib/address';
 
 const NEXT_STATUS = {
   dispatched: 'in_transit',
@@ -109,6 +110,7 @@ export default function CourierDashboard() {
             {activeShipments.map((shipment) => {
               const isPending = pendingIds.has(shipment.id);
               const nextStatus = NEXT_STATUS[shipment.status];
+              const addressLines = formatAddressLines(shipment.shipping_address);
 
               return (
                 <div
@@ -129,6 +131,26 @@ export default function CourierDashboard() {
                       </span>
                     </div>
                     <p className="text-sm text-slate-400">Order #{shipment.order_id}</p>
+
+                    {addressLines.length > 0 ? (
+                      <div className="flex items-start gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-slate-500 mt-1 shrink-0" />
+                        <div>
+                          {addressLines.map((line, i) => (
+                            <p
+                              key={i}
+                              className={`text-sm ${i === 0 ? 'text-slate-300' : 'text-slate-400'}`}
+                            >
+                              {line}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      // Muted-but-present beats silence: a courier must be able to tell
+                      // "no address stored" apart from "the page forgot to render it".
+                      <p className="text-sm text-slate-500 italic">No delivery address on file</p>
+                    )}
                   </div>
 
                   {nextStatus && (
