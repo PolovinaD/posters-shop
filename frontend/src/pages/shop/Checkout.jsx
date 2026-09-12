@@ -391,25 +391,31 @@ function validateAddress(a) {
   // PHONE_RE alone accepts "12345" and a 21-char number — all rejected by the
   // server with a 422 whose `detail` is an ARRAY OF OBJECTS, which api.js:95
   // (`error.detail || ...`) surfaces to the customer as "[object Object]".
-  if (v.recipient_name.length < 2 || v.recipient_name.length > 120) {
+  // The bounds are compared in CODE POINTS, not UTF-16 units: pydantic's
+  // min_length/max_length count code points (len('👍') === 1) while JS .length
+  // counts UTF-16 units ('👍'.length === 2), so a bare .length let a single-emoji
+  // name through the form and straight into that same 422. Spreading into an array
+  // before measuring is the code-point-counting form, and it fixes the max bound in
+  // the same motion.
+  if ([...v.recipient_name].length < 2 || [...v.recipient_name].length > 120) {
     errors.recipient_name = "Enter the recipient's full name";
   }
-  if (v.street.length < 3 || v.street.length > 200) {
+  if ([...v.street].length < 3 || [...v.street].length > 200) {
     errors.street = 'Enter the street and number';
   }
-  if (v.city.length < 2 || v.city.length > 100) {
+  if ([...v.city].length < 2 || [...v.city].length > 100) {
     errors.city = 'Enter the city';
   }
-  if (v.postal_code.length < 3 || v.postal_code.length > 12 || !POSTAL_RE.test(v.postal_code)) {
+  if ([...v.postal_code].length < 3 || [...v.postal_code].length > 12 || !POSTAL_RE.test(v.postal_code)) {
     errors.postal_code = 'Enter a valid postal code';
   }
   // Length bounds mirror the server's Field(min_length=2, max_length=56). The
   // <select> only ever yields a COUNTRIES entry, so this is unreachable through
   // the UI — but without it the client accepts a 1-char country the server 422s.
-  if (v.country.length < 2 || v.country.length > 56) {
+  if ([...v.country].length < 2 || [...v.country].length > 56) {
     errors.country = 'Select a country';
   }
-  if (v.phone.length < 6 || v.phone.length > 20 || !PHONE_RE.test(v.phone)) {
+  if ([...v.phone].length < 6 || [...v.phone].length > 20 || !PHONE_RE.test(v.phone)) {
     errors.phone = 'Enter a reachable phone number, digits only';
   }
 
