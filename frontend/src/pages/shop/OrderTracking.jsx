@@ -12,7 +12,7 @@ import {
   ArrowRight,
   XCircle
 } from 'lucide-react';
-import { ordersApi, productionApi, logisticsApi } from '../../api';
+import { ordersApi, productionApi } from '../../api';
 import { useAuth } from '../../context/AuthContext';
 
 const CANCELLABLE_STATUSES = ['created', 'reserved', 'paid'];

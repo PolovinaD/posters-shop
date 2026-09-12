@@ -35,9 +35,9 @@ Shipment tracking and delivery management.
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | POST | /ship | Create shipment | Internal |
-| GET | /shipments | List shipments | Admin |
-| GET | /shipments/{id} | Get shipment | - |
-| GET | /shipments/order/{order_id} | Get by order | - |
+| GET | /shipments | List shipments | Courier/Admin |
+| GET | /shipments/{id} | Get shipment | Courier/Admin |
+| GET | /shipments/order/{order_id} | Get by order | Courier/Admin |
 | PUT | /shipments/{id}/status | Update status | Courier/Admin |
 | POST | /webhooks/delivery-update | External webhook | - |
 

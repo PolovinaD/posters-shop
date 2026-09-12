@@ -179,9 +179,15 @@ export const productionApi = {
 
 // ============== Logistics API ==============
 export const logisticsApi = {
-  getShipments: () => fetchJSON(`${API_BASE}/logistics/shipments`),
-  getShipment: (id) => fetchJSON(`${API_BASE}/logistics/shipments/${id}`),
-  updateShipmentStatus: (id, status) => fetchJSON(`${API_BASE}/logistics/shipments/${id}/status`, {
+  // authFetchJSON, not fetchJSON: the three shipment reads now require a courier
+  // or owner token, because they return the customer's delivery address.
+  // updateShipmentStatus was ALREADY 401-ing before this change — PUT
+  // /shipments/{id}/status has required that role since before 260912-n7c, and
+  // this module was calling it without a token, so the admin dashboard's advance
+  // button was dead. Switching it here is a repair, not just a follow-on.
+  getShipments: () => authFetchJSON(`${API_BASE}/logistics/shipments`),
+  getShipment: (id) => authFetchJSON(`${API_BASE}/logistics/shipments/${id}`),
+  updateShipmentStatus: (id, status) => authFetchJSON(`${API_BASE}/logistics/shipments/${id}/status`, {
     method: 'PUT',
     body: JSON.stringify({ status }),
   }),

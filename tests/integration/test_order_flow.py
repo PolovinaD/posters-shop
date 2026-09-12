@@ -68,7 +68,8 @@ def wait_for_any_status(client: httpx.Client, orders_url: str, order_id: int,
 # Integration test
 # ---------------------------------------------------------------------------
 
-def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url, logistics_url):
+def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url,
+                         logistics_url, anon_http):
     """
     Full order lifecycle: create → pay → past PAID via the outbox.
 
@@ -81,6 +82,7 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     5. Poll until the order leaves "paid" (outbox delivers order_paid to production)
     6. Assert a post-production state was reached within 30s
     7. Assert the shipment carries its own copy of the delivery address
+    8. Assert an UNAUTHENTICATED caller cannot read shipments at all
 
     Authentication: the `http` fixture logs in as the bootstrap owner
     (services/users/init_db.py) and carries the bearer token on every request.
@@ -185,3 +187,28 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
         f"{shipment_resp.json().get('shipping_address')}"
     )
     print(f"  delivery copy confirmed: shipment for order {order_id} carries the address")
+
+    # Step 8: regression lock for the 260912-rnl customer-PII disclosure.
+    # These three GET routes carried no authorization at all (pre-existing --
+    # `git show 23f6972:services/logistics/main.py` shows only Depends(get_db)).
+    # That was latent until 260912-n7c enriched the payload with shipping_address,
+    # at which point `curl :3000/api/logistics/shipments` returned every customer's
+    # name, street, city, postal code and phone in ONE unauthenticated request.
+    # `anon_http` is defined in tests/conftest.py and has shipped unused until now;
+    # this is its first consumer.
+    anon = anon_http.get(f"{logistics_url}/shipments")
+    assert anon.status_code == 401, (
+        "GET /shipments must reject an unauthenticated caller, got "
+        f"{anon.status_code}: {anon.text[:200]}"
+    )
+    anon_one = anon_http.get(f"{logistics_url}/shipments/order/{order_id}")
+    assert anon_one.status_code == 401, (
+        "GET /shipments/order/{id} must reject an unauthenticated caller, got "
+        f"{anon_one.status_code}: {anon_one.text[:200]}"
+    )
+    # The status code alone could pass while a body still leaked. This asserts the
+    # property that actually matters: no customer PII survives in the response.
+    assert TEST_SHIPPING_ADDRESS["recipient_name"] not in anon.text, (
+        "Customer PII leaked to an unauthenticated caller"
+    )
+    print("  shipment reads are closed to anonymous callers")

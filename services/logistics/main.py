@@ -197,16 +197,30 @@ async def create_shipment(order_id: int = Body(...), db: Session = Depends(get_d
     return {"shipment_id": s.id, "tracking": s.tracking}
 
 
+# The three shipment reads below are guarded by require_courier_or_admin. They
+# never carried any authorization (pre-existing, not introduced by 260912-n7c --
+# `git show 23f6972:services/logistics/main.py` shows only Depends(get_db)). That
+# was a latent missing-authorization defect until 260912-n7c added shipping_address
+# to shipment_to_dict, which turned it into a live customer-PII disclosure: one
+# unauthenticated GET through the public nginx proxy returned every customer's
+# name, street, city, postal code and phone.
 @app.get("/shipments")
-def list_shipments(db: Session = Depends(get_db)):
-    """List all shipments (for admin dashboard)."""
+def list_shipments(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_courier_or_admin),
+):
+    """List all shipments (for admin dashboard). Requires courier or owner role."""
     shipments = db.query(Shipment).order_by(Shipment.id.desc()).all()
     return [shipment_to_dict(s) for s in shipments]
 
 
 @app.get("/shipments/order/{order_id}")
-def get_shipment_by_order(order_id: int, db: Session = Depends(get_db)):
-    """Get shipment by order ID (for order tracking)."""
+def get_shipment_by_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_courier_or_admin),
+):
+    """Get shipment by order ID. Requires courier or owner role."""
     s = db.query(Shipment).filter(Shipment.order_id == order_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -214,8 +228,12 @@ def get_shipment_by_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/shipments/{shipment_id}")
-def get_shipment(shipment_id: int, db: Session = Depends(get_db)):
-    """Get shipment by ID."""
+def get_shipment(
+    shipment_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_courier_or_admin),
+):
+    """Get shipment by ID. Requires courier or owner role."""
     s = db.get(Shipment, shipment_id)
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
