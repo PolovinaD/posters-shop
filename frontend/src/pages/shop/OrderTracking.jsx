@@ -302,7 +302,18 @@ export default function OrderTracking() {
             
             <div className="mt-6 pt-4 border-t border-stone-100">
               <p className="text-sm text-stone-500 mb-1">Shipping to</p>
-              <p className="font-medium text-stone-900">{order.customer_email}</p>
+              {order.shipping_address ? (
+                <div className="text-sm text-stone-900">
+                  <p className="font-medium">{order.shipping_address.recipient_name}</p>
+                  <p>{order.shipping_address.street}</p>
+                  <p>{order.shipping_address.postal_code} {order.shipping_address.city}</p>
+                  <p>{order.shipping_address.country}</p>
+                  <p className="text-stone-500 mt-1">{order.shipping_address.phone}</p>
+                  <p className="text-stone-500">{order.customer_email}</p>
+                </div>
+              ) : (
+                <p className="font-medium text-stone-900">{order.customer_email}</p>
+              )}
             </div>
           </div>
           
