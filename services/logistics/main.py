@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, Body, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import Column, Integer, String, DateTime, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from logger import get_logger, LoggingMiddleware
 from service_auth import require_service_or_owner
-from database import Base, engine, get_db, SessionLocal
+from database import engine, get_db, SessionLocal
+from models import Shipment
 from metrics import metrics_endpoint, track_metrics
 from auth import require_courier_or_admin, optional_auth
 import orders_client
@@ -21,29 +22,6 @@ LOGISTICS_AUTO_ADVANCE_INTERVAL = int(os.getenv("LOGISTICS_AUTO_ADVANCE_INTERVAL
 WORKER_POLL_INTERVAL = 30  # seconds; separate from advance interval
 
 background_task = None
-
-
-# --- Models ---
-
-class Shipment(Base):
-    __tablename__ = "shipments"
-    __table_args__ = {"schema": "logistics_schema"}
-    id = Column(Integer, primary_key=True)
-    order_id = Column(Integer, nullable=False)
-    status = Column(String, nullable=False, default="preparing")
-    tracking = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    # Delivery copy, written once at shipment creation (event-carried state
-    # transfer). Schema-per-service means logistics cannot read orders_schema,
-    # and a courier read must not depend on the orders service being up.
-    recipient_name = Column(String, nullable=True)
-    street = Column(String, nullable=True)
-    city = Column(String, nullable=True)
-    postal_code = Column(String, nullable=True)
-    country = Column(String, nullable=True)
-    recipient_phone = Column(String, nullable=True)
 
 
 # --- Helpers ---

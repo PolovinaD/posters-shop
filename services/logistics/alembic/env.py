@@ -12,7 +12,7 @@ from alembic import context
 
 # Import models to ensure they're registered with Base.metadata
 from database import Base
-from main import Shipment
+from models import Shipment
 
 # Alembic Config object
 config = context.config
