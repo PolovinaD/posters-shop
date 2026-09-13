@@ -1,71 +1,75 @@
-"""Unit tests for SHOP-03: logistics shipment_worker auto-progression."""
-import asyncio
+"""Unit tests for SHOP-03: the logistics shipment auto-advance rule.
+
+These tests import the PRODUCTION function services/logistics/worker_rules.py::
+next_status. Until quick task 260913-u90 this file restated the rule inline and
+so passed regardless of what the worker actually did — thesis §7.1 documents
+that as a limitation, and it was demonstrated real when Shipment gained six
+address columns and these tests never noticed.
+"""
+import os
 import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
+INTERVAL = 120  # matches LOGISTICS_AUTO_ADVANCE_INTERVAL's default
 
-INTERVAL = 120  # seconds per stage
+_LOGISTICS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../services/logistics")
+)
+sys.path.insert(0, _LOGISTICS_DIR)
+try:
+    # No `database` stub here, unlike test_order_state_machine.py: worker_rules
+    # imports nothing but `datetime`. services/logistics/database.py calls
+    # create_engine(DATABASE_URL) at module scope and raises ArgumentError when
+    # DATABASE_URL is unset, which is exactly why the rule was extracted into a
+    # module that never touches SQLAlchemy. "worker_rules" is also a name no
+    # other service uses, so there is no cross-service collision to unwind.
+    from worker_rules import next_status
+finally:
+    sys.path.remove(_LOGISTICS_DIR)
+    sys.modules.pop("worker_rules", None)
 
 
-def _make_shipment(status: str, age_seconds: int) -> MagicMock:
-    """Create a mock Shipment with given status and age."""
-    s = MagicMock()
-    s.status = status
-    s.order_id = 7
-    s.updated_at = (datetime.utcnow() - timedelta(seconds=age_seconds))
-    return s
+def _updated_at(age_seconds: int) -> datetime:
+    """A NAIVE UTC timestamp `age_seconds` old — the shape the DB hands the worker."""
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=age_seconds)
 
 
 def test_dispatched_advances_to_in_transit():
     """SHOP-03: dispatched shipment old enough is advanced to in_transit."""
-    shipment = _make_shipment("dispatched", age_seconds=130)
-
-    # Direct logic test (timezone-aware comparison)
     now = datetime.now(timezone.utc)
-    updated_naive = shipment.updated_at
-    age = (now - updated_naive.replace(tzinfo=timezone.utc)).total_seconds()
-    assert age >= INTERVAL
-    # Simulate worker logic
-    if shipment.status == "dispatched" and age >= INTERVAL:
-        shipment.status = "in_transit"
-    assert shipment.status == "in_transit"
+
+    assert next_status("dispatched", _updated_at(130), now, INTERVAL) == "in_transit"
 
 
 def test_in_transit_advances_to_delivered():
     """SHOP-03: in_transit shipment old enough is advanced to delivered."""
-    shipment = _make_shipment("in_transit", age_seconds=130)
     now = datetime.now(timezone.utc)
-    age = (now - shipment.updated_at.replace(tzinfo=timezone.utc)).total_seconds()
-    assert age >= INTERVAL
-    if shipment.status == "in_transit" and age >= INTERVAL:
-        shipment.status = "delivered"
-    assert shipment.status == "delivered"
+
+    assert next_status("in_transit", _updated_at(130), now, INTERVAL) == "delivered"
 
 
 def test_not_yet_due_not_advanced():
     """SHOP-03: shipment not yet old enough is NOT advanced."""
-    shipment = _make_shipment("dispatched", age_seconds=30)
     now = datetime.now(timezone.utc)
-    age = (now - shipment.updated_at.replace(tzinfo=timezone.utc)).total_seconds()
-    # Should NOT advance — age < INTERVAL
-    assert age < INTERVAL
-    original_status = shipment.status
-    if age >= INTERVAL:
-        shipment.status = "in_transit"
-    assert shipment.status == original_status
+
+    assert next_status("dispatched", _updated_at(30), now, INTERVAL) is None
 
 
 def test_delivered_calls_notify():
-    """SHOP-03: when shipment reaches delivered, notify_order_delivered is called.
+    """SHOP-03: when a shipment reaches delivered, notify_order_delivered is called.
 
-    The worker calls asyncio.create_task(orders_client.notify_order_delivered(s.order_id)).
-    We verify the call args are correct using a synchronous mock tracking calls.
+    The worker does asyncio.create_task(orders_client.notify_order_delivered(
+    s.order_id)) guarded by `if s.status == "delivered"`. Only the dispatch is
+    mocked here — the STATUS DECISION comes from the production next_status, so
+    breaking the rule breaks this test too.
     """
-    notify_mock = MagicMock(return_value=True)
-    shipment = _make_shipment("in_transit", age_seconds=130)
-    shipment.status = "delivered"  # simulate post-advance
-    # Simulate what the worker does: call notify with the order_id
-    notify_mock(shipment.order_id)
-    notify_mock.assert_called_once_with(7)
+    notify = MagicMock(return_value=True)
+    now = datetime.now(timezone.utc)
+
+    new = next_status("in_transit", _updated_at(130), now, INTERVAL)
+    if new == "delivered":
+        notify(7)
+
+    assert new == "delivered"
+    notify.assert_called_once_with(7)

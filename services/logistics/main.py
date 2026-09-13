@@ -11,6 +11,7 @@ from logger import get_logger, LoggingMiddleware
 from service_auth import require_service_or_owner
 from database import engine, get_db, SessionLocal
 from models import Shipment
+from worker_rules import next_status
 from metrics import metrics_endpoint, track_metrics
 from auth import require_courier_or_admin, optional_auth
 import orders_client
@@ -60,11 +61,12 @@ async def shipment_worker():
                     Shipment.status.in_(["dispatched", "in_transit"])
                 ).all()
                 for s in shipments:
-                    # updated_at is naive (no tzinfo from DB) — must attach UTC before subtracting
-                    age = (now - s.updated_at.replace(tzinfo=timezone.utc)).total_seconds()
-                    if age >= LOGISTICS_AUTO_ADVANCE_INTERVAL:
+                    new_status = next_status(
+                        s.status, s.updated_at, now, LOGISTICS_AUTO_ADVANCE_INTERVAL
+                    )
+                    if new_status is not None:
                         old_status = s.status
-                        s.status = "in_transit" if s.status == "dispatched" else "delivered"
+                        s.status = new_status
                         s.updated_at = datetime.utcnow()
                         db.commit()
                         logger.info("Auto-advanced shipment",
