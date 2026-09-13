@@ -20,7 +20,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - name: http-metrics
+            - name: http
               containerPort: 8000
               protocol: TCP
           env:
@@ -40,13 +40,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http-metrics
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http-metrics
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
@@ -62,9 +62,9 @@ spec:
   type: {{ .Values.service.type }}
   ports:
     - port: {{ .Values.service.port }}
-      targetPort: http-metrics
+      targetPort: http
       protocol: TCP
-      name: http-metrics
+      name: http
   selector:
     app: {{ .Chart.Name }}
 ---

@@ -385,11 +385,12 @@ service you first suspect.
    new service's `/metrics`.
 
    **The `endpoints[].port` value must be the port NAME declared on the service's
-   Kubernetes Service, not a port number and not an assumption.** Most services name it
-   `http`, but `infra` names its port `http-metrics`. A ServiceMonitor whose port name
-   matches nothing still appears healthy in `kubectl get servicemonitor` while scraping
-   nothing at all — a silent failure that is harder to spot than a missing monitor.
-   Check the chart's Service definition before writing the block.
+   Kubernetes Service, not a port number and not an assumption.** All nine services
+   currently name it `http`, but verify against the chart rather than assuming. A
+   ServiceMonitor whose port name matches nothing still appears healthy in
+   `kubectl get servicemonitor` while scraping nothing at all — a silent failure that is
+   harder to spot than a missing monitor. Check the chart's Service definition before
+   writing the block.
 
 6. **Add to deploy workflow:**
    Automatic builds and deploys need **no workflow edit**: both workflows derive the full
