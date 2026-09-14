@@ -9,38 +9,142 @@
     {
       "type": "timeseries",
       "title": "Circuit Breaker State Transitions — Rate (transitions/min)",
-      "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed→open means failures tripped the breaker; open→half_open means recovery probe started; half_open→closed means service recovered.",
+      "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed→open means failures tripped the breaker; open→half_open means recovery probe started; half_open→closed means service recovered. Split by exported_service: the Prometheus scrape attaches its own `service` label (the Kubernetes Service, \"orders\"), so the application's service label — inventory or payments — surfaces as `exported_service`. If the legend shows an empty service name, change exported_service to service in this panel's query and legend.",
       "targets": [
         {
-          "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (from_state, to_state) * 60",
-          "legendFormat": "{{from_state}} → {{to_state}}"
+          "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (exported_service, from_state, to_state) * 60",
+          "legendFormat": "{{exported_service}}: {{from_state}} → {{to_state}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "color": {"mode": "palette-classic"},
-          "min": 0
-        }
+          "min": 0,
+          "custom": {"axisLabel": "Transitions per minute"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {"fill": "solid"}
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [12, 6]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [0, 8]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [4, 4]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
       "gridPos": {"x": 0, "y": 0, "w": 24, "h": 10}
     },
     {
       "type": "timeseries",
       "title": "Circuit Breaker Cumulative Transitions (Total Count)",
-      "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session.",
+      "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session. Also split by pod, so a breaker that opens on one replica before the other is visible as two separate steps — the per-replica unevenness discussed in §8.3. Split by exported_service: the Prometheus scrape attaches its own `service` label (the Kubernetes Service, \"orders\"), so the application's service label — inventory or payments — surfaces as `exported_service`. If the legend shows an empty service name, change exported_service to service in this panel's query and legend.",
       "targets": [
         {
-          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (from_state, to_state)",
-          "legendFormat": "{{from_state}} → {{to_state}}"
+          "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (exported_service, pod, from_state, to_state)",
+          "legendFormat": "{{exported_service}} {{from_state}} → {{to_state}} @ {{pod}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "color": {"mode": "palette-classic"},
-          "min": 0
-        }
+          "min": 0,
+          "custom": {"axisLabel": "Cumulative transitions"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {"fill": "solid"}
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [12, 6]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [0, 8]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [4, 4]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
       "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
     },
@@ -57,9 +161,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
+          "color": {"mode": "thresholds"},
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -85,9 +187,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
+          "color": {"mode": "thresholds"},
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -111,9 +211,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
+          "color": {"mode": "thresholds"},
           "thresholds": {
             "mode": "absolute",
             "steps": [

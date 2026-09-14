@@ -24,8 +24,24 @@
         "defaults": {
           "unit": "percent",
           "color": {"mode": "palette-classic"},
-          "min": 0
-        }
+          "min": 0,
+          "custom": {"axisLabel": "CPU utilization (%)", "lineWidth": 1}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "HPA Target (50%)"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [12, 6]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
       "gridPos": {"x": 0, "y": 0, "w": 12, "h": 10}
     },
@@ -52,8 +68,47 @@
           "unit": "short",
           "color": {"mode": "palette-classic"},
           "min": 0,
-          "decimals": 0
-        }
+          "decimals": 0,
+          "custom": {"axisLabel": "Replicas"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Current Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {"fill": "solid"}
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Min Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [0, 8]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Max Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [12, 6]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
       "gridPos": {"x": 12, "y": 0, "w": 12, "h": 10}
     },
@@ -71,7 +126,8 @@
         "defaults": {
           "unit": "reqps",
           "color": {"mode": "palette-classic"},
-          "min": 0
+          "min": 0,
+          "custom": {"axisLabel": "Requests per second"}
         }
       },
       "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
@@ -99,8 +155,47 @@
           "unit": "short",
           "color": {"mode": "palette-classic"},
           "min": 0,
-          "decimals": 0
-        }
+          "decimals": 0,
+          "custom": {"axisLabel": "Replicas"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Current Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {"fill": "solid"}
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Min Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [0, 8]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Max Replicas"},
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [12, 6]
+                }
+              },
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
       "gridPos": {"x": 12, "y": 10, "w": 12, "h": 10}
     }

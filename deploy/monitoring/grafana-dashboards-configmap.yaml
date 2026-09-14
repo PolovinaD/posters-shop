@@ -92,9 +92,7 @@ metadata:
 data:
   postershop-hpa-comparison.json: |
     {
-      "annotations": {
-        "list": []
-      },
+      "annotations": {"list": []},
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -103,7 +101,7 @@ data:
       "panels": [
         {
           "type": "timeseries",
-          "title": "Production \u2014 CPU Utilization % (HPA Signal)",
+          "title": "Production — CPU Utilization % (HPA Signal)",
           "description": "CPU usage driving the production CPU-based HPA. Target: 50% average utilization.",
           "targets": [
             {
@@ -118,22 +116,31 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "percent",
-              "color": {
-                "mode": "palette-classic"
-              },
-              "min": 0
-            }
+              "color": {"mode": "palette-classic"},
+              "min": 0,
+              "custom": {"axisLabel": "CPU utilization (%)", "lineWidth": 1}
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "HPA Target (50%)"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [12, 6]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              }
+            ]
           },
-          "gridPos": {
-            "x": 0,
-            "y": 0,
-            "w": 12,
-            "h": 10
-          }
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 10}
         },
         {
           "type": "timeseries",
-          "title": "Production \u2014 Replica Count (CPU HPA Response)",
+          "title": "Production — Replica Count (CPU HPA Response)",
           "description": "How the CPU-based HPA adjusts production replicas in response to CPU load.",
           "targets": [
             {
@@ -152,23 +159,55 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "palette-classic"
-              },
+              "color": {"mode": "palette-classic"},
               "min": 0,
-              "decimals": 0
-            }
+              "decimals": 0,
+              "custom": {"axisLabel": "Replicas"}
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "Current Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {"fill": "solid"}
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Min Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dot",
+                      "dash": [0, 8]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Max Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [12, 6]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              }
+            ]
           },
-          "gridPos": {
-            "x": 12,
-            "y": 0,
-            "w": 12,
-            "h": 10
-          }
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 10}
         },
         {
           "type": "timeseries",
-          "title": "Orders \u2014 Request Rate req/s (HPA Signal)",
+          "title": "Orders — Request Rate req/s (HPA Signal)",
           "description": "HTTP request rate to orders service driving the custom metric HPA. Target: 5 req/s per pod.",
           "targets": [
             {
@@ -179,22 +218,16 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "reqps",
-              "color": {
-                "mode": "palette-classic"
-              },
-              "min": 0
+              "color": {"mode": "palette-classic"},
+              "min": 0,
+              "custom": {"axisLabel": "Requests per second"}
             }
           },
-          "gridPos": {
-            "x": 0,
-            "y": 10,
-            "w": 12,
-            "h": 10
-          }
+          "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
         },
         {
           "type": "timeseries",
-          "title": "Orders \u2014 Replica Count (Request-Rate HPA Response)",
+          "title": "Orders — Replica Count (Request-Rate HPA Response)",
           "description": "How the request-rate HPA adjusts orders replicas in response to HTTP load.",
           "targets": [
             {
@@ -213,39 +246,62 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "palette-classic"
-              },
+              "color": {"mode": "palette-classic"},
               "min": 0,
-              "decimals": 0
-            }
+              "decimals": 0,
+              "custom": {"axisLabel": "Replicas"}
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "Current Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {"fill": "solid"}
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Min Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dot",
+                      "dash": [0, 8]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Max Replicas"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [12, 6]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              }
+            ]
           },
-          "gridPos": {
-            "x": 12,
-            "y": 10,
-            "w": 12,
-            "h": 10
-          }
+          "gridPos": {"x": 12, "y": 10, "w": 12, "h": 10}
         }
       ],
       "refresh": "10s",
       "schemaVersion": 39,
-      "tags": [
-        "postershop",
-        "autoscaling",
-        "HPA",
-        "comparison"
-      ],
-      "time": {
-        "from": "now-30m",
-        "to": "now"
-      },
+      "tags": ["postershop", "autoscaling", "HPA", "comparison"],
+      "time": {"from": "now-30m", "to": "now"},
       "timezone": "browser",
       "title": "PosterShop HPA Comparison: CPU vs Request-Rate",
       "uid": "postershop-hpa-comparison",
       "version": 1
     }
-
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -259,9 +315,7 @@ metadata:
 data:
   postershop-circuit-breaker.json: |
     {
-      "annotations": {
-        "list": []
-      },
+      "annotations": {"list": []},
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -270,59 +324,149 @@ data:
       "panels": [
         {
           "type": "timeseries",
-          "title": "Circuit Breaker State Transitions \u2014 Rate (transitions/min)",
-          "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed\u2192open means failures tripped the breaker; open\u2192half_open means recovery probe started; half_open\u2192closed means service recovered.",
+          "title": "Circuit Breaker State Transitions — Rate (transitions/min)",
+          "description": "Rate of circuit breaker state transitions. Each spike indicates a transition event. closed→open means failures tripped the breaker; open→half_open means recovery probe started; half_open→closed means service recovered. Split by exported_service: the Prometheus scrape attaches its own `service` label (the Kubernetes Service, \"orders\"), so the application's service label — inventory or payments — surfaces as `exported_service`. If the legend shows an empty service name, change exported_service to service in this panel's query and legend.",
           "targets": [
             {
-              "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (from_state, to_state) * 60",
-              "legendFormat": "{{from_state}} \u2192 {{to_state}}"
+              "expr": "sum(rate(circuit_breaker_state_transitions_total{service=\"orders\"}[1m])) by (exported_service, from_state, to_state) * 60",
+              "legendFormat": "{{exported_service}}: {{from_state}} → {{to_state}}"
             }
           ],
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "palette-classic"
+              "color": {"mode": "palette-classic"},
+              "min": 0,
+              "custom": {"axisLabel": "Transitions per minute"}
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {"fill": "solid"}
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
               },
-              "min": 0
-            }
+              {
+                "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [12, 6]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dot",
+                      "dash": [0, 8]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [4, 4]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              }
+            ]
           },
-          "gridPos": {
-            "x": 0,
-            "y": 0,
-            "w": 24,
-            "h": 10
-          }
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 10}
         },
         {
           "type": "timeseries",
           "title": "Circuit Breaker Cumulative Transitions (Total Count)",
-          "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session.",
+          "description": "Running total of circuit breaker transitions by type. Shows how many times the breaker has opened and closed over the session. Also split by pod, so a breaker that opens on one replica before the other is visible as two separate steps — the per-replica unevenness discussed in §8.3. Split by exported_service: the Prometheus scrape attaches its own `service` label (the Kubernetes Service, \"orders\"), so the application's service label — inventory or payments — surfaces as `exported_service`. If the legend shows an empty service name, change exported_service to service in this panel's query and legend.",
           "targets": [
             {
-              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (from_state, to_state)",
-              "legendFormat": "{{from_state}} \u2192 {{to_state}}"
+              "expr": "sum(circuit_breaker_state_transitions_total{service=\"orders\"}) by (exported_service, pod, from_state, to_state)",
+              "legendFormat": "{{exported_service}} {{from_state}} → {{to_state}} @ {{pod}}"
             }
           ],
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "palette-classic"
+              "color": {"mode": "palette-classic"},
+              "min": 0,
+              "custom": {"axisLabel": "Cumulative transitions"}
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {"fill": "solid"}
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
               },
-              "min": 0
-            }
+              {
+                "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [12, 6]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dot",
+                      "dash": [0, 8]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [4, 4]
+                    }
+                  },
+                  {"id": "custom.lineWidth", "value": 2}
+                ]
+              }
+            ]
           },
-          "gridPos": {
-            "x": 0,
-            "y": 10,
-            "w": 12,
-            "h": 10
-          }
+          "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10}
         },
         {
           "type": "stat",
-          "title": "Total Opens (closed \u2192 open)",
+          "title": "Total Opens (closed → open)",
           "description": "How many times the circuit has opened due to failures.",
           "targets": [
             {
@@ -333,38 +477,22 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "thresholds"
-              },
+              "color": {"mode": "thresholds"},
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "yellow",
-                    "value": 1
-                  },
-                  {
-                    "color": "red",
-                    "value": 5
-                  }
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 5}
                 ]
               }
             }
           },
-          "gridPos": {
-            "x": 12,
-            "y": 10,
-            "w": 6,
-            "h": 5
-          }
+          "gridPos": {"x": 12, "y": 10, "w": 6, "h": 5}
         },
         {
           "type": "stat",
-          "title": "Total Recoveries (half_open \u2192 closed)",
+          "title": "Total Recoveries (half_open → closed)",
           "description": "How many times the circuit has recovered and closed after probing.",
           "targets": [
             {
@@ -375,30 +503,20 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "thresholds"
-              },
+              "color": {"mode": "thresholds"},
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
+                  {"color": "green", "value": null}
                 ]
               }
             }
           },
-          "gridPos": {
-            "x": 18,
-            "y": 10,
-            "w": 6,
-            "h": 5
-          }
+          "gridPos": {"x": 18, "y": 10, "w": 6, "h": 5}
         },
         {
           "type": "stat",
-          "title": "Total Re-opens (half_open \u2192 open)",
+          "title": "Total Re-opens (half_open → open)",
           "description": "How many times the probe failed and the circuit re-opened.",
           "targets": [
             {
@@ -409,49 +527,28 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
-              "color": {
-                "mode": "thresholds"
-              },
+              "color": {"mode": "thresholds"},
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "yellow",
-                    "value": 1
-                  }
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1}
                 ]
               }
             }
           },
-          "gridPos": {
-            "x": 12,
-            "y": 15,
-            "w": 12,
-            "h": 5
-          }
+          "gridPos": {"x": 12, "y": 15, "w": 12, "h": 5}
         }
       ],
       "refresh": "10s",
       "schemaVersion": 39,
-      "tags": [
-        "postershop",
-        "resilience",
-        "circuit-breaker"
-      ],
-      "time": {
-        "from": "now-1h",
-        "to": "now"
-      },
+      "tags": ["postershop", "resilience", "circuit-breaker"],
+      "time": {"from": "now-1h", "to": "now"},
       "timezone": "browser",
       "title": "PosterShop Circuit Breaker State Transitions",
       "uid": "postershop-circuit-breaker",
       "version": 1
     }
-
 ---
 apiVersion: v1
 kind: ConfigMap
