@@ -25,7 +25,7 @@
         },
         "overrides": [
           {
-            "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+            "matcher": {"id": "byRegexp", "options": ".*closed → open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -35,7 +35,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+            "matcher": {"id": "byRegexp", "options": ".*open → half_open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -48,7 +48,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+            "matcher": {"id": "byRegexp", "options": ".*half_open → closed.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -61,7 +61,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+            "matcher": {"id": "byRegexp", "options": ".*half_open → open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -96,7 +96,7 @@
         },
         "overrides": [
           {
-            "matcher": {"id": "byRegexp", "options": ".*closed → open$"},
+            "matcher": {"id": "byRegexp", "options": ".*closed → open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -106,7 +106,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*open → half_open$"},
+            "matcher": {"id": "byRegexp", "options": ".*open → half_open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -119,7 +119,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*half_open → closed$"},
+            "matcher": {"id": "byRegexp", "options": ".*half_open → closed.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
@@ -132,7 +132,7 @@
             ]
           },
           {
-            "matcher": {"id": "byRegexp", "options": ".*half_open → open$"},
+            "matcher": {"id": "byRegexp", "options": ".*half_open → open.*"},
             "properties": [
               {
                 "id": "custom.lineStyle",
