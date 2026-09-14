@@ -70,7 +70,55 @@ fi
 # Configuration (can be overridden by .env or environment)
 export AWS_PAGER=""
 AWS_REGION=${AWS_REGION:-eu-north-1}
-AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null)}
+
+# ============================================================
+# Verify AWS Account (SAFETY CHECK)
+# ============================================================
+# teardown.sh has carried this check since it was written; the script that
+# CREATES the infrastructure had none and simply adopted whatever identity was
+# active. A shell with AWS_PROFILE unset resolves to the default profile, so
+# without this the next line would build ECR_REGISTRY for someone else's
+# account and Step 2 would create an EKS cluster there. Only .env stood in the
+# way, and .env is not a safety mechanism.
+#
+# This must stay ABOVE load_or_generate_passwords: that function reads Secrets
+# Manager, which is the first real AWS call in the script and happens long
+# before the credential check in Step 1's preflight.
+export AWS_PROFILE=${AWS_PROFILE:-private}
+EXPECTED_ACCOUNT_ID=${EXPECTED_ACCOUNT_ID:-553967852170}
+
+log_info "Verifying AWS credentials..."
+CURRENT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+
+if [ -z "$CURRENT_ACCOUNT" ] || [ "$CURRENT_ACCOUNT" = "None" ]; then
+    log_error "Failed to get AWS account. Check your credentials."
+    log_error "AWS_PROFILE=$AWS_PROFILE"
+    exit 1
+fi
+
+if [ "$CURRENT_ACCOUNT" != "$EXPECTED_ACCOUNT_ID" ]; then
+    log_error "WRONG AWS ACCOUNT!"
+    log_error "  Expected: $EXPECTED_ACCOUNT_ID"
+    log_error "  Got:      $CURRENT_ACCOUNT"
+    log_error ""
+    log_error "You may be logged into your work account!"
+    log_error "Set AWS_PROFILE=$AWS_PROFILE or check your credentials."
+    log_error "To deploy into another account on purpose, set EXPECTED_ACCOUNT_ID."
+    exit 1
+fi
+
+# A stale AWS_ACCOUNT_ID inherited from .env would otherwise build ECR_REGISTRY
+# for an account these credentials cannot push to, and fail only at Step 8 —
+# after the cluster and RDS already exist and cost money.
+if [ -n "${AWS_ACCOUNT_ID:-}" ] && [ "$AWS_ACCOUNT_ID" != "$CURRENT_ACCOUNT" ]; then
+    log_error "AWS_ACCOUNT_ID ($AWS_ACCOUNT_ID) does not match the verified identity ($CURRENT_ACCOUNT)."
+    log_error "Fix or remove AWS_ACCOUNT_ID in .env."
+    exit 1
+fi
+AWS_ACCOUNT_ID=$CURRENT_ACCOUNT
+
+log_success "AWS Account verified: $CURRENT_ACCOUNT ($AWS_PROFILE)"
+
 CLUSTER_NAME=${CLUSTER_NAME:-postershop}
 NAMESPACE=${NAMESPACE:-postershop}
 # Kubernetes version and CI role must match deploy/infrastructure/eksctl-cluster.yaml.
