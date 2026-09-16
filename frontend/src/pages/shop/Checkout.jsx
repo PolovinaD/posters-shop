@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, CreditCard, Lock, Loader2, CheckCircle } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { ArrowLeft, CreditCard, Lock, Loader2, CheckCircle, Coins, Wallet as WalletIcon } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
 import { useAuth } from '../../context/AuthContext';
-import { ordersApi } from '../../api';
+import { ordersApi, paymentsApi } from '../../api';
+import { addressFromKey, payInvoice, usdToWei, formatEth, shortAddress } from '../../lib/escrow';
 
 const COUNTRIES = ['Serbia', 'Bosnia and Herzegovina', 'Croatia', 'Montenegro', 'North Macedonia', 'Slovenia', 'Hungary', 'Austria', 'Germany'];
 const POSTAL_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{1,11}$/;
@@ -11,7 +13,6 @@ const PHONE_RE = /^\+?[0-9][0-9 \-()]{4,19}$/;
 const EMPTY_ADDRESS = { recipient_name: '', street: '', city: '', postal_code: '', country: COUNTRIES[0], phone: '' };
 
 export default function Checkout() {
-  const navigate = useNavigate();
   const { items, total, clearCart } = useCart();
   const { user, isAuthenticated } = useAuth();
   const [email, setEmail] = useState('');
@@ -21,19 +22,61 @@ export default function Checkout() {
   const [orderId, setOrderId] = useState(null);
   const [error, setError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
+  // Ether escrow (ESC-05). The key is held in component state only, turned into
+  // an address for display and into ONE signed transaction on submit, then
+  // cleared. It is never part of any request body.
+  const [paymentMethod, setPaymentMethod] = useState('stripe'); // stripe | escrow
+  const [privateKey, setPrivateKey] = useState('');
+  const [keyError, setKeyError] = useState(null);
+  // Set once the escrow order exists and cleared only when verify succeeds, so a
+  // failure after order creation can point the customer at "Pay now".
+  const [pendingEscrow, setPendingEscrow] = useState(null);
 
   useEffect(() => {
     if (isAuthenticated && user?.email) {
       setEmail(user.email);
     }
   }, [isAuthenticated, user]);
-  
+
+  // Public read: with Ganache down (or escrow unconfigured) this says
+  // enabled: false and the Ether option is simply not rendered.
+  const { data: escrowConfig } = useQuery({
+    queryKey: ['escrowConfig'],
+    queryFn: paymentsApi.getEscrowConfig,
+    staleTime: 30000,
+    retry: false,
+  });
+  const escrowEnabled = !!escrowConfig?.enabled;
+  const { data: demoAccounts = [] } = useQuery({
+    queryKey: ['escrowDemoAccounts'],
+    queryFn: () => paymentsApi.getEscrowDemoAccounts().catch(() => []),
+    enabled: escrowEnabled && paymentMethod === 'escrow',
+  });
+
+  // If escrow becomes disabled while selected, fall back to Card.
+  useEffect(() => {
+    if (escrowConfig && !escrowConfig.enabled && paymentMethod === 'escrow') {
+      setPaymentMethod('stripe');
+    }
+  }, [escrowConfig, paymentMethod]);
+
+  const derivedAddress = useMemo(() => {
+    if (!privateKey) return null;
+    try {
+      return addressFromKey(privateKey);
+    } catch {
+      return null;
+    }
+  }, [privateKey]);
+  const ethAmount = escrowConfig ? formatEth(usdToWei(total, escrowConfig.wei_per_usd)) : null;
+  const selectedDemoIndex = demoAccounts.find((a) => a.private_key === privateKey)?.index ?? '';
+
   if (items.length === 0 && step === 'details') {
     return (
       <div className="max-w-2xl mx-auto px-4 py-20 text-center">
         <h1 className="text-2xl font-bold text-stone-900 mb-4">Your cart is empty</h1>
-        <Link 
-          to="/shop" 
+        <Link
+          to="/shop"
           className="text-orange-600 hover:text-orange-700 font-medium"
         >
           ← Continue shopping
@@ -41,7 +84,7 @@ export default function Checkout() {
       </div>
     );
   }
-  
+
   const fieldClass = (name) => `w-full px-4 py-3 rounded-xl border ${
     fieldErrors[name] ? 'border-red-300' : 'border-stone-200'
   } bg-white text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent`;
@@ -49,14 +92,20 @@ export default function Checkout() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
+    setKeyError(null);
 
     const errors = validateAddress(address);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;   // stay on 'details', do not flip to 'processing'
 
+    if (paymentMethod === 'escrow' && !derivedAddress) {
+      setKeyError('Enter a valid private key or pick a demo account');
+      return;
+    }
+
     setIsLoading(true);
     setStep('processing');
-    
+
     try {
       // 1. Create order
       const orderPayload = {
@@ -75,16 +124,37 @@ export default function Checkout() {
           quantity: item.quantity,
           unit_price: item.price,
         })),
+        payment_method: paymentMethod,
+        ...(paymentMethod === 'escrow' ? { customer_wallet: derivedAddress } : {}),
       };
-      
+
+      if (paymentMethod === 'escrow') {
+        // 2a. Deploy the per-order contract (idempotent), sign and send the
+        //     single pay() invoice in the browser, then let orders read the chain.
+        const order = await ordersApi.createOrder(orderPayload);
+        setOrderId(order.id);
+        setPendingEscrow({ orderId: order.id });
+        const escrow = await ordersApi.createEscrow(order.id);
+        await payInvoice({ rpcUrl: escrow.config.rpc_url, privateKey, invoice: escrow.invoice });
+        const verified = await ordersApi.verifyEscrow(order.id);
+        if (verified.status !== 'paid' && verified.status !== 'already_paid') {
+          throw new Error(`Payment not yet visible on chain (${verified.chain_state}). Open the order and press "Pay now" to retry.`);
+        }
+        setPrivateKey('');
+        clearCart();
+        setPendingEscrow(null);
+        setStep('complete');
+        return;
+      }
+
       const order = await ordersApi.createOrder(orderPayload);
       setOrderId(order.id);
-      
+
       // 2. Create checkout session and redirect to Stripe
       const checkout = await ordersApi.createCheckout(order.id);
       clearCart();
       window.location.href = checkout.checkout_url;
-      
+
     } catch (err) {
       setError(err.message || 'Something went wrong');
       setStep('details');
@@ -92,7 +162,7 @@ export default function Checkout() {
       setIsLoading(false);
     }
   };
-  
+
   if (step === 'processing') {
     return (
       <div className="max-w-2xl mx-auto px-4 py-20 text-center">
@@ -101,12 +171,14 @@ export default function Checkout() {
         </div>
         <h1 className="text-2xl font-bold text-stone-900 mb-4">Processing your order...</h1>
         <p className="text-stone-600">
-          Creating order and processing payment. Please wait.
+          {paymentMethod === 'escrow'
+            ? 'Deploying the escrow contract and sending your payment. Please confirm nothing else — this takes a few seconds.'
+            : 'Creating order and processing payment. Please wait.'}
         </p>
       </div>
     );
   }
-  
+
   if (step === 'complete') {
     return (
       <div className="max-w-2xl mx-auto px-4 py-20 text-center">
@@ -140,22 +212,22 @@ export default function Checkout() {
       </div>
     );
   }
-  
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      <Link 
-        to="/shop" 
+      <Link
+        to="/shop"
         className="inline-flex items-center gap-2 text-stone-500 hover:text-stone-700 mb-8"
       >
         <ArrowLeft className="w-4 h-4" />
         Back to Shop
       </Link>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
         {/* Checkout Form */}
         <div>
           <h1 className="text-3xl font-bold text-stone-900 mb-8">Checkout</h1>
-          
+
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-stone-700 mb-2">
@@ -173,8 +245,8 @@ export default function Checkout() {
                 }`}
               />
               <p className="text-sm text-stone-500 mt-1">
-                {isAuthenticated 
-                  ? 'Using your account email' 
+                {isAuthenticated
+                  ? 'Using your account email'
                   : 'We\'ll send order confirmation and tracking info here'
                 }
               </p>
@@ -285,47 +357,170 @@ export default function Checkout() {
               </div>
             </div>
 
-            {/* Payment Info (Demo) */}
+            {/* Payment */}
             <div className="bg-stone-50 rounded-2xl p-6">
               <div className="flex items-center gap-2 mb-4">
                 <CreditCard className="w-5 h-5 text-stone-400" />
                 <span className="font-medium text-stone-900">Payment</span>
               </div>
-              <div className="bg-white rounded-xl p-4 border border-stone-200">
-                <p className="text-sm text-stone-500 mb-2">Demo Mode</p>
-                <p className="font-mono text-stone-700">4242 4242 4242 4242</p>
-                <p className="text-xs text-stone-400 mt-1">
-                  This is a demo. No real payment will be processed.
-                </p>
+
+              <div className="space-y-3">
+                <label
+                  className={`flex items-start gap-3 bg-white rounded-xl p-4 border cursor-pointer transition-colors ${
+                    paymentMethod === 'stripe' ? 'border-orange-400 ring-2 ring-orange-100' : 'border-stone-200'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="payment_method"
+                    value="stripe"
+                    checked={paymentMethod === 'stripe'}
+                    onChange={() => setPaymentMethod('stripe')}
+                    className="mt-1 accent-orange-500"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-stone-500" />
+                      <span className="font-medium text-stone-900">Card (Stripe)</span>
+                    </div>
+                    <p className="text-sm text-stone-500 mt-1">
+                      You will be redirected to Stripe's secure checkout
+                    </p>
+                    <p className="text-xs text-stone-400 mt-1">
+                      Demo card: <span className="font-mono text-stone-500">4242 4242 4242 4242</span> — no real payment will be processed.
+                    </p>
+                  </div>
+                </label>
+
+                {escrowEnabled && (
+                  <label
+                    className={`flex items-start gap-3 bg-white rounded-xl p-4 border cursor-pointer transition-colors ${
+                      paymentMethod === 'escrow' ? 'border-orange-400 ring-2 ring-orange-100' : 'border-stone-200'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="payment_method"
+                      value="escrow"
+                      checked={paymentMethod === 'escrow'}
+                      onChange={() => setPaymentMethod('escrow')}
+                      className="mt-1 accent-orange-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <Coins className="w-4 h-4 text-amber-500" />
+                        <span className="font-medium text-stone-900">Ether (escrow)</span>
+                      </div>
+                      <p className="text-sm text-stone-500 mt-1">
+                        Pay {ethAmount} ETH into a per-order escrow contract; released to the shop and the courier when you confirm delivery
+                      </p>
+                    </div>
+                  </label>
+                )}
               </div>
+
+              {escrowEnabled && paymentMethod === 'escrow' && (
+                <div className="mt-4 bg-white rounded-xl p-4 border border-stone-200 space-y-4">
+                  {demoAccounts.length > 0 && (
+                    <div>
+                      <label className="block text-sm font-medium text-stone-700 mb-2">
+                        Use demo account
+                      </label>
+                      <select
+                        value={selectedDemoIndex}
+                        onChange={(e) => {
+                          const picked = demoAccounts.find((a) => String(a.index) === e.target.value);
+                          setPrivateKey(picked ? picked.private_key : '');
+                          setKeyError(null);
+                        }}
+                        className={fieldClass('demo_account')}
+                      >
+                        <option value="">— pick a Ganache account —</option>
+                        {demoAccounts.map((a) => (
+                          <option key={a.index} value={a.index}>
+                            Account {a.index} — {shortAddress(a.address)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-medium text-stone-700 mb-2">
+                      Private key
+                    </label>
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={privateKey}
+                      onChange={(e) => {
+                        setPrivateKey(e.target.value);
+                        setKeyError(null);
+                      }}
+                      placeholder="0x…"
+                      className={`${fieldClass('private_key')} font-mono`}
+                    />
+                    <p className="text-xs text-stone-400 mt-1">
+                      Signed in your browser with ethers.js — the key is never sent to the server
+                    </p>
+                    {privateKey && !derivedAddress && (
+                      <p className="text-xs text-red-500 mt-1">Enter a valid 64-character hex key</p>
+                    )}
+                    {derivedAddress && (
+                      <p className="flex items-center gap-2 text-sm text-stone-700 mt-2">
+                        <WalletIcon className="w-4 h-4 text-stone-400" />
+                        Paying from <span className="font-mono" title={derivedAddress}>{derivedAddress}</span>
+                      </p>
+                    )}
+                    {keyError && (
+                      <p className="text-xs text-red-500 mt-1">{keyError}</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
-            
+
             {error && (
               <div className="bg-red-50 text-red-600 px-4 py-3 rounded-xl">
                 {error}
               </div>
             )}
-            
+            {pendingEscrow && (
+              <div className="bg-amber-50 text-amber-800 px-4 py-3 rounded-xl text-sm">
+                Order #{pendingEscrow.orderId} was created.{' '}
+                <Link
+                  to={`/shop/orders/${pendingEscrow.orderId}`}
+                  className="font-semibold underline hover:text-amber-900"
+                >
+                  Pay now
+                </Link>{' '}
+                to finish paying.
+              </div>
+            )}
+
             <button
               type="submit"
-              disabled={isLoading || !email}
+              disabled={isLoading || !email || (paymentMethod === 'escrow' && !derivedAddress)}
               className="w-full py-4 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-xl hover:from-orange-600 hover:to-amber-600 transition-all shadow-lg shadow-orange-500/25 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Lock className="w-4 h-4" />
-              Place Order • ${total.toFixed(2)}
+              {paymentMethod === 'escrow'
+                ? `Pay ${ethAmount} ETH • $${total.toFixed(2)}`
+                : `Place Order • $${total.toFixed(2)}`}
             </button>
-            
+
             <p className="text-center text-sm text-stone-500">
               By placing your order, you agree to our Terms of Service.
             </p>
           </form>
         </div>
-        
+
         {/* Order Summary */}
         <div>
           <div className="bg-stone-50 rounded-2xl p-6 lg:sticky lg:top-24">
             <h2 className="text-lg font-semibold text-stone-900 mb-6">Order Summary</h2>
-            
+
             <ul className="divide-y divide-stone-200">
               {items.map((item) => (
                 <li key={item.sku} className="py-4 flex gap-4">
@@ -346,7 +541,7 @@ export default function Checkout() {
                 </li>
               ))}
             </ul>
-            
+
             <div className="border-t border-stone-200 mt-4 pt-4 space-y-2">
               <div className="flex justify-between text-stone-600">
                 <span>Subtotal</span>

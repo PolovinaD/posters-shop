@@ -1,21 +1,35 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { 
-  Package, 
-  CreditCard, 
-  Factory, 
-  Truck, 
-  CheckCircle, 
+import {
+  Package,
+  CreditCard,
+  Factory,
+  Truck,
+  CheckCircle,
   Clock,
   Search,
   ArrowRight,
-  XCircle
+  XCircle,
+  Coins,
+  ShieldCheck
 } from 'lucide-react';
-import { ordersApi, productionApi } from '../../api';
+import { ordersApi, productionApi, paymentsApi } from '../../api';
 import { useAuth } from '../../context/AuthContext';
+import { payInvoice, formatEth, payoutSplit, shortAddress, addressFromKey } from '../../lib/escrow';
 
 const CANCELLABLE_STATUSES = ['created', 'reserved', 'paid'];
+
+// escrow_status on the order row -> customer-facing label. `cancelled` reads
+// as "Refunded" because cancel_order refunds the contract before it cancels.
+const ESCROW_STATUS_LABELS = {
+  awaiting_payment: 'Awaiting payment',
+  funded: 'Funded',
+  in_delivery: 'In delivery',
+  released: 'Released',
+  cancelled: 'Refunded',
+  failed: 'Failed',
+};
 
 const STATUS_STEPS = [
   { status: 'reserved', label: 'Order Placed', icon: Clock, description: 'Waiting for payment' },
@@ -179,6 +193,76 @@ export default function OrderTracking() {
     refetchInterval: 5000,
   });
 
+  // Ether escrow (ESC-05): stored row state + live chain state, polled like the
+  // order itself so a payment or a courier binding shows up without a reload.
+  const isEscrow = order?.payment_method === 'escrow';
+  const { data: escrow } = useQuery({
+    queryKey: ['escrow', orderId],
+    queryFn: () => ordersApi.getEscrow(orderId),
+    enabled: !!orderId && !authLoading && isAuthenticated && isEscrow,
+    refetchInterval: 5000,
+  });
+  const { data: escrowConfig } = useQuery({
+    queryKey: ['escrowConfig'],
+    queryFn: paymentsApi.getEscrowConfig,
+    enabled: isEscrow,
+    staleTime: 30000,
+    retry: false,
+  });
+  const [payKey, setPayKey] = useState('');
+  const [payBusy, setPayBusy] = useState(false);
+  const [escrowMsg, setEscrowMsg] = useState(null); // { kind: 'error' | 'ok', text }
+  const payAddress = useMemo(() => {
+    if (!payKey) return null;
+    try {
+      return addressFromKey(payKey);
+    } catch {
+      return null;
+    }
+  }, [payKey]);
+
+  // Locked decision 1: the customer's authenticated click; the backend signs
+  // confirmDelivery() with the owner key. A 409 carries the bare revert reason
+  // ("Delivery not complete." when no courier is bound yet) and is shown as is.
+  const confirmReceipt = useMutation({
+    mutationFn: () => ordersApi.confirmEscrowDelivery(orderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['escrow', orderId] });
+      queryClient.invalidateQueries({ queryKey: ['order', orderId] });
+      setEscrowMsg({ kind: 'ok', text: 'Payment released: 80 % to the shop, 20 % to the courier.' });
+    },
+    onError: (err) => {
+      setEscrowMsg({ kind: 'error', text: err.message || 'Could not release the payment' });
+    },
+  });
+
+  // "Pay now": the same deploy -> sign -> verify path as checkout, for an order
+  // whose browser died (or whose key was wrong) before the payment landed.
+  const payNow = async () => {
+    setPayBusy(true);
+    setEscrowMsg(null);
+    try {
+      const e = await ordersApi.createEscrow(orderId);
+      await payInvoice({ rpcUrl: e.config.rpc_url, privateKey: payKey, invoice: e.invoice });
+      const v = await ordersApi.verifyEscrow(orderId);
+      if (v.status === 'paid' || v.status === 'already_paid') {
+        setEscrowMsg({ kind: 'ok', text: 'Payment confirmed on chain. Your order is now paid.' });
+      } else {
+        setEscrowMsg({
+          kind: 'error',
+          text: `Payment not yet visible on chain (${v.chain_state}). It is re-checked automatically every few seconds.`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['escrow', orderId] });
+      queryClient.invalidateQueries({ queryKey: ['order', orderId] });
+      setPayKey('');
+    } catch (err) {
+      setEscrowMsg({ kind: 'error', text: err.message || 'Payment failed' });
+    } finally {
+      setPayBusy(false);
+    }
+  };
+
   if (authLoading) return null;
 
   // If no order ID, show lookup form
@@ -219,6 +303,20 @@ export default function OrderTracking() {
     );
   }
   
+  // Escrow panel inputs: the live read wins; the order row fills in before it
+  // resolves (escrow_status is set at creation, the contract fields at deploy).
+  const escrowState = escrow?.escrow_status ?? order.escrow_status;
+  const contractAddress = escrow?.contract_address ?? order.escrow_contract_address;
+  const amountWei = escrow?.amount_wei ?? order.escrow_amount_wei;
+  const customerWallet = escrow?.customer_wallet ?? order.customer_wallet;
+  const courierWallet = escrow?.courier_wallet ?? order.courier_wallet;
+  const chainState = escrow?.chain?.state ?? (escrow?.chain_error ? 'unavailable' : '…');
+  const canPay = order.status === 'reserved' && escrowState === 'awaiting_payment';
+  const canConfirm = order.status === 'delivered' && escrow?.escrow_status === 'in_delivery';
+  const split = escrowState === 'released' && amountWei
+    ? payoutSplit(amountWei, escrowConfig?.courier_share_bps ?? 2000)
+    : null;
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       {/* Header */}
@@ -228,7 +326,9 @@ export default function OrderTracking() {
           Order #{order.id}
         </div>
         <h1 className="text-3xl font-bold text-stone-900 mb-2">
-          {order.status === 'delivered' ? 'Order Delivered!' :
+          {isEscrow && order.status === 'delivered' && escrow?.escrow_status === 'in_delivery'
+             ? 'Delivered — confirm receipt to release the payment' :
+           order.status === 'delivered' ? 'Order Delivered!' :
            order.status === 'shipped' ? 'Your order is on its way!' :
            order.status === 'producing' ? 'We\'re making your prints!' :
            order.status === 'paid' ? 'Order Confirmed!' :
@@ -270,6 +370,111 @@ export default function OrderTracking() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Ether escrow */}
+          {isEscrow && (
+            <div className="mt-6 bg-amber-50 rounded-2xl p-6">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-3">
+                  <Coins className="w-5 h-5 text-amber-500" />
+                  <span className="font-semibold text-amber-900">Ether escrow</span>
+                </div>
+                <span className="px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                  {ESCROW_STATUS_LABELS[escrowState] ?? escrowState ?? '—'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-amber-700">Contract</p>
+                  <p className="font-medium font-mono text-amber-900" title={contractAddress || ''}>
+                    {contractAddress ? shortAddress(contractAddress) : '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-amber-700">Amount</p>
+                  <p className="font-medium text-amber-900">{amountWei ? `${formatEth(amountWei)} ETH` : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-amber-700">Your wallet</p>
+                  <p className="font-medium font-mono text-amber-900" title={customerWallet || ''}>
+                    {shortAddress(customerWallet) || '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-amber-700">Courier</p>
+                  <p className="font-medium font-mono text-amber-900" title={courierWallet || ''}>
+                    {shortAddress(courierWallet) || '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-amber-700">On chain</p>
+                  <p className="font-medium text-amber-900">{chainState}</p>
+                </div>
+              </div>
+
+              {canPay && (
+                <div className="mt-5 bg-white rounded-xl p-4 border border-amber-200">
+                  <p className="font-medium text-stone-900 mb-2">Pay now</p>
+                  <p className="text-xs text-stone-500 mb-3">
+                    Paste the private key of your wallet{customerWallet ? ` (${shortAddress(customerWallet)})` : ''}.
+                    It is signed in your browser with ethers.js and never sent to the server.
+                  </p>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={payKey}
+                    onChange={(e) => setPayKey(e.target.value)}
+                    placeholder="Private key 0x…"
+                    className="w-full px-4 py-3 rounded-xl border border-stone-200 bg-white text-stone-900 font-mono placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                  />
+                  {payKey && !payAddress && (
+                    <p className="text-xs text-red-500 mt-1">Enter a valid 64-character hex key</p>
+                  )}
+                  {payAddress && (
+                    <p className="text-xs text-stone-600 mt-1">
+                      Paying from <span className="font-mono">{payAddress}</span>
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={payNow}
+                    disabled={payBusy || !payAddress}
+                    className="mt-3 w-full py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-xl hover:from-orange-600 hover:to-amber-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {payBusy ? 'Sending payment…' : amountWei ? `Pay ${formatEth(amountWei)} ETH` : 'Pay now'}
+                  </button>
+                </div>
+              )}
+
+              {canConfirm && (
+                <button
+                  type="button"
+                  onClick={() => confirmReceipt.mutate()}
+                  disabled={confirmReceipt.isPending}
+                  className="mt-5 w-full py-3 bg-green-600 text-white font-semibold rounded-xl hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <ShieldCheck className="w-5 h-5" />
+                  {confirmReceipt.isPending ? 'Releasing…' : 'Confirm receipt and release payment'}
+                </button>
+              )}
+
+              {split && (
+                <div className="mt-5 bg-white rounded-xl p-4 border border-amber-200 text-sm">
+                  <p className="font-medium text-stone-900 mb-1">Paid out</p>
+                  <p className="text-stone-600">
+                    Shop {formatEth(split.ownerWei)} ETH · Courier {formatEth(split.courierWei)} ETH
+                  </p>
+                </div>
+              )}
+
+              {escrowMsg && (
+                <p className={`mt-4 text-sm ${escrowMsg.kind === 'ok' ? 'text-green-700' : 'text-red-600'}`}>
+                  {escrowMsg.text}
+                </p>
+              )}
             </div>
           )}
         </div>
