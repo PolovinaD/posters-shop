@@ -35,6 +35,17 @@ def inventory_url():
 
 
 @pytest.fixture(scope="session")
+def payments_url():
+    return "http://localhost:8007"
+
+
+@pytest.fixture(scope="session")
+def ganache_url():
+    """The Ganache JSON-RPC endpoint published by the `ganache` compose service."""
+    return "http://localhost:8545"
+
+
+@pytest.fixture(scope="session")
 def owner_token(users_url):
     """Log in as the bootstrap owner and return an access token.
 
