@@ -34,23 +34,23 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Lockfile: `package-lock.json` present for frontend; no `pip` lockfiles (pinned versions vary by service)
 ## Frameworks
 - FastAPI - All 8 backend microservices, REST API framework
-- Uvicorn - ASGI server for all Python services
+- Uvicorn 0.38.0 - ASGI server for all Python services (uniform since 86c329c; notifications and payments keep the `[standard]` extra, the other seven do not)
 - React 19.2 - Frontend SPA (`frontend/package.json`)
 - Vite 5.4 - Frontend build tool and dev server
 - SQLAlchemy 2.0+ - ORM for all database-backed services (users, catalog, orders, production, logistics, inventory)
 - Alembic >= 1.13.0 - Database migrations for all database-backed services
 - psycopg2-binary - PostgreSQL driver
-- Not detected - No test framework configured in any service
+- pytest 8.3.4 - Test framework; the suite lives in `tests/` (7 unit files + 1 integration), not per-service (`tests/requirements.txt`)
 - Docker / Docker Compose - Local development and container builds (`docker-compose.yaml`)
 - Make - Build automation (`Makefile`)
-- Helm 3.13 - Kubernetes package management (`deploy/charts/`)
-- eksctl - EKS cluster management
+- Helm 3.19.0 - Kubernetes package management (`deploy/charts/`); nothing in the repo pins it — CI uses `azure/setup-helm@v3` with no `version:`
+- eksctl 0.215.0 - EKS cluster management (recorded by eksctl itself in `cluster.yaml:48`)
 ## Key Dependencies
 | Dependency | Version | Purpose | Risk Level |
 |-----------|---------|---------|------------|
-| FastAPI | 0.100-0.119 (varies) | REST API framework for all services | Medium - version inconsistency across services |
+| FastAPI | 0.119.1 | REST API framework for all services | Low - uniform across all nine since 86c329c |
 | SQLAlchemy | >=2.0 | ORM and database access | Low |
-| Pydantic | >=2.0 (varies) | Request/response validation | Low |
+| Pydantic | 2.12.3 | Request/response validation | Low - uniform across all nine since 86c329c |
 | React | ^19.2.0 | Frontend UI library | Low |
 | react-router-dom | ^7.11.0 | Client-side routing | Low |
 | @tanstack/react-query | ^5.90.12 | Server state management, data fetching | Low |
@@ -96,9 +96,11 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - AWS ECR - Container image registry
 - AWS Secrets Manager - Secret storage with ExternalSecrets operator
 - AWS ALB Ingress Controller - Frontend ingress (`deploy/charts/frontend/templates/ingress.yaml`)
-- Helm 3 - Deployment packaging (`deploy/charts/`)
-- Prometheus + Grafana - Monitoring stack (`deploy/monitoring/prometheus-values.yaml`)
-- Fluent Bit + Loki - Log aggregation (`deploy/monitoring/fluent-bit-values.yaml`, `deploy/monitoring/loki-values.yaml`)
+- Helm 3.19.0 - Deployment packaging (`deploy/charts/`)
+- Prometheus v3.13.2 + Grafana 13.1.3 - Monitoring stack, both from the kube-prometheus-stack chart 88.3.0 (`deploy/monitoring/prometheus-values.yaml`)
+- Prometheus Adapter v0.12.0 (chart 5.3.0) - Custom-metrics API backing the orders HPA (`deploy/monitoring/prometheus-adapter-values.yaml`)
+- Fluent Bit 5.1.0 (chart 0.58.0) + Loki 3.6.12 (chart 7.3.0) - Log aggregation (`deploy/monitoring/fluent-bit-values.yaml`, `deploy/monitoring/loki-values.yaml`)
+- Chart versions above are what `full-deploy.sh` resolved to at the 2026-08-16 deploy; it installs without `--version`, so they came from the repo index of that date. Recover them with `helm search repo <repo>/<chart> --versions` (reads the local cache, no network) — the live `helm list` records died with the cluster.
 - GitHub Actions with OIDC - CI/CD (`.github/workflows/`)
 ## Service Architecture Overview
 | Service | Port (local) | Database | Key Dependencies |
