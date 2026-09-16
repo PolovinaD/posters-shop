@@ -256,3 +256,265 @@ def test_init_provider_returns_none_without_owner_key(monkeypatch):
 
     assert esc.init_provider(w3_factory=factory) is None
     factory.assert_not_called()
+
+
+# ============== endpoints on payments/main.py ==============
+
+_metrics_stub = types.ModuleType("metrics")
+
+
+async def _noop_track_metrics(request, call_next):
+    return await call_next(request)
+
+
+_metrics_stub.track_metrics = _noop_track_metrics
+_metrics_stub.metrics_endpoint = MagicMock(return_value="")
+
+
+def _load_main():
+    """Load payments main.py like test_stripe_payments.py: stripe/logger/metrics stubbed.
+
+    `import escrow` inside main.py resolves to the REAL module (services/payments
+    on sys.path), which is why escrow.py must never connect at import time.
+    TestClient without a `with` block never runs the lifespan either.
+    """
+    sys.modules.setdefault("stripe", MagicMock())
+    sys.modules.setdefault("metrics", _metrics_stub)
+    os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_dummy")
+    sys.path.insert(0, str(PAYMENTS_DIR))
+    try:
+        spec = importlib.util.spec_from_file_location("payments_main_for_escrow", PAYMENTS_DIR / "main.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(PAYMENTS_DIR))
+    mod.app.dependency_overrides[mod.require_service_or_owner] = lambda: {
+        "sub": "service:test", "role": "service"
+    }
+    return mod
+
+
+class FakeProvider:
+    """In-memory OrderEscrow state machine with EscrowProvider's method names.
+
+    Raises the exception classes of the escrow module main.py imported (passed
+    in), so the handlers' except clauses match.
+    """
+
+    def __init__(self, escrow_mod, *, state="awaiting_payment", chain_id=1337, ganache=True,
+                 owner_address=OWNER, not_found=False):
+        self.E = escrow_mod
+        self._state = state
+        self._chain_id = chain_id
+        self._ganache = ganache
+        self.owner_address = owner_address
+        self.not_found = not_found
+        self.courier = None
+        self.deploys = []
+
+    def chain_id(self):
+        return self._chain_id
+
+    def is_ganache(self):
+        return self._ganache
+
+    def deploy(self, order_id, customer_address, amount_usd):
+        self.deploys.append((order_id, customer_address, amount_usd))
+        return {
+            "contract_address": Web3.to_checksum_address(ADDR),
+            "deploy_tx_hash": "0x" + "aa" * 32,
+            "amount_wei": str(self.E.usd_to_wei(amount_usd)),
+        }
+
+    def state(self, address):
+        if self.not_found:
+            raise self.E.EscrowNotFound(address)
+        return {
+            "state": self._state, "owner": OWNER, "customer": CUST, "courier": self.courier,
+            "price_wei": "5000", "balance_wei": "5000" if self._state in ("funded", "in_delivery") else "0",
+        }
+
+    def invoice(self, address):
+        return {"to": Web3.to_checksum_address(address), "value": "5000", "data": self.E.PAY_SELECTOR,
+                "chain_id": self._chain_id}
+
+    def assign_courier(self, address, courier_address):
+        if self._state != "funded":
+            raise self.E.EscrowRevert("Transfer not complete.")
+        self.courier = courier_address
+        self._state = "in_delivery"
+        return {"tx_hash": "0x" + "bb" * 32, "state": self._state}
+
+    def release(self, address):
+        if self._state != "in_delivery":
+            raise self.E.EscrowRevert("Delivery not complete.")
+        self._state = "released"
+        return {"tx_hash": "0x" + "cc" * 32, "state": self._state}
+
+    def cancel(self, address):
+        if self._state not in ("awaiting_payment", "funded"):
+            raise self.E.EscrowRevert("Cannot cancel.")
+        self._state = "cancelled"
+        return {"tx_hash": "0x" + "dd" * 32, "state": self._state}
+
+
+@pytest.fixture(scope="module")
+def mod():
+    return _load_main()
+
+
+@pytest.fixture
+def client(mod):
+    from fastapi.testclient import TestClient
+    return TestClient(mod.app)
+
+
+def _raise_unavailable(mod):
+    def _get_provider():
+        raise mod.escrow.EscrowUnavailable("down")
+    return _get_provider
+
+
+def _use(monkeypatch, mod, provider):
+    monkeypatch.setattr(mod.escrow, "get_provider", lambda: provider)
+    return provider
+
+
+def test_config_reports_disabled_when_provider_unavailable(mod, client, monkeypatch):
+    """ESC-02: config is a public 200 even with the chain down, so the SPA can hide the option."""
+    monkeypatch.setattr(mod.escrow, "get_provider", _raise_unavailable(mod))
+
+    r = client.get("/v1/escrow/config")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "enabled": False, "chain_id": None, "owner_address": None, "rpc_url": "/rpc",
+        "wei_per_usd": 1000000000000000, "courier_share_bps": 2000,
+    }
+
+
+def test_config_reports_enabled(mod, client, monkeypatch):
+    """ESC-02: config exposes chain id and owner when the provider is live."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, chain_id=1337, owner_address=OWNER))
+
+    body = client.get("/v1/escrow/config").json()
+
+    assert body["enabled"] is True
+    assert body["chain_id"] == 1337
+    assert body["owner_address"] == OWNER
+
+
+def test_escrow_endpoints_return_503_when_unavailable(mod, client, monkeypatch):
+    """ESC-02: an unreachable chain is a 503 on every escrow operation."""
+    monkeypatch.setattr(mod.escrow, "get_provider", _raise_unavailable(mod))
+
+    r = client.post("/v1/escrow", json={"order_id": 7, "customer_address": "0x" + "11" * 20, "amount_usd": "12.50"})
+    assert r.status_code == 503
+    assert client.get(f"/v1/escrow/{ADDR}").status_code == 503
+
+
+def test_demo_accounts_404_when_not_ganache(mod, client, monkeypatch):
+    """ESC-02: demo keys need BOTH the flag and a Ganache node."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, ganache=False))
+    assert client.get("/v1/escrow/demo-accounts").status_code == 404
+
+    monkeypatch.setattr(mod.escrow, "ESCROW_EXPOSE_DEMO_ACCOUNTS", False)
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, ganache=True))
+    assert client.get("/v1/escrow/demo-accounts").status_code == 404
+
+    monkeypatch.setattr(mod.escrow, "ESCROW_EXPOSE_DEMO_ACCOUNTS", True)
+    r = client.get("/v1/escrow/demo-accounts")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 10
+    assert body[0]["address"].lower() == GANACHE_0
+
+
+def test_create_escrow_deploys(mod, client, monkeypatch):
+    """ESC-02: POST /v1/escrow deploys one contract and returns address, tx and wei."""
+    p = _use(monkeypatch, mod, FakeProvider(mod.escrow))
+    customer = "0x" + "11" * 20
+
+    r = client.post("/v1/escrow", json={"order_id": 7, "customer_address": customer, "amount_usd": "12.50"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["contract_address"].lower() == ADDR
+    assert body["deploy_tx_hash"] == "0x" + "aa" * 32
+    assert body["amount_wei"] == "12500000000000000"
+    assert p.deploys == [(7, customer, "12.50")]
+
+
+def test_create_escrow_rejects_bad_address(mod, client, monkeypatch):
+    """ESC-02: the address regex is enforced before the chain is touched."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow))
+
+    r = client.post("/v1/escrow", json={"order_id": 7, "customer_address": "0x123", "amount_usd": "12.50"})
+
+    assert r.status_code == 422
+
+
+def test_revert_surfaces_as_409(mod, client, monkeypatch):
+    """ESC-02: a contract require() failure is a 409 carrying the bare reason."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, state="awaiting_payment"))
+
+    r = client.post(f"/v1/escrow/{ADDR}/courier", json={"courier_address": COURIER})
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Transfer not complete."
+
+
+def test_release_and_cancel_paths(mod, client, monkeypatch):
+    """ESC-02: release from in_delivery -> released; cancel from funded -> cancelled."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, state="in_delivery"))
+    r = client.post(f"/v1/escrow/{ADDR}/release")
+    assert r.status_code == 200
+    assert r.json()["state"] == "released"
+    assert r.json()["tx_hash"].startswith("0x")
+
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, state="funded"))
+    r = client.post(f"/v1/escrow/{ADDR}/cancel")
+    assert r.status_code == 200
+    assert r.json()["state"] == "cancelled"
+
+
+def test_invoice_and_state_reads(mod, client, monkeypatch):
+    """ESC-02: invoice and state have the shapes the SPA and orders program against."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, state="funded"))
+
+    r = client.get(f"/v1/escrow/{ADDR}/invoice")
+    assert r.status_code == 200
+    assert set(r.json()) == {"to", "value", "data", "chain_id"}
+    assert isinstance(r.json()["value"], str)
+
+    r = client.get(f"/v1/escrow/{ADDR}")
+    assert r.status_code == 200
+    assert set(r.json()) == {"state", "owner", "customer", "courier", "price_wei", "balance_wei"}
+
+
+def test_unknown_contract_is_404(mod, client, monkeypatch):
+    """ESC-02: no code at the address -> 404."""
+    _use(monkeypatch, mod, FakeProvider(mod.escrow, not_found=True))
+
+    assert client.get(f"/v1/escrow/{ADDR}").status_code == 404
+
+
+def test_readyz_unaffected_by_escrow(mod, client, monkeypatch):
+    """ESC-02: readiness never consults the chain."""
+    monkeypatch.setattr(mod.escrow, "get_provider", _raise_unavailable(mod))
+
+    r = client.get("/readyz")
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ready"}
+
+
+def test_stripe_routes_still_registered(mod):
+    """ESC-02: the Stripe surface is untouched and all eight escrow routes exist."""
+    paths = {r.path for r in mod.app.routes}
+
+    assert {
+        "/v1/checkout/sessions", "/v1/escrow/config", "/v1/escrow/demo-accounts", "/v1/escrow",
+        "/v1/escrow/{address}", "/v1/escrow/{address}/invoice", "/v1/escrow/{address}/courier",
+        "/v1/escrow/{address}/release", "/v1/escrow/{address}/cancel",
+    } <= paths

@@ -10,20 +10,29 @@ In production:
 - STRIPE_SECRET_KEY must be set (live or test key from Stripe Dashboard)
 - Register webhook URL in Stripe Dashboard: https://<ALB>/api/orders/webhooks/stripe
 - STRIPE_WEBHOOK_SECRET must match the Stripe Dashboard webhook signing secret
+
+Escrow (second provider, see escrow.py): the /v1/escrow/* endpoints drive a
+per-order OrderEscrow contract on an Ethereum node. The chain is optional --
+when it is unreachable those endpoints answer 503 and Stripe keeps working.
 """
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
 import stripe
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from logger import get_logger, LoggingMiddleware
 from service_auth import require_service_or_owner
 from metrics import track_metrics, metrics_endpoint
+import escrow
+from escrow import EscrowNotFound, EscrowRevert, EscrowUnavailable
 
 SERVICE_NAME = "payments"
 logger = get_logger(__name__)
@@ -70,8 +79,30 @@ class CheckoutSession(BaseModel):
     payment_intent_id: Optional[str] = None
 
 
+ADDRESS_RE = r"^0x[0-9a-fA-F]{40}$"
+
+
+class EscrowCreateRequest(BaseModel):
+    order_id: int
+    customer_address: str = Field(pattern=ADDRESS_RE)
+    amount_usd: Decimal = Field(gt=0)
+
+
+class EscrowCourierRequest(BaseModel):
+    courier_address: str = Field(pattern=ADDRESS_RE)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Escrow is optional: a missing/unreachable chain only disables /v1/escrow/*.
+    # init_provider never raises; it logs and returns None. Run it off the loop so a
+    # slow RPC timeout cannot delay Stripe readiness.
+    await asyncio.to_thread(escrow.init_provider)
+    yield
+
+
 ROOT_PATH = os.getenv("ROOT_PATH", "")
-app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Hosted Checkout)", root_path=ROOT_PATH)
+app = FastAPI(title=f"{SERVICE_NAME} service (Stripe Hosted Checkout)", root_path=ROOT_PATH, lifespan=lifespan)
 app.add_middleware(LoggingMiddleware)
 
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
@@ -235,3 +266,111 @@ async def expire_session(session_id: str):
                    "checkout.session.expired webhook is sent to orders service.",
         "session_id": session_id,
     }
+
+
+# ============== Escrow ==============
+#
+# All handlers are plain `def`: web3 is synchronous, and FastAPI runs sync
+# handlers in its threadpool so the event loop is never blocked by an RPC.
+# /config and /demo-accounts are public reads (the SPA calls them before login)
+# and are declared BEFORE the {address} routes; the address pattern keeps
+# "config" from ever matching {address}. Everything else carries the same guard
+# as /v1/checkout/sessions (orders calls with a service token; the owner by hand).
+
+def _escrow_call(fn, *args):
+    """Run a provider operation and translate its failures into HTTP."""
+    try:
+        return fn(*args)
+    except EscrowRevert as e:
+        logger.warning("Escrow contract rejected the call", reason=e.reason)
+        raise HTTPException(status_code=409, detail=e.reason)
+    except EscrowNotFound as e:
+        raise HTTPException(status_code=404, detail=f"No escrow contract at {e}")
+    except EscrowUnavailable as e:
+        logger.error("Escrow chain unavailable", error=str(e))
+        raise HTTPException(status_code=503, detail=f"Escrow unavailable: {e}")
+
+
+def _provider():
+    try:
+        return escrow.get_provider()
+    except EscrowUnavailable as e:
+        raise HTTPException(status_code=503, detail=f"Escrow unavailable: {e}")
+
+
+@app.get("/v1/escrow/config")
+def escrow_config():
+    """Public: what the SPA needs to offer (or hide) the Ether payment option."""
+    base = {
+        "rpc_url": escrow.ESCROW_PUBLIC_RPC_URL,
+        "wei_per_usd": escrow.WEI_PER_USD,
+        "courier_share_bps": escrow.ESCROW_COURIER_SHARE_BPS,
+    }
+    try:
+        p = escrow.get_provider()
+        return {**base, "enabled": True, "chain_id": p.chain_id(), "owner_address": p.owner_address}
+    except EscrowUnavailable:
+        return {**base, "enabled": False, "chain_id": None, "owner_address": None}
+
+
+@app.get("/v1/escrow/demo-accounts")
+def escrow_demo_accounts():
+    """Public: Ganache's deterministic demo accounts for the checkout page.
+
+    Double gate: the flag AND the node must identify as Ganache, so this can
+    never serve keys on a real network.
+    """
+    if not escrow.ESCROW_EXPOSE_DEMO_ACCOUNTS:
+        raise HTTPException(status_code=404, detail="Demo accounts are not exposed")
+    p = _provider()
+    if not p.is_ganache():
+        raise HTTPException(status_code=404, detail="Demo accounts exist only on Ganache")
+    return escrow.demo_accounts()
+
+
+@app.post("/v1/escrow")
+def escrow_create(payload: EscrowCreateRequest, claims: dict = Depends(require_service_or_owner)):
+    """Deploy one OrderEscrow contract for an order; the owner key pays the gas."""
+    p = _provider()
+    result = _escrow_call(p.deploy, payload.order_id, payload.customer_address, str(payload.amount_usd))
+    logger.info("Escrow contract deployed",
+                order_id=payload.order_id,
+                contract_address=result["contract_address"],
+                amount_wei=result["amount_wei"])
+    return result
+
+
+@app.get("/v1/escrow/{address}")
+def escrow_state(address: str = Path(pattern=ADDRESS_RE), claims: dict = Depends(require_service_or_owner)):
+    return _escrow_call(_provider().state, address)
+
+
+@app.get("/v1/escrow/{address}/invoice")
+def escrow_invoice(address: str = Path(pattern=ADDRESS_RE), claims: dict = Depends(require_service_or_owner)):
+    """The unsigned pay() transaction the customer's wallet signs and sends."""
+    return _escrow_call(_provider().invoice, address)
+
+
+@app.post("/v1/escrow/{address}/courier")
+def escrow_assign_courier(payload: EscrowCourierRequest, address: str = Path(pattern=ADDRESS_RE),
+                          claims: dict = Depends(require_service_or_owner)):
+    result = _escrow_call(_provider().assign_courier, address, payload.courier_address)
+    logger.info("Escrow courier bound", contract_address=address,
+                courier_address=payload.courier_address, tx_hash=result["tx_hash"])
+    return result
+
+
+@app.post("/v1/escrow/{address}/release")
+def escrow_release(address: str = Path(pattern=ADDRESS_RE), claims: dict = Depends(require_service_or_owner)):
+    """confirmDelivery(): pays the courier share and the owner the rest, closes the contract."""
+    result = _escrow_call(_provider().release, address)
+    logger.info("Escrow released", contract_address=address, tx_hash=result["tx_hash"])
+    return result
+
+
+@app.post("/v1/escrow/{address}/cancel")
+def escrow_cancel(address: str = Path(pattern=ADDRESS_RE), claims: dict = Depends(require_service_or_owner)):
+    """cancel(): refunds the customer if funded, closes the contract."""
+    result = _escrow_call(_provider().cancel, address)
+    logger.info("Escrow cancelled", contract_address=address, tx_hash=result["tx_hash"])
+    return result
