@@ -27,6 +27,10 @@ STATE_HALF_OPEN = "half_open"
 _BUSINESS_ERROR_NAMES = frozenset({
     "InsufficientStockError",
     "SkuNotFoundError",
+    # payments answered 409 (contract require() refused) / 404 (no contract at
+    # that address): business answers, not a payments outage.
+    "EscrowRejectedError",
+    "EscrowContractMissingError",
 })
 
 
@@ -125,7 +129,8 @@ class CircuitBreaker:
 
         Failures: httpx.RequestError, and any exception whose class name is NOT
         in _BUSINESS_ERROR_NAMES (i.e. InventoryServiceError, PaymentServiceError).
-        Non-failures: InsufficientStockError, SkuNotFoundError (4xx business errors).
+        Non-failures: InsufficientStockError, SkuNotFoundError, EscrowRejectedError,
+        EscrowContractMissingError (4xx business errors).
         """
         if isinstance(exc, httpx.RequestError):
             return True

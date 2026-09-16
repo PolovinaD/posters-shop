@@ -9,12 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from auth import get_current_user_claims
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import Order, OrderItem, OrderStatus, SCHEMA_NAME
+from models import Order, OrderItem, OrderStatus, PaymentMethod, EscrowStatus, SCHEMA_NAME
 from schemas import (
     OrderCreate, OrderOut, OrderSummary,
     OrderItemOut, StatusTransition, CancelOrderResponse
@@ -36,7 +36,11 @@ from outbox import (
     get_pending_event_count, get_failed_event_count
 )
 import payment_client
-from payment_client import PaymentServiceError
+from payment_client import (
+    PaymentServiceError, EscrowRejectedError, EscrowContractMissingError, EscrowUnavailableError
+)
+from order_paid import mark_order_paid, InvalidPaidTransition
+from escrow_rules import WALLET_RE
 import catalog_client
 from catalog_client import CatalogServiceError, UnknownSkuError
 from circuit_breaker import CircuitOpenError
@@ -54,6 +58,33 @@ class CheckoutSessionResponse(BaseModel):
     checkout_url: str
     order_id: int
     amount_total: int
+
+
+# Pydantic models for escrow endpoints (phase 8)
+class EscrowDeployResponse(BaseModel):
+    order_id: int
+    contract_address: str
+    deploy_tx_hash: Optional[str] = None
+    amount_wei: str
+    invoice: dict
+    config: dict
+
+
+class EscrowStateResponse(BaseModel):
+    order_id: int
+    order_status: str
+    payment_method: str
+    escrow_status: Optional[str] = None
+    contract_address: Optional[str] = None
+    customer_wallet: Optional[str] = None
+    courier_wallet: Optional[str] = None
+    amount_wei: Optional[str] = None
+    chain: Optional[dict] = None
+    chain_error: Optional[str] = None
+
+
+class CourierBindRequest(BaseModel):
+    courier_wallet: str = Field(pattern=WALLET_RE)
 
 # Background task control
 outbox_task = None
@@ -185,6 +216,12 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
         shipping_postal_code=addr.postal_code,
         shipping_country=addr.country,
         shipping_phone=addr.phone,
+        payment_method=payload.payment_method,
+        customer_wallet=payload.customer_wallet,
+        escrow_status=(
+            EscrowStatus.AWAITING_PAYMENT
+            if payload.payment_method == PaymentMethod.ESCROW else None
+        ),
     )
     db.add(order)
     db.flush()  # Get order ID
@@ -319,7 +356,9 @@ def list_orders(
             status=o.status,
             total_amount=o.total_amount,
             created_at=o.created_at,
-            item_count=len(o.items)
+            item_count=len(o.items),
+            payment_method=o.payment_method,
+            escrow_status=o.escrow_status,
         )
         for o in orders
     ]
@@ -546,7 +585,20 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
             status_code=400,
             detail=f"Cannot cancel order in status '{order.status}'. Orders can only be cancelled before production starts."
         )
-    
+
+    # Escrow orders: refund the customer on chain BEFORE the order flips to
+    # CANCELLED. Never cancel a funded escrow without refunding: the customer's
+    # ether would be stranded in a contract nobody cancels.
+    try:
+        escrow_refunded = await _refund_escrow_if_open(order)
+    except EscrowRejectedError as e:
+        raise HTTPException(status_code=409, detail=e.reason)
+    except (CircuitOpenError, PaymentServiceError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Escrow refund unavailable, try again: {e}",
+        )
+
     # Capture the prior status BEFORE the mutation below: the outbox payload
     # reports what the order was cancelled *from*, and reading order.status after
     # the assignment always yields "cancelled". notifications keys the "this order
@@ -576,12 +628,13 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
             "order_id": order_id,
             "customer_email": order.customer_email,
             "previous_status": previous_status,
-            "released_stock": released_stock
+            "released_stock": released_stock,
+            "escrow_refunded": escrow_refunded,
         }
     )
-    
+
     db.commit()
-    
+
     return CancelOrderResponse(
         order_id=order.id,
         status=order.status,
@@ -611,12 +664,18 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: 
     if claims.get("role") != "owner" and order.customer_email != claims.get("sub"):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    if order.payment_method == PaymentMethod.ESCROW:
+        raise HTTPException(
+            status_code=400,
+            detail="Order uses escrow payment; use POST /orders/{id}/escrow"
+        )
+
     if order.status != OrderStatus.RESERVED:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot checkout order in status '{order.status}'. Order must be in 'reserved' status."
         )
-    
+
     # If we already have a checkout session, return it
     if order.checkout_session_id:
         try:
@@ -726,6 +785,330 @@ async def get_checkout_status(
         }
 
 
+# ============== Escrow payment ==============
+#
+# Orders is the source of truth for escrow state; payments stays stateless and
+# only talks to the chain. Every payments call goes through payment_client and
+# its circuit breaker. Contract require() refusals surface as 409 with the bare
+# revert reason; a payments/chain outage as 503.
+
+def _require_order_access(order: Order, claims: dict, allow_courier: bool = False) -> None:
+    """403 rule copied from get_order (allow_courier) / create_checkout (owner or own order)."""
+    roles = ("owner", "courier") if allow_courier else ("owner",)
+    if claims.get("role") not in roles and order.customer_email != claims.get("sub"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
+async def _refund_escrow_if_open(order: Order) -> bool:
+    """Cancel the contract (refunding the customer if funded) for an escrow order still open on chain.
+
+    Returns True if a cancel tx was sent. Raises EscrowRejectedError (caller maps
+    409) or EscrowUnavailableError / CircuitOpenError / PaymentServiceError
+    (caller maps 503).
+    """
+    if (
+        order.payment_method != PaymentMethod.ESCROW
+        or not order.escrow_contract_address
+        or order.escrow_status not in EscrowStatus.OPEN
+    ):
+        return False
+    result = await payment_client.cancel_escrow(order.escrow_contract_address)
+    order.escrow_status = EscrowStatus.CANCELLED
+    logger.info("Escrow contract cancelled", order_id=order.id, tx_hash=result.get("tx_hash"))
+    return True
+
+
+@app.post("/orders/{order_id}/escrow", response_model=EscrowDeployResponse)
+async def create_escrow(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """
+    Start (or resume) an escrow payment: deploy the per-order OrderEscrow
+    contract through payments exactly once and return what the browser needs
+    to sign the pay() transaction (invoice + chain config).
+
+    Mirrors POST /orders/{id}/checkout for card orders. Idempotent: a second
+    call returns the stored contract without deploying again.
+    """
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _require_order_access(order, claims)
+
+    if order.payment_method != PaymentMethod.ESCROW:
+        raise HTTPException(status_code=400, detail="Order is not an escrow order")
+
+    if not order.escrow_contract_address:
+        if order.status != OrderStatus.RESERVED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot start escrow payment for order in status '{order.status}'. Order must be in 'reserved' status."
+            )
+        if not order.customer_wallet:
+            raise HTTPException(status_code=400, detail="Order has no customer wallet")
+        try:
+            deployed = await payment_client.create_escrow(
+                order_id, order.customer_wallet, str(order.total_amount)
+            )
+        except CircuitOpenError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="payments service unavailable — circuit open"
+            )
+        except (EscrowUnavailableError, PaymentServiceError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Escrow unavailable: {e}"
+            )
+        order.escrow_contract_address = deployed["contract_address"]
+        order.escrow_deploy_tx = deployed.get("deploy_tx_hash")
+        order.escrow_amount_wei = str(deployed["amount_wei"])
+        order.escrow_status = EscrowStatus.AWAITING_PAYMENT
+        db.commit()
+        logger.info(
+            "Escrow contract deployed",
+            order_id=order_id,
+            contract_address=order.escrow_contract_address,
+            amount_wei=order.escrow_amount_wei,
+        )
+
+    try:
+        invoice = await payment_client.get_escrow_invoice(order.escrow_contract_address)
+        config = await payment_client.get_escrow_config()
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="payments service unavailable — circuit open"
+        )
+    except PaymentServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Escrow unavailable: {e}"
+        )
+
+    return EscrowDeployResponse(
+        order_id=order.id,
+        contract_address=order.escrow_contract_address,
+        deploy_tx_hash=order.escrow_deploy_tx,
+        amount_wei=order.escrow_amount_wei,
+        invoice=invoice,
+        config=config,
+    )
+
+
+@app.get("/orders/{order_id}/escrow", response_model=EscrowStateResponse)
+async def get_escrow(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """Stored escrow state plus the live chain state. Visibility like GET /orders/{id}."""
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _require_order_access(order, claims, allow_courier=True)
+
+    chain = None
+    chain_error = None
+    if order.escrow_contract_address:
+        try:
+            chain = await payment_client.get_escrow_state(order.escrow_contract_address)
+        except (CircuitOpenError, PaymentServiceError) as e:
+            chain_error = str(e)
+
+    return EscrowStateResponse(
+        order_id=order.id,
+        order_status=order.status,
+        payment_method=order.payment_method,
+        escrow_status=order.escrow_status,
+        contract_address=order.escrow_contract_address,
+        customer_wallet=order.customer_wallet,
+        courier_wallet=order.courier_wallet,
+        amount_wei=order.escrow_amount_wei,
+        chain=chain,
+        chain_error=chain_error,
+    )
+
+
+@app.post("/orders/{order_id}/escrow/verify")
+async def verify_escrow(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """
+    Read the chain; when the contract is funded run the SAME mark_order_paid
+    the Stripe webhook runs (commit stock, PAID, ORDER_PAID event). Idempotent.
+    """
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _require_order_access(order, claims)
+
+    if order.payment_method != PaymentMethod.ESCROW:
+        raise HTTPException(status_code=400, detail="Order is not an escrow order")
+    if not order.escrow_contract_address:
+        raise HTTPException(status_code=400, detail="Escrow contract not deployed yet")
+
+    if order.status == OrderStatus.PAID or (
+        order.escrow_status in (EscrowStatus.FUNDED, EscrowStatus.IN_DELIVERY, EscrowStatus.RELEASED)
+        and order.status != OrderStatus.RESERVED
+    ):
+        return {
+            "status": "already_paid",
+            "order_id": order_id,
+            "order_status": order.status,
+            "escrow_status": order.escrow_status,
+        }
+
+    try:
+        chain = await payment_client.get_escrow_state(order.escrow_contract_address)
+    except EscrowContractMissingError:
+        order.escrow_status = EscrowStatus.FAILED
+        db.commit()
+        logger.error(
+            "Escrow contract missing on chain",
+            order_id=order_id, contract_address=order.escrow_contract_address,
+        )
+        raise HTTPException(status_code=409, detail="Escrow contract no longer exists on chain")
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="payments service unavailable — circuit open"
+        )
+    except PaymentServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Escrow unavailable: {e}"
+        )
+
+    chain_state = chain["state"]
+    if chain_state in ("funded", "in_delivery", "released") and order.status == OrderStatus.RESERVED:
+        # Set escrow_status BEFORE mark_order_paid so its single commit covers both.
+        order.escrow_status = EscrowStatus.FUNDED if chain_state == "funded" else chain_state
+        try:
+            await mark_order_paid(db, order, payment_ref=order.escrow_contract_address)
+        except InvalidPaidTransition as e:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(e))
+        logger.info("Escrow payment verified", order_id=order_id, chain_state=chain_state)
+        return {
+            "status": "paid",
+            "order_id": order_id,
+            "order_status": order.status,
+            "escrow_status": order.escrow_status,
+            "chain_state": chain_state,
+        }
+
+    return {
+        "status": "awaiting_payment",
+        "order_id": order_id,
+        "order_status": order.status,
+        "escrow_status": order.escrow_status,
+        "chain_state": chain_state,
+    }
+
+
+@app.post("/orders/{order_id}/escrow/confirm-delivery")
+async def confirm_escrow_delivery(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """
+    The customer confirms receipt: payments sends confirmDelivery() from the
+    owner key and the contract pays the courier share and the owner remainder.
+    Only for a DELIVERED order; the contract answers 409 "Delivery not
+    complete." when no courier was ever bound.
+    """
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _require_order_access(order, claims)
+
+    if order.payment_method != PaymentMethod.ESCROW:
+        raise HTTPException(status_code=400, detail="Order is not an escrow order")
+    if not order.escrow_contract_address:
+        raise HTTPException(status_code=400, detail="Escrow contract not deployed yet")
+
+    if order.escrow_status == EscrowStatus.RELEASED:
+        return {"status": "already_released", "order_id": order_id, "escrow_status": EscrowStatus.RELEASED}
+
+    if order.status != OrderStatus.DELIVERED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot confirm receipt for order in status '{order.status}'. Order must be 'delivered'."
+        )
+
+    try:
+        result = await payment_client.release_escrow(order.escrow_contract_address)
+    except EscrowRejectedError as e:
+        raise HTTPException(status_code=409, detail=e.reason)
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="payments service unavailable — circuit open"
+        )
+    except (EscrowUnavailableError, PaymentServiceError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Escrow unavailable: {e}"
+        )
+
+    order.escrow_status = EscrowStatus.RELEASED
+    db.commit()
+    logger.info("Escrow released", order_id=order_id, tx_hash=result.get("tx_hash"))
+    return {
+        "status": "released",
+        "order_id": order_id,
+        "escrow_status": EscrowStatus.RELEASED,
+        "tx_hash": result.get("tx_hash"),
+    }
+
+
+@app.post("/internal/orders/{order_id}/courier")
+async def bind_order_courier(
+    order_id: int,
+    payload: CourierBindRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_service_or_owner),
+):
+    """
+    CONTRACT B — called by logistics on courier pick-up (dispatched -> in_transit).
+
+    Always HTTP 200 (idempotent, fire-and-forget caller):
+      {"status": "bound" | "stored" | "already_bound" | "deferred" | "not_found",
+       "order_id": <int>, "escrow_status": <str|null>}
+    - not_found:     no such order
+    - stored:        wallet saved; not an escrow order (or no contract yet)
+    - already_bound: escrow_status already in_delivery/released
+    - bound:         wallet saved AND assignCourier succeeded on chain -> in_delivery
+    - deferred:      wallet saved but payments/chain unavailable or contract not
+                     yet funded -> escrow_status unchanged; the reconciler retries
+    """
+    order = db.get(Order, order_id)
+    if order is None:
+        logger.info("Courier wallet for unknown order, no-op", order_id=order_id)
+        return {"status": "not_found", "order_id": order_id, "escrow_status": None}
+
+    order.courier_wallet = payload.courier_wallet
+
+    def _answer(status_word: str) -> dict:
+        db.commit()
+        return {"status": status_word, "order_id": order_id, "escrow_status": order.escrow_status}
+
+    if order.payment_method != PaymentMethod.ESCROW or not order.escrow_contract_address:
+        return _answer("stored")
+    if order.escrow_status in (EscrowStatus.IN_DELIVERY, EscrowStatus.RELEASED):
+        return _answer("already_bound")
+    if order.escrow_status != EscrowStatus.FUNDED:
+        # Not funded yet: the reconciler binds once the payment lands.
+        return _answer("deferred")
+
+    try:
+        await payment_client.assign_escrow_courier(order.escrow_contract_address, payload.courier_wallet)
+    except EscrowRejectedError as e:
+        # "Transfer not complete." = the chain lags the row; anything else is
+        # logged. Either way the reconciler retries from the stored wallet.
+        if e.reason != "Transfer not complete.":
+            logger.warning("Courier binding rejected by contract", order_id=order_id, reason=e.reason)
+        return _answer("deferred")
+    except (CircuitOpenError, PaymentServiceError) as e:
+        logger.warning("Courier binding deferred: payments unavailable", order_id=order_id, error=str(e))
+        return _answer("deferred")
+
+    order.escrow_status = EscrowStatus.IN_DELIVERY
+    db.commit()
+    logger.info("Courier bound on chain", order_id=order_id, courier_wallet=payload.courier_wallet)
+    return {"status": "bound", "order_id": order_id, "escrow_status": EscrowStatus.IN_DELIVERY}
+
+
 # ============== Stripe Webhook ==============
 
 @app.post("/webhooks/stripe")
@@ -789,6 +1172,19 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db), clai
             "current_status": order.status,
         }
 
+    # Escrow orders: best-effort refund of an open contract. This endpoint must
+    # always answer 200, so a failure here does NOT block the cancellation --
+    # escrow_status then stays awaiting_payment/funded and the reconciler's
+    # "refund" action retries until the contract is cancelled on chain.
+    escrow_refunded = False
+    try:
+        escrow_refunded = await _refund_escrow_if_open(order)
+    except Exception as e:
+        logger.warning(
+            "Escrow refund deferred on reservation expiry",
+            order_id=order_id, error=str(e),
+        )
+
     order.status = OrderStatus.CANCELLED
     emit_event(
         db=db,
@@ -801,6 +1197,7 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db), clai
             "previous_status": "reserved",
             "reason": "reservation_expired",
             "released_stock": True,
+            "escrow_refunded": escrow_refunded,
         },
     )
     db.commit()

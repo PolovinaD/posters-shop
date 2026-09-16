@@ -157,6 +157,11 @@ sys.modules["inventory_client"] = _inv_stub
 
 _pay_stub = types.ModuleType("payment_client")
 _pay_stub.PaymentServiceError = type("PaymentServiceError", (Exception,), {})
+# Escrow error classes main.py imports since phase 8 (never raised here: the
+# mock orders are not escrow orders, so cancel never reaches payments).
+_pay_stub.EscrowRejectedError = type("EscrowRejectedError", (_pay_stub.PaymentServiceError,), {})
+_pay_stub.EscrowContractMissingError = type("EscrowContractMissingError", (_pay_stub.PaymentServiceError,), {})
+_pay_stub.EscrowUnavailableError = type("EscrowUnavailableError", (_pay_stub.PaymentServiceError,), {})
 sys.modules["payment_client"] = _pay_stub
 
 # Orders resolves every line's price from the catalog before writing an order,
@@ -200,7 +205,11 @@ finally:
     # MetaData) into whatever test module imports next. The module-global
     # _db_stub name is unaffected by the pop, so the dependency_overrides keys
     # below still reference the exact object orders/main.py bound get_db from.
-    for _mod_name in ("models", "schemas", "logger", "metrics", "database"):
+    for _mod_name in (
+        "models", "schemas", "logger", "metrics", "database",
+        # phase 8 modules main.py pulls in via sys.path; bound to THIS file's stubs
+        "escrow_rules", "order_paid", "escrow_reconciler",
+    ):
         sys.modules.pop(_mod_name, None)
 
 

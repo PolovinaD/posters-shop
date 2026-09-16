@@ -343,6 +343,8 @@ try:
     sys.modules["escrow_rules"] = _rules
     _paid = _load_orders_module("order_paid", alias="orders_escrow_paid")
     sys.modules["order_paid"] = _paid
+    # main.py is loaded LAST so it binds the very module objects above.
+    _ord_main = _load_orders_module("main", alias="orders_main_escrow_test")
 finally:
     sys.path.remove(_ORDERS_DIR)
     for _mod_name in (
@@ -357,6 +359,64 @@ is_wallet_address = _rules.is_wallet_address
 decide_reconcile_action = _rules.decide_reconcile_action
 mark_order_paid = _paid.mark_order_paid
 InvalidPaidTransition = _paid.InvalidPaidTransition
+
+_CUSTOMER_CLAIMS = {"sub": "test@example.com", "role": "customer"}
+_SERVICE_CLAIMS = {"sub": "service:logistics", "role": "service"}
+
+
+def _customer_claims():
+    return _CUSTOMER_CLAIMS
+
+
+def _service_claims():
+    return _SERVICE_CLAIMS
+
+
+def _client_with_db(override_get_db):
+    """TestClient with get_db, get_current_user_claims and require_service_or_owner overridden."""
+    from fastapi.testclient import TestClient
+
+    _ord_main.app.dependency_overrides[_db_stub.get_db] = override_get_db
+    _ord_main.app.dependency_overrides[_ord_main.get_current_user_claims] = _customer_claims
+    _ord_main.app.dependency_overrides[_ord_main.require_service_or_owner] = _service_claims
+    return TestClient(_ord_main.app, raise_server_exceptions=False)
+
+
+def _client_for(order):
+    """TestClient whose db.get returns `order` (None -> not found). Returns (client, db)."""
+    db = MagicMock()
+    db.get.return_value = order
+
+    def override_get_db():
+        yield db
+
+    return _client_with_db(override_get_db), db
+
+
+def _escrow_order(status="reserved", payment_method="escrow", order_id=1):
+    order = MagicMock()
+    order.id = order_id
+    order.status = status
+    order.customer_email = "test@example.com"
+    order.total_amount = Decimal("12.50")
+    order.items = []
+    order.checkout_session_id = None
+    order.payment_intent_id = None
+    order.payment_method = payment_method
+    order.customer_wallet = CUSTOMER if payment_method == "escrow" else None
+    order.courier_wallet = None
+    order.escrow_contract_address = None
+    order.escrow_deploy_tx = None
+    order.escrow_amount_wei = None
+    order.escrow_status = "awaiting_payment" if payment_method == "escrow" else None
+    return order
+
+
+def _deploy(client, order):
+    """POST /orders/{id}/escrow and return the contract address."""
+    r = client.post(f"/orders/{order.id}/escrow")
+    assert r.status_code == 200, r.text
+    return r.json()["contract_address"]
 
 
 # ---------------------------------------------------------------------------
@@ -471,3 +531,301 @@ def test_mark_order_paid_survives_inventory_failure():
     assert asyncio.run(mark_order_paid(db, order, payment_ref="0xabc")) is True
     assert order.status == "paid"
     _outbox_stub.emit_event.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Section 2: endpoints against the FakeEscrow payment_client
+# ---------------------------------------------------------------------------
+
+def test_escrow_deploy_stores_contract_and_is_idempotent():
+    order = _escrow_order()
+    client, db = _client_for(order)
+
+    r = client.post("/orders/1/escrow")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"order_id", "contract_address", "deploy_tx_hash", "amount_wei", "invoice", "config"}
+    assert order.escrow_contract_address == body["contract_address"]
+    assert order.escrow_amount_wei == "12500000000000000"
+    assert body["amount_wei"] == "12500000000000000"
+    assert order.escrow_status == "awaiting_payment"
+    assert body["invoice"]["to"] == body["contract_address"]
+    assert body["config"]["chain_id"] == 1337
+    db.commit.assert_called()
+
+    r2 = client.post("/orders/1/escrow")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["contract_address"] == body["contract_address"]
+    assert fake.calls.count("create_escrow") == 1
+
+
+def test_escrow_deploy_rejects_stripe_order():
+    order = _escrow_order(payment_method="stripe")
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/escrow")
+    assert r.status_code == 400
+    assert "not an escrow order" in r.json()["detail"]
+
+
+def test_escrow_deploy_requires_reserved():
+    order = _escrow_order(status="paid")
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/escrow")
+    assert r.status_code == 400
+    assert "reserved" in r.json()["detail"]
+    assert "create_escrow" not in fake.calls
+
+
+def test_escrow_deploy_503_when_payments_down():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+
+    fake.fail_with = EscrowUnavailableError("down")
+    r = client.post("/orders/1/escrow")
+    assert r.status_code == 503, r.text
+    assert order.escrow_contract_address is None
+
+    fake.fail_with = _cb_stub.CircuitOpenError("open")
+    r = client.post("/orders/1/escrow")
+    assert r.status_code == 503, r.text
+
+
+def test_verify_marks_paid_when_funded():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+
+    r = client.post("/orders/1/escrow/verify")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "paid"
+    assert body["chain_state"] == "funded"
+    assert order.status == "paid"
+    assert order.escrow_status == "funded"
+    assert _outbox_stub.emit_event.call_count == 1
+    assert _outbox_stub.emit_event.call_args.kwargs["event_type"] == "ORDER_PAID"
+    assert _outbox_stub.emit_event.call_args.kwargs["payload"]["payment_intent"] == addr
+
+    r2 = client.post("/orders/1/escrow/verify")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["status"] == "already_paid"
+    assert _outbox_stub.emit_event.call_count == 1
+
+
+def test_verify_reports_awaiting_when_not_funded():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    _deploy(client, order)
+
+    r = client.post("/orders/1/escrow/verify")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "awaiting_payment"
+    assert r.json()["chain_state"] == "awaiting_payment"
+    assert order.status == "reserved"
+    _outbox_stub.emit_event.assert_not_called()
+
+
+def test_verify_without_contract_is_400():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/escrow/verify")
+    assert r.status_code == 400
+    assert "not deployed" in r.json()["detail"]
+
+
+def test_get_escrow_returns_stored_and_chain():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+
+    r = client.get("/orders/1/escrow")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["escrow_status"] == "awaiting_payment"
+    assert body["contract_address"] == addr
+    assert body["amount_wei"] == "12500000000000000"
+    assert body["customer_wallet"] == CUSTOMER
+    assert body["courier_wallet"] is None
+    assert body["chain"]["state"] == "awaiting_payment"
+    assert body["chain_error"] is None
+
+    fake.fail_with = EscrowUnavailableError("down")
+    r = client.get("/orders/1/escrow")
+    assert r.status_code == 200, r.text
+    assert r.json()["chain"] is None
+    assert r.json()["chain_error"]
+
+
+def test_confirm_delivery_requires_delivered():
+    order = _escrow_order(status="shipped")
+    order.escrow_contract_address = "0x" + "01" * 20
+    order.escrow_status = "in_delivery"
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/escrow/confirm-delivery")
+    assert r.status_code == 400
+    assert "delivered" in r.json()["detail"]
+    assert "release_escrow" not in fake.calls
+
+
+def test_confirm_delivery_without_courier_is_409():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    order.status = "delivered"
+    order.escrow_status = "funded"
+
+    r = client.post("/orders/1/escrow/confirm-delivery")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Delivery not complete."
+    assert order.escrow_status == "funded"
+
+
+def test_confirm_delivery_releases():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    asyncio.run(fake.assign_escrow_courier(addr, COURIER))
+    order.status = "delivered"
+    order.escrow_status = "in_delivery"
+    order.courier_wallet = COURIER
+
+    r = client.post("/orders/1/escrow/confirm-delivery")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["order_id"] == 1
+    assert body["escrow_status"] == "released"
+    assert body["tx_hash"]
+    assert order.escrow_status == "released"
+    assert fake.contracts[addr]["state"] == "released"
+
+    r2 = client.post("/orders/1/escrow/confirm-delivery")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["escrow_status"] == "released"
+    assert r2.json()["status"] == "already_released"
+    assert fake.calls.count("release_escrow") == 1
+
+
+def test_internal_courier_binds_when_funded():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    order.status = "paid"
+    order.escrow_status = "funded"
+
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "bound"
+    assert r.json()["escrow_status"] == "in_delivery"
+    assert r.json()["order_id"] == 1
+    assert order.courier_wallet == COURIER
+    assert order.escrow_status == "in_delivery"
+    assert fake.contracts[addr]["courier"] == COURIER
+
+
+def test_internal_courier_defers_when_not_funded_or_down():
+    # 1. deployed but not funded -> deferred, wallet stored
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    _deploy(client, order)
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deferred"
+    assert order.courier_wallet == COURIER
+    assert order.escrow_status == "awaiting_payment"
+
+    # 2. funded but payments down -> deferred
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    order.escrow_status = "funded"
+    fake.fail_with = EscrowUnavailableError("down")
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deferred"
+    assert order.courier_wallet == COURIER
+    assert order.escrow_status == "funded"
+    fake.fail_with = None
+
+    # 3. stripe order -> stored
+    order = _escrow_order(payment_method="stripe")
+    client, _ = _client_for(order)
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "stored"
+    assert order.courier_wallet == COURIER
+
+    # 4. already in delivery -> already_bound
+    order = _escrow_order()
+    order.escrow_contract_address = "0x" + "01" * 20
+    order.escrow_status = "in_delivery"
+    client, _ = _client_for(order)
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "already_bound"
+
+    # 5. unknown order -> not_found
+    client, _ = _client_for(None)
+    r = client.post("/internal/orders/999/courier", json={"courier_wallet": COURIER})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "not_found", "order_id": 999, "escrow_status": None}
+
+    # 6. malformed wallet -> 422
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    r = client.post("/internal/orders/1/courier", json={"courier_wallet": "0x123"})
+    assert r.status_code == 422
+
+
+def test_cancel_refunds_funded_escrow():
+    order = _escrow_order()
+    client, db = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    order.escrow_status = "funded"
+
+    r = client.post("/orders/1/cancel")
+    assert r.status_code == 200, r.text
+    assert "cancel_escrow" in fake.calls
+    assert fake.contracts[addr]["state"] == "cancelled"
+    assert order.escrow_status == "cancelled"
+    assert order.status == "cancelled"
+    kwargs = _outbox_stub.emit_event.call_args.kwargs
+    assert kwargs["event_type"] == "ORDER_CANCELLED"
+    assert kwargs["payload"]["escrow_refunded"] is True
+
+
+def test_cancel_refuses_when_refund_impossible():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    addr = _deploy(client, order)
+    fake.fund(addr)
+    order.escrow_status = "funded"
+    fake.fail_with = EscrowUnavailableError("down")
+
+    r = client.post("/orders/1/cancel")
+    assert r.status_code == 503, r.text
+    assert order.status == "reserved"
+    assert order.escrow_status == "funded"
+    _outbox_stub.emit_event.assert_not_called()
+
+
+def test_cancel_stripe_order_untouched():
+    order = _escrow_order(payment_method="stripe")
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/cancel")
+    assert r.status_code == 200, r.text
+    assert "cancel_escrow" not in fake.calls
+    assert _outbox_stub.emit_event.call_args.kwargs["payload"]["escrow_refunded"] is False
+
+
+def test_checkout_rejects_escrow_order():
+    order = _escrow_order()
+    client, _ = _client_for(order)
+    r = client.post("/orders/1/checkout")
+    assert r.status_code == 400, r.text
+    assert "escrow" in r.json()["detail"]
