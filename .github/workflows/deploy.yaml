@@ -50,6 +50,7 @@ on:
           - all
           - catalog
           - frontend
+          - ganache
           - infra
           - inventory
           - logistics

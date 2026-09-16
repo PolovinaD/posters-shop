@@ -75,15 +75,22 @@ jobs:
         id: changes
         run: |
           ALL=$(ls -1 deploy/charts | tr '\n' ' ')
+          # Helm-only charts (no services/<name>/Dockerfile, e.g. ganache = upstream image) are deployed
+          # by the deploy workflow but must never enter the image build matrix.
+          buildable() { [ "$1" = "frontend" ] || [ -f "services/$1/Dockerfile" ]; }
           SELECTED=()
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             CHANGED_MODE=dispatch
             REQ="${{ github.event.inputs.service }}"
             if [ "$REQ" = "all" ]; then
-              for name in $ALL; do SELECTED+=("$name"); done
+              for name in $ALL; do buildable "$name" && SELECTED+=("$name"); done
             else
-              SELECTED+=("$REQ")
+              if buildable "$REQ"; then
+                SELECTED+=("$REQ")
+              else
+                echo "::notice::$REQ is a helm-only chart — nothing to build"
+              fi
             fi
           else
             BEFORE="${{ github.event.before }}"
@@ -93,12 +100,13 @@ jobs:
                || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
               echo "::notice::No usable base commit (before='$BEFORE') - building ALL services"
               CHANGED_MODE=fallback-all
-              for name in $ALL; do SELECTED+=("$name"); done
+              for name in $ALL; do buildable "$name" && SELECTED+=("$name"); done
             else
               echo "::notice::Diffing push range $BEFORE..$AFTER"
               CHANGED_MODE=range
               CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER")
               for name in $ALL; do
+                buildable "$name" || continue
                 if [ "$name" = "frontend" ]; then
                   PREFIX="frontend/"
                 else

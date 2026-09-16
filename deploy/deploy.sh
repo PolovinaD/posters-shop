@@ -66,7 +66,7 @@ fi
 # Check if secrets exist
 echo ""
 echo "🔐 Checking secrets..."
-SECRETS=("postershop-db" "postershop-jwt" "postershop-stripe")
+SECRETS=("postershop-db" "postershop-jwt" "postershop-stripe" "postershop-escrow")
 for secret in "${SECRETS[@]}"; do
     if kubectl get secret "$secret" -n "$NAMESPACE" &>/dev/null; then
         echo "   ✅ $secret exists"
@@ -80,7 +80,8 @@ done
 # Define services in deployment order (dependencies first)
 SERVICES=(
     "inventory"      # No dependencies
-    "payments"       # No dependencies
+    "ganache"        # No dependencies — Ethereum simulator; must be Ready before payments funds the owner key
+    "payments"       # Depends on ganache (escrow provider)
     "notifications"  # No dependencies
     "users"          # No dependencies
     "catalog"        # Depends on inventory
@@ -125,7 +126,8 @@ for service in "${SERVICES[@]}"; do
         # Patch CORS_ORIGINS via kubectl after deploy — avoids Helm list --set replacing
         # the entire env array and stripping name: fields from all other env vars.
         # infra uses dict-format env in its chart (safe to --set); all others patched here.
-        if [ -n "${CORS_ORIGINS:-}" ] && [ "$service" != "infra" ] && [ "$DRY_RUN" != "--dry-run" ]; then
+        # ganache is not a FastAPI service: patching it would only Recreate the simulator pod.
+        if [ -n "${CORS_ORIGINS:-}" ] && [ "$service" != "infra" ] && [ "$service" != "ganache" ] && [ "$DRY_RUN" != "--dry-run" ]; then
             kubectl set env deployment/"$service" -n "$NAMESPACE" CORS_ORIGINS="${CORS_ORIGINS}" 2>/dev/null || true
         fi
 

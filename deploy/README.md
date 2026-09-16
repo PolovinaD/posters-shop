@@ -102,6 +102,7 @@ deploy/
 │   ├── payments/
 │   ├── notifications/
 │   ├── infra/
+│   ├── ganache/            # Ethereum simulator (upstream image, helm-only, PVC)
 │   └── frontend/
 │
 ├── secrets/                     # Secrets management (AWS Secrets Manager)
@@ -612,7 +613,7 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 ## Secrets Management
 
 The platform uses **AWS Secrets Manager** as the single source of truth for every *stored*
-secret — database passwords, the JWT signing key, and the Stripe keys — with
+secret — database passwords, the JWT signing key, the Stripe keys and the escrow owner key — with
 **External Secrets Operator** automatically syncing them to Kubernetes.
 
 > **Carve-out: IRSA-based AWS auth is deliberately outside this flow.**
@@ -634,10 +635,21 @@ secret — database passwords, the JWT signing key, and the Stripe keys — with
 │  postershop/        │     │  SecretStore        │     │  postershop-db      │
 │  ├── passwords      │     │  ExternalSecret     │     │  postershop-jwt     │
 │  ├── database       │     │                     │     │  postershop-stripe  │
-│  ├── jwt            │     │                     │     │                     │
-│  └── stripe         │     │                     │     │                     │
+│  ├── jwt            │     │                     │     │  postershop-escrow  │
+│  ├── stripe         │     │                     │     │                     │
+│  └── escrow         │     │                     │     │                     │
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
 ```
+
+### Escrow owner key and the Ganache simulator
+
+`postershop/escrow` holds `OWNER_PRIVATE_KEY`, the key the payments service uses to deploy,
+bind and release `OrderEscrow` contracts on the Ganache simulator (`deploy/charts/ganache`, an
+upstream image with a 1 Gi PVC — helm-only, nothing is built or pushed for it). `full-deploy.sh`
+generates the key once and reuses it on every later run — rotating it orphans in-flight escrow
+contracts, so never regenerate it while orders are open. The browser reaches the simulator
+through the frontend's nginx at `/rpc` (an unauthenticated RPC — acceptable for a Ganache demo,
+never for a real node).
 
 ### Benefits
 

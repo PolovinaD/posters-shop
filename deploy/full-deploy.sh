@@ -499,7 +499,27 @@ EOF
 EOF
 )
     store_secrets_in_aws "postershop/stripe" "$STRIPE_JSON"
-    
+
+    # Escrow owner key. Read-before-write is MANDATORY here: store_secrets_in_aws merges, but the
+    # script's value wins on conflict, so writing a fresh random key on every run would rotate the
+    # owner and orphan every OrderEscrow contract deployed by the previous key (nobody could bind a
+    # courier, release or refund them). Generate only when the property is absent.
+    ESCROW_OWNER_PRIVATE_KEY=$(aws secretsmanager get-secret-value --secret-id postershop/escrow --region "$AWS_REGION" \
+        --query SecretString --output text 2>/dev/null | jq -r '.OWNER_PRIVATE_KEY // empty' 2>/dev/null || true)
+    if [ -z "$ESCROW_OWNER_PRIVATE_KEY" ]; then
+        ESCROW_OWNER_PRIVATE_KEY="0x$(openssl rand -hex 32)"
+        log_info "Generated a new escrow owner key (postershop/escrow had none)"
+    else
+        log_info "Reusing the existing escrow owner key from postershop/escrow"
+    fi
+    ESCROW_JSON=$(cat << EOF
+{
+    "OWNER_PRIVATE_KEY": "$ESCROW_OWNER_PRIVATE_KEY"
+}
+EOF
+)
+    store_secrets_in_aws "postershop/escrow" "$ESCROW_JSON"
+
     log_success "Secrets stored in AWS Secrets Manager"
 else
     log_info "Would store secrets in AWS Secrets Manager"
@@ -852,7 +872,7 @@ EOF
     # SecretSyncedError — and the failure only surfaced later, when deploy.sh
     # aborted. Fail here instead, and say why.
     SYNC_FAILED=()
-    for secret in postershop-db postershop-jwt postershop-stripe; do
+    for secret in postershop-db postershop-jwt postershop-stripe postershop-escrow; do
         synced=false
         for i in {1..30}; do
             if kubectl get secret "$secret" -n "$NAMESPACE" &> /dev/null; then
@@ -1115,6 +1135,7 @@ if [ "$DRY_RUN" = false ]; then
     echo "   - postershop/database  - database connection URLs"
     echo "   - postershop/jwt       - JWT signing secret"
     echo "   - postershop/stripe    - Stripe API key (SECRET_KEY) + webhook signing secret (WEBHOOK_SECRET)"
+    echo "   - postershop/escrow    - escrow owner private key (OWNER_PRIVATE_KEY) — stable across deploys"
     echo ""
 
     # Important notes

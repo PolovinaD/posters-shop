@@ -385,7 +385,7 @@ echo ""
 if [ "$DELETE_SECRETS" = true ] && [ "$SECRETS_EXIST" = true ]; then
     log_info "Step 5: Deleting AWS Secrets Manager secrets..."
     
-    POSTERSHOP_SECRETS="postershop/passwords postershop/database postershop/jwt postershop/stripe"
+    POSTERSHOP_SECRETS="postershop/passwords postershop/database postershop/jwt postershop/stripe postershop/escrow"
     
     if [ "$DRY_RUN" = false ]; then
         for secret in $POSTERSHOP_SECRETS; do
