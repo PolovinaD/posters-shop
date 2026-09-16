@@ -159,6 +159,15 @@ _pay_stub = types.ModuleType("payment_client")
 _pay_stub.PaymentServiceError = type("PaymentServiceError", (Exception,), {})
 sys.modules["payment_client"] = _pay_stub
 
+# Orders resolves every line's price from the catalog before writing an order,
+# so main.py imports this client at module level and it has to be stubbed too.
+_cat_stub = types.ModuleType("catalog_client")
+_cat_stub.resolve_prices = AsyncMock(return_value={})
+_cat_stub.CatalogError = type("CatalogError", (Exception,), {})
+_cat_stub.CatalogServiceError = type("CatalogServiceError", (Exception,), {})
+_cat_stub.UnknownSkuError = type("UnknownSkuError", (Exception,), {})
+sys.modules["catalog_client"] = _cat_stub
+
 _outbox_stub = types.ModuleType("outbox")
 _outbox_stub.emit_event = MagicMock()
 _outbox_stub.outbox_worker = AsyncMock()

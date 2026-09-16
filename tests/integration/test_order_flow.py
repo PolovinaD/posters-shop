@@ -101,28 +101,46 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
         f"Inventory seed failed: {seed_inv.status_code} {seed_inv.text}"
     )
 
-    # Step 2: Discover a SKU from the seeded catalog
-    # GET /products returns list[ProductOut]: {id, sku, name, price, category, ...}
+    # Step 2: Discover a sellable SKU from the seeded catalog.
+    # GET /products returns families; a family is not orderable, its variants
+    # are — each format has its own SKU, price and stock.
     products_resp = http.get(f"{catalog_url}/products")
     assert products_resp.status_code == 200, f"Could not list products: {products_resp.text}"
     products = products_resp.json()
     assert len(products) > 0, "Catalog seed produced no products"
 
-    # Use the first product — fields: sku, name, price (Decimal as string)
     product = products[0]
-    sku = product["sku"]
-    name = product["name"]
-    unit_price = float(product["price"])
-    assert sku, f"No SKU in product: {product}"
-    assert name, f"No name in product: {product}"
-    assert unit_price > 0, f"No valid price in product: {product}"
+    variants = [v for v in product.get("variants", []) if v.get("in_stock")]
+    assert variants, f"Family {product['sku']} has no variant in stock: {product}"
+    variant = variants[0]
+    sku = variant["sku"]
+    assert sku, f"No SKU in variant: {variant}"
 
-    # Step 3: Create an order
-    # OrderCreate schema: {customer_email, items: [{sku, name, quantity, unit_price}]}
+    # A frame for the same format, to exercise a multi-line order. Frames are
+    # priced per format, so this is the A-of-that-size frame, not a surcharge.
+    frames_resp = http.get(f"{catalog_url}/frames", params={"size": variant["size"]})
+    assert frames_resp.status_code == 200, f"Could not list frames: {frames_resp.text}"
+    frame_variants = [
+        fv
+        for frame in frames_resp.json()
+        for fv in frame.get("variants", [])
+        if fv.get("in_stock")
+    ]
+    assert frame_variants, f"No frame in stock for size {variant['size']}"
+    frame = frame_variants[0]
+
+    expected_total = float(variant["price"]) + float(frame["price"])
+
+    # Step 3: Create an order.
+    # `name` and `unit_price` are deliberately wrong here: the catalog owns both
+    # and the order must come back priced from it, not from this payload.
     order_payload = {
         "customer_email": TEST_CUSTOMER_EMAIL,
         "shipping_address": TEST_SHIPPING_ADDRESS,
-        "items": [{"sku": sku, "name": name, "quantity": 1, "unit_price": unit_price}],
+        "items": [
+            {"sku": sku, "name": "ignored", "quantity": 1, "unit_price": 0.01},
+            {"sku": frame["sku"], "name": "ignored", "quantity": 1, "unit_price": 0.01},
+        ],
     }
     create_resp = http.post(f"{orders_url}/orders", json=order_payload)
     assert create_resp.status_code in (200, 201), (
@@ -130,6 +148,15 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     )
     order = create_resp.json()
     order_id = order.get("id")
+
+    # The price a client sends is a proposal; the catalog is the fact.
+    assert abs(float(order["total_amount"]) - expected_total) < 0.01, (
+        f"Order total {order['total_amount']} is not the catalog total "
+        f"{expected_total:.2f} — client-supplied price was trusted"
+    )
+    assert all(i["name"] != "ignored" for i in order["items"]), (
+        f"Item names came from the request rather than the catalog: {order['items']}"
+    )
     assert order_id, f"No order ID in response: {order}"
 
     # After creation the order should be in RESERVED status
