@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, ConfigDict, model_validator
 from decimal import Decimal
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
+
+from escrow_rules import WALLET_RE
 
 
 class OrderItemCreate(BaseModel):
@@ -41,6 +43,14 @@ class OrderCreate(BaseModel):
     customer_email: EmailStr
     shipping_address: ShippingAddress
     items: list[OrderItemCreate] = Field(..., min_length=1)
+    payment_method: Literal["stripe", "escrow"] = "stripe"
+    customer_wallet: Optional[str] = Field(default=None, pattern=WALLET_RE)
+
+    @model_validator(mode="after")
+    def _wallet_required_for_escrow(self):
+        if self.payment_method == "escrow" and not self.customer_wallet:
+            raise ValueError("customer_wallet is required when payment_method is 'escrow'")
+        return self
 
 
 class OrderOut(BaseModel):
@@ -54,6 +64,13 @@ class OrderOut(BaseModel):
     updated_at: datetime
     shipping_address: Optional[ShippingAddress] = None
     items: list[OrderItemOut]
+    payment_method: str = "stripe"
+    customer_wallet: Optional[str] = None
+    courier_wallet: Optional[str] = None
+    escrow_contract_address: Optional[str] = None
+    escrow_deploy_tx: Optional[str] = None
+    escrow_amount_wei: Optional[str] = None
+    escrow_status: Optional[str] = None
 
 
 class OrderSummary(BaseModel):
@@ -65,6 +82,8 @@ class OrderSummary(BaseModel):
     total_amount: Decimal
     created_at: datetime
     item_count: int
+    payment_method: str = "stripe"
+    escrow_status: Optional[str] = None
 
 
 class StatusTransition(BaseModel):

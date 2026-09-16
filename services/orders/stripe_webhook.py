@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from models import Order, OrderStatus
 from outbox import emit_event
+from order_paid import mark_order_paid, InvalidPaidTransition
 import inventory_client
 from logger import get_logger
 
@@ -76,45 +77,12 @@ async def handle_checkout_session_completed(
         logger.info("Order already paid (idempotent)", order_id=order_id)
         return {"status": "already_processed", "order_id": order_id}
 
-    # Validate state transition
-    if not OrderStatus.can_transition(order.status, OrderStatus.PAID):
-        raise WebhookError(
-            f"Cannot transition order {order_id} from {order.status} to paid"
-        )
-
-    # Commit inventory reservations
+    # Commit stock, set PAID, emit ORDER_PAID -- the shared mark-paid path
+    # (also used by escrow verify and the escrow reconciler).
     try:
-        await inventory_client.commit_stock(order_id)
-    except Exception as e:
-        # If inventory commit fails, we need to handle this carefully
-        # In production, you might retry or alert
-        logger.warning("Failed to commit inventory, continuing with payment", order_id=order_id, error=str(e))
-        # Continue anyway - the payment succeeded, we need to honor it
-
-    # Update order status
-    order.status = OrderStatus.PAID
-    order.payment_intent_id = session.get("payment_intent")
-
-    # Emit ORDER_PAID event to outbox
-    items = [
-        {"sku": item.sku, "name": item.name, "quantity": item.quantity}
-        for item in order.items
-    ]
-    emit_event(
-        db=db,
-        event_type="ORDER_PAID",
-        aggregate_type="order",
-        aggregate_id=str(order_id),
-        payload={
-            "order_id": order_id,
-            "customer_email": order.customer_email,
-            "total_amount": str(order.total_amount),
-            "payment_intent": session.get("payment_intent"),
-            "items": items
-        }
-    )
-
-    db.commit()
+        await mark_order_paid(db, order, payment_ref=session.get("payment_intent"))
+    except InvalidPaidTransition as e:
+        raise WebhookError(str(e))
 
     logger.info("Order marked as paid via webhook", order_id=order_id, payment_intent=session.get("payment_intent"))
 

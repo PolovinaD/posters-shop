@@ -38,11 +38,29 @@ class OrderStatus:
         return cls.CANCELLED in cls.TRANSITIONS.get(status, [])
 
 
+class PaymentMethod:
+    STRIPE = "stripe"
+    ESCROW = "escrow"
+
+
+class EscrowStatus:
+    """Mirror of the contract's State enum plus a local 'failed' (contract vanished)."""
+    AWAITING_PAYMENT = "awaiting_payment"
+    FUNDED = "funded"
+    IN_DELIVERY = "in_delivery"
+    RELEASED = "released"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+    OPEN = (AWAITING_PAYMENT, FUNDED)  # states in which cancel() refunds
+
+
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
         Index("ix_orders_customer_email", "customer_email"),
         Index("ix_orders_status", "status"),
+        Index("ix_orders_escrow_status", "escrow_status"),
         {"schema": SCHEMA_NAME}
     )
 
@@ -65,7 +83,16 @@ class Order(Base):
     shipping_postal_code = Column(String, nullable=True)
     shipping_country = Column(String, nullable=True)
     shipping_phone = Column(String, nullable=True)
-    
+
+    # Payment method + escrow state (phase 8). Payments stays stateless: this row is the record.
+    payment_method = Column(String, nullable=False, default=PaymentMethod.STRIPE, server_default=PaymentMethod.STRIPE)
+    customer_wallet = Column(String(42), nullable=True)
+    courier_wallet = Column(String(42), nullable=True)
+    escrow_contract_address = Column(String(42), nullable=True)
+    escrow_deploy_tx = Column(String(66), nullable=True)
+    escrow_amount_wei = Column(String, nullable=True)  # decimal string: 10^18 does not fit a JS number, and Numeric would round
+    escrow_status = Column(String, nullable=True)
+
     # Relationships
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
