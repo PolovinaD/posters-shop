@@ -1,8 +1,19 @@
 import { Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Package, Clock, CheckCircle, Truck, Factory, XCircle, ChevronRight } from 'lucide-react';
+import { Package, Clock, CheckCircle, Truck, Factory, XCircle, ChevronRight, Coins, CreditCard } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { ordersApi } from '../../api';
+
+// Same map as OrderTracking's escrow panel; `cancelled` reads as "Refunded"
+// because cancel_order refunds the contract before it cancels.
+const ESCROW_STATUS_LABELS = {
+  awaiting_payment: 'Awaiting payment',
+  funded: 'Funded',
+  in_delivery: 'In delivery',
+  released: 'Released',
+  cancelled: 'Refunded',
+  failed: 'Failed',
+};
 
 const STATUS_CONFIG = {
   created: { label: 'Order Placed', icon: Clock, color: 'text-stone-600 bg-stone-50' },
@@ -18,6 +29,11 @@ const STATUS_CONFIG = {
 function OrderCard({ order }) {
   const config = STATUS_CONFIG[order.status] || STATUS_CONFIG.reserved;
   const Icon = config.icon;
+  const isEscrow = order.payment_method === 'escrow';
+  const PaymentIcon = isEscrow ? Coins : CreditCard;
+  const escrowLabel = isEscrow && order.escrow_status
+    ? ESCROW_STATUS_LABELS[order.escrow_status] ?? order.escrow_status
+    : null;
 
   return (
     <Link
@@ -29,9 +45,16 @@ function OrderCard({ order }) {
           <p className="text-sm text-stone-500">Order #{order.id}</p>
           <p className="text-lg font-semibold text-stone-900">${order.total_amount}</p>
         </div>
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${config.color}`}>
-          <Icon className="w-4 h-4" />
-          {config.label}
+        <div className="flex flex-col items-end gap-1.5">
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${config.color}`}>
+            <Icon className="w-4 h-4" />
+            {config.label}
+          </div>
+          <div className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">
+            <PaymentIcon className="w-3 h-3" />
+            {isEscrow ? 'Ether escrow' : 'Card'}
+            {escrowLabel ? ` · ${escrowLabel}` : ''}
+          </div>
         </div>
       </div>
 

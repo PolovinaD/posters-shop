@@ -30,6 +30,7 @@ import {
   Modal
 } from '../components/ui';
 import { ordersApi } from '../api';
+import { shortAddress } from '../lib/escrow';
 
 // State machine visualization
 const STATE_FLOW = [
@@ -61,8 +62,7 @@ function OrderStateFlow({ currentStatus }) {
         const Icon = state.icon;
         const isPast = index < currentIndex;
         const isCurrent = index === currentIndex;
-        const isFuture = index > currentIndex;
-        
+
         return (
           <div key={state.status} className="flex items-center">
             <div className={`
@@ -168,6 +168,26 @@ function OrderDetailModal({ open, onClose, orderId }) {
             <div>
               <p className="text-sm text-slate-400">Status</p>
               <StatusBadge status={order.status} />
+            </div>
+            <div>
+              <p className="text-sm text-slate-400">Payment method</p>
+              <p className="font-mono text-sm">{order.payment_method}</p>
+            </div>
+            <div>
+              <p className="text-sm text-slate-400">Escrow contract</p>
+              <p className="font-mono text-sm" title={order.escrow_contract_address || ''}>
+                {order.escrow_contract_address ? shortAddress(order.escrow_contract_address) : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-slate-400">Escrow state</p>
+              <p className="font-mono text-sm">{order.escrow_status ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-sm text-slate-400">Courier wallet</p>
+              <p className="font-mono text-sm" title={order.courier_wallet || ''}>
+                {shortAddress(order.courier_wallet) || '—'}
+              </p>
             </div>
           </div>
           
@@ -337,6 +357,7 @@ export default function Orders() {
                 <TableHead>Customer</TableHead>
                 <TableHead>Items</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Payment</TableHead>
                 <TableHead>Total</TableHead>
                 <TableHead>Created</TableHead>
               </TableHeader>
@@ -352,6 +373,11 @@ export default function Orders() {
                     <TableCell>{order.item_count} item(s)</TableCell>
                     <TableCell>
                       <StatusBadge status={order.status} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {order.payment_method === 'escrow'
+                        ? `escrow${order.escrow_status ? ' · ' + order.escrow_status : ''}`
+                        : 'stripe'}
                     </TableCell>
                     <TableCell className="font-mono">${order.total_amount}</TableCell>
                     <TableCell className="text-slate-400">
