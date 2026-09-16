@@ -37,6 +37,8 @@ from outbox import (
 )
 import payment_client
 from payment_client import PaymentServiceError
+import catalog_client
+from catalog_client import CatalogServiceError, UnknownSkuError
 from circuit_breaker import CircuitOpenError
 from stripe_webhook import process_webhook, WebhookError
 from logger import get_logger, LoggingMiddleware
@@ -146,8 +148,24 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
     3. If all reservations succeed, transition to RESERVED status
     4. If any reservation fails, release previous reservations and fail the order
     """
-    # Calculate total
-    total = sum(item.unit_price * item.quantity for item in payload.items)
+    # Price is resolved from the catalog, never taken from the request. What a
+    # client sends is a proposal; the catalog owns the number that gets charged
+    # and the one that later reaches Stripe.
+    try:
+        priced = await catalog_client.resolve_prices([i.sku for i in payload.items])
+    except UnknownSkuError as e:
+        logger.warning("Order rejected: unknown SKU", skus=e.skus)
+        raise HTTPException(
+            status_code=400, detail=f"Unknown or unavailable items: {', '.join(e.skus)}"
+        )
+    except CircuitOpenError:
+        logger.warning("Order rejected: catalog circuit open")
+        raise HTTPException(status_code=503, detail="Catalog service unavailable")
+    except CatalogServiceError as e:
+        logger.error("Order rejected: catalog unreachable", error=str(e))
+        raise HTTPException(status_code=503, detail="Catalog service unavailable")
+
+    total = sum(priced[i.sku]["price"] * i.quantity for i in payload.items)
 
     # Set customer_email from JWT sub — never trust client-supplied email
     customer_email = claims["sub"]
@@ -171,14 +189,15 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
     db.add(order)
     db.flush()  # Get order ID
     
-    # Add items
+    # Add items, named and priced by the catalog
     for item in payload.items:
+        resolved = priced[item.sku]
         order_item = OrderItem(
             order_id=order.id,
             sku=item.sku,
-            name=item.name,
+            name=resolved["name"],
             quantity=item.quantity,
-            unit_price=item.unit_price
+            unit_price=resolved["price"],
         )
         db.add(order_item)
     

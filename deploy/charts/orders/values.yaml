@@ -38,6 +38,8 @@ env:
         key: JWT_SECRET
   - name: INVENTORY_SERVICE_URL
     value: "http://inventory"
+  - name: CATALOG_SERVICE_URL
+    value: "http://catalog"
   - name: PRODUCTION_SERVICE_URL
     value: "http://production"
   - name: PAYMENT_SERVICE_URL

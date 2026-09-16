@@ -5,10 +5,15 @@ from typing import Optional
 
 
 class OrderItemCreate(BaseModel):
+    """What a client may state about a line: which SKU, and how many.
+
+    `name` and `unit_price` are accepted for backwards compatibility but are
+    ignored — both are resolved from the catalog when the order is written.
+    """
     sku: str = Field(..., min_length=1)
-    name: str = Field(..., min_length=1)
     quantity: int = Field(default=1, ge=1)
-    unit_price: Decimal = Field(..., ge=0)
+    name: Optional[str] = None
+    unit_price: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class OrderItemOut(BaseModel):
