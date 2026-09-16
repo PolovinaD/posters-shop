@@ -529,27 +529,55 @@ def list_reservations(
 # ============== Seed Data ==============
 
 @app.post("/seed")
-def seed_stock(db: Session = Depends(get_db), _: dict = Depends(require_owner)):
-    """Seed initial stock data for testing."""
-    # Check if data already exists
+def seed_stock(
+    force: bool = False,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_owner),
+):
+    """Seed stock for every sellable SKU the catalogue can offer.
+
+    The catalogue sells each motif in four formats and each frame colour in four
+    formats, and a frame is a stocked item in its own right — an A1 frame is a
+    different physical thing from an A3 one. So the SKUs here are generated from
+    the same two vocabularies the catalogue uses, rather than listed by hand,
+    which is what let them drift apart before.
+    """
     existing = db.execute(select(Stock)).first()
-    if existing:
+    if existing and not force:
         return {"message": "Stock data already exists", "seeded": False}
+    if existing:
+        db.execute(text("TRUNCATE inventory_schema.reservations, inventory_schema.stock RESTART IDENTITY CASCADE"))
+        db.commit()
     
-    # Create sample stock items
+    # Formats, smallest first, with the stock depth a print shop would plausibly
+    # hold: small formats move fastest, large ones are kept thin.
+    sizes = [("A4", 120), ("A3", 100), ("A2", 50), ("A1", 25)]
+    motifs = [
+        ("POSTER-SUNSET", "Sunset Poster"),
+        ("POSTER-MOUNTAIN", "Mountain Poster"),
+        ("POSTER-CITYNIGHT", "City Night Poster"),
+        ("POSTER-FOREST", "Forest Poster"),
+        ("POSTER-OCEAN", "Ocean Poster"),
+        ("POSTER-ABSTRACT", "Abstract Poster"),
+        ("POSTER-MINIMAL", "Minimal Poster"),
+        ("POSTER-BOTANICAL", "Botanical Poster"),
+    ]
+    frames = [
+        ("FRAME-BLACK", "Black Frame"),
+        ("FRAME-WHITE", "White Frame"),
+        ("FRAME-NATURAL", "Natural Wood Frame"),
+        ("FRAME-DARK", "Dark Wood Frame"),
+    ]
+
     items = [
-        Stock(sku="POSTER-SUNSET-A3", name="Sunset Poster A3", available=100),
-        Stock(sku="POSTER-SUNSET-A2", name="Sunset Poster A2", available=50),
-        Stock(sku="POSTER-SUNSET-A1", name="Sunset Poster A1", available=25),
-        Stock(sku="POSTER-MOUNTAIN-A3", name="Mountain Poster A3", available=100),
-        Stock(sku="POSTER-MOUNTAIN-A2", name="Mountain Poster A2", available=50),
-        Stock(sku="POSTER-MOUNTAIN-A1", name="Mountain Poster A1", available=25),
-        Stock(sku="FRAME-BLACK-A3", name="Black Frame A3", available=200),
-        Stock(sku="FRAME-BLACK-A2", name="Black Frame A2", available=150),
-        Stock(sku="FRAME-BLACK-A1", name="Black Frame A1", available=100),
-        Stock(sku="FRAME-WOOD-A3", name="Wood Frame A3", available=150),
-        Stock(sku="FRAME-WOOD-A2", name="Wood Frame A2", available=100),
-        Stock(sku="FRAME-WOOD-A1", name="Wood Frame A1", available=75),
+        Stock(sku=f"{prefix}-{size}", name=f"{label} {size}", available=qty)
+        for prefix, label in motifs
+        for size, qty in sizes
+    ] + [
+        # Frames are held deeper than posters: one frame fits any motif.
+        Stock(sku=f"{prefix}-{size}", name=f"{label} {size}", available=qty * 2)
+        for prefix, label in frames
+        for size, qty in sizes
     ]
     
     db.add_all(items)

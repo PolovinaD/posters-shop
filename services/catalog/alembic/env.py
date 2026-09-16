@@ -4,7 +4,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool, text
 from alembic import context
 
-from main import Product, Size, FrameOption
+from main import Product, Size, FrameOption, ProductVariant, FrameVariant
 from database import Base
 
 SCHEMA = "catalog_schema"
