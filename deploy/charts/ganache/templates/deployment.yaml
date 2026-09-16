@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ganache
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # The chain lives on a ReadWriteOnce volume: a rolling update would wait forever for a second pod
+  # to mount it, so the old pod is stopped before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ganache
+  template:
+    metadata:
+      labels:
+        app: ganache
+    spec:
+      containers:
+        - name: ganache
+          # Upstream image from `ganache.image` — NOT `image.repository`/`image.tag`, which every
+          # deploy path sets on every chart (see values.yaml).
+          image: {{ .Values.ganache.image | quote }}
+          args:
+            {{- toYaml .Values.ganache.args | nindent 12 }}
+          ports:
+            - containerPort: 8545
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # The image has node but no wget/curl: a one-line JSON-RPC eth_chainId probe (same as compose).
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').request({host:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).end('{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}')"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').request({host:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).end('{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}')"
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+        - name: data
+{{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: ganache-data
+{{- else }}
+          emptyDir: {}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ganache
+  labels:
+    app: ganache
+spec:
+  type: ClusterIP
+  selector:
+    app: ganache
+  ports:
+    - name: rpc
+      port: {{ .Values.service.port }}
+      targetPort: 8545
+{{- if .Values.persistence.enabled }}
+---
+# Deployed contracts and balances survive pod restarts; deleted with the namespace on teardown.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ganache-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

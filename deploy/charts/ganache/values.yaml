@@ -1,0 +1,33 @@
+# Upstream image — nothing is built or pushed for this chart. Every deploy path (deploy.sh and the CI
+# workflow) passes `--set image.repository=<ECR>/ganache --set image.tag=<sha>` to EVERY chart; this
+# chart deliberately reads `ganache.image` instead, so those flags land on unused values and the
+# simulator keeps its pinned upstream tag. Do not "fix" it to image.repository.
+ganache:
+  image: "trufflesuite/ganache:v7.9.2"
+  chainId: 1337
+  args:
+    - "--wallet.deterministic"
+    - "--chain.chainId"
+    - "1337"
+    - "--server.host"
+    - "0.0.0.0"
+    - "--database.dbPath"
+    - "/data"
+
+replicaCount: 1          # MUST stay 1: one chain, one LevelDB directory, ReadWriteOnce volume
+
+service:
+  port: 8545
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: ""   # empty => cluster default (gp2 via the EBS CSI driver installed by eksctl-cluster.yaml)
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

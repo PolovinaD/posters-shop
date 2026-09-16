@@ -42,6 +42,27 @@ env:
   # scalar at the bottom of this file — see the comment there for why.
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
+  # Ethereum escrow (phase 8). ESCROW_RPC_URL is the in-cluster ganache Service; ESCROW_PUBLIC_RPC_URL is
+  # what the browser uses (the frontend's nginx proxies /rpc to ganache). The owner key comes from the
+  # postershop-escrow Secret (ExternalSecret <- Secrets Manager postershop/escrow) and MUST be STABLE:
+  # a rotated owner key orphans every in-flight OrderEscrow contract (nobody can bind, release or cancel it).
+  - name: ESCROW_RPC_URL
+    value: "http://ganache:8545"
+  - name: ESCROW_PUBLIC_RPC_URL
+    value: "/rpc"
+  - name: ESCROW_OWNER_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: postershop-escrow
+        key: OWNER_PRIVATE_KEY
+  - name: WEI_PER_USD
+    value: "1000000000000000"
+  - name: ESCROW_COURIER_SHARE_BPS
+    value: "2000"
+  - name: ESCROW_OWNER_MIN_BALANCE_ETH
+    value: "10"
+  - name: ESCROW_EXPOSE_DEMO_ACCOUNTS
+    value: "true"
 
 ingress:
   enabled: false

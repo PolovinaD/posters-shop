@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ganache
+description: Ganache Ethereum simulator for the escrow payment (upstream image, no build)
+type: application
+version: 0.1.0
+appVersion: "7.9.2"

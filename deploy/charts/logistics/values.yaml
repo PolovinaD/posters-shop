@@ -37,6 +37,9 @@ env:
     value: "http://orders"
   - name: CORS_ORIGINS
     value: "http://localhost:3000"
+  # Ganache account[2]; the unattended auto-advance worker binds it on pick-up
+  - name: LOGISTICS_DEFAULT_COURIER_WALLET
+    value: "0x22d491bde2303f2f43325b2108d26f1eaba1e32b"
 
 ingress:
   enabled: false
