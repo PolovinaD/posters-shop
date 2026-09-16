@@ -102,6 +102,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
       CB_RECOVERY_TIMEOUT: ${CB_RECOVERY_TIMEOUT:-30}
+      ESCROW_RECONCILE_INTERVAL: ${ESCROW_RECONCILE_INTERVAL:-15}
     depends_on:
       orders-migrate:
         condition: service_completed_successfully
@@ -167,6 +168,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: logistics
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      LOGISTICS_DEFAULT_COURIER_WALLET: ${LOGISTICS_DEFAULT_COURIER_WALLET:-0x22d491bde2303f2f43325b2108d26f1eaba1e32b}  # Ganache account[2]: the unattended worker's courier
     depends_on:
       logistics-migrate:
         condition: service_completed_successfully
@@ -203,6 +205,26 @@ services:
     ports:
       - "8006:8000"
 
+  # ============================================
+  # Ganache — local Ethereum simulator for the escrow payment (phase 8)
+  # ============================================
+  ganache:
+    image: trufflesuite/ganache:v7.9.2
+    container_name: ganache
+    # Deterministic wallet => the ten well-known accounts (payments serves their keys as demo accounts);
+    # chainId 1337; the chain is persisted on the volume so deployed contracts survive restarts.
+    command: ["--wallet.deterministic", "--chain.chainId", "1337", "--server.host", "0.0.0.0", "--database.dbPath", "/data"]
+    volumes:
+      - ganache-data:/data
+    ports:
+      - "8545:8545"
+    healthcheck:
+      # The image has node but no wget/curl: a one-line JSON-RPC eth_chainId probe.
+      test: ["CMD", "node", "-e", "require('http').request({host:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).end('{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   payments:
     build: ./services/payments
     container_name: payments
@@ -212,6 +234,18 @@ services:
       SERVICE_NAME: payments
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ESCROW_RPC_URL: http://ganache:8545
+      ESCROW_PUBLIC_RPC_URL: ${ESCROW_PUBLIC_RPC_URL:-/rpc}
+      # Fixed dev key so contracts keep their owner across restarts. Deliberately NOT a Ganache account:
+      # payments tops it up from account 0 at startup, which exercises the IEP "fund the owner" step.
+      ESCROW_OWNER_PRIVATE_KEY: ${ESCROW_OWNER_PRIVATE_KEY:-0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318}
+      WEI_PER_USD: ${WEI_PER_USD:-1000000000000000}
+      ESCROW_COURIER_SHARE_BPS: ${ESCROW_COURIER_SHARE_BPS:-2000}
+      ESCROW_OWNER_MIN_BALANCE_ETH: ${ESCROW_OWNER_MIN_BALANCE_ETH:-10}
+      ESCROW_EXPOSE_DEMO_ACCOUNTS: ${ESCROW_EXPOSE_DEMO_ACCOUNTS:-true}
+    depends_on:
+      ganache:
+        condition: service_healthy
     ports:
       - "8007:8000"
 
@@ -272,6 +306,7 @@ services:
       - logistics
       - inventory
       - payments
+      - ganache
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s
@@ -280,3 +315,4 @@ services:
 
 volumes:
   pgdata:
+  ganache-data:
