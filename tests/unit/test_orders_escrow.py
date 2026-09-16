@@ -221,11 +221,14 @@ class FakeEscrow:
         self.contracts = {}
         self.calls = []
         self.fail_with = None  # exception instance raised by every call when set
+        self.fail_on = {}      # {method name: exception instance} raised by that call only
 
     def _check(self, name):
         self.calls.append(name)
         if self.fail_with is not None:
             raise self.fail_with
+        if name in self.fail_on:
+            raise self.fail_on[name]
 
     def fund(self, address):
         assert self.contracts[address]["state"] == "awaiting_payment"
@@ -343,18 +346,22 @@ try:
     sys.modules["escrow_rules"] = _rules
     _paid = _load_orders_module("order_paid", alias="orders_escrow_paid")
     sys.modules["order_paid"] = _paid
+    _reconciler = _load_orders_module("escrow_reconciler", alias="orders_escrow_reconciler")
+    sys.modules["escrow_reconciler"] = _reconciler
     # main.py is loaded LAST so it binds the very module objects above.
     _ord_main = _load_orders_module("main", alias="orders_main_escrow_test")
 finally:
     sys.path.remove(_ORDERS_DIR)
     for _mod_name in (
-        "models", "escrow_rules", "order_paid",
+        "models", "escrow_rules", "order_paid", "escrow_reconciler",
         "schemas", "logger", "metrics", "database",
     ):
         sys.modules.pop(_mod_name, None)
 
 
 OrderStatus = _ord_models.OrderStatus
+reconcile_once = _reconciler.reconcile_once
+open_escrow_orders_query = _reconciler.open_escrow_orders_query
 is_wallet_address = _rules.is_wallet_address
 decide_reconcile_action = _rules.decide_reconcile_action
 mark_order_paid = _paid.mark_order_paid
@@ -449,6 +456,7 @@ def _reset_stubs():
     fake.contracts.clear()
     fake.calls.clear()
     fake.fail_with = None
+    fake.fail_on = {}
     yield
 
 
@@ -829,3 +837,123 @@ def test_checkout_rejects_escrow_order():
     r = client.post("/orders/1/checkout")
     assert r.status_code == 400, r.text
     assert "escrow" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Section 3: the reconciler
+# ---------------------------------------------------------------------------
+
+def _reconcile_db(*orders):
+    db = MagicMock()
+    db.execute.return_value.scalars.return_value.all.return_value = list(orders)
+    return db
+
+
+def _chain_order(status, escrow_status, courier_wallet=None, order_id=1):
+    """An escrow order whose contract exists in the fake (awaiting_payment)."""
+    order = _escrow_order(status=status, order_id=order_id)
+    deployed = asyncio.run(fake.create_escrow(order_id, CUSTOMER, "12.50"))
+    order.escrow_contract_address = deployed["contract_address"]
+    order.escrow_amount_wei = deployed["amount_wei"]
+    order.escrow_status = escrow_status
+    order.courier_wallet = courier_wallet
+    return order
+
+
+def _counts(**overrides):
+    base = {"mark_paid": 0, "bind_courier": 0, "sync_in_delivery": 0, "refund": 0, "mark_failed": 0, "noop": 0}
+    base.update(overrides)
+    return base
+
+
+def test_reconcile_once_marks_paid_when_chain_funded():
+    order = _chain_order("reserved", "awaiting_payment")
+    fake.fund(order.escrow_contract_address)
+    db = _reconcile_db(order)
+
+    counts = asyncio.run(reconcile_once(db))
+
+    assert counts == _counts(mark_paid=1)
+    assert order.status == "paid"
+    assert order.escrow_status == "funded"
+    _outbox_stub.emit_event.assert_called_once()
+    assert _outbox_stub.emit_event.call_args.kwargs["event_type"] == "ORDER_PAID"
+    db.commit.assert_called()
+
+
+def test_reconcile_once_binds_deferred_courier():
+    order = _chain_order("paid", "funded", courier_wallet=COURIER)
+    fake.fund(order.escrow_contract_address)
+    db = _reconcile_db(order)
+
+    counts = asyncio.run(reconcile_once(db))
+
+    assert counts == _counts(bind_courier=1)
+    assert "assign_escrow_courier" in fake.calls
+    assert order.escrow_status == "in_delivery"
+    assert fake.contracts[order.escrow_contract_address]["courier"] == COURIER
+    db.commit.assert_called()
+
+
+def test_reconcile_once_marks_failed_when_contract_missing():
+    order = _escrow_order(status="reserved")
+    order.escrow_contract_address = "0x" + "ff" * 20  # never deployed in the fake
+    db = _reconcile_db(order)
+
+    counts = asyncio.run(reconcile_once(db))
+
+    assert counts == _counts(mark_failed=1)
+    assert order.escrow_status == "failed"
+    assert order.status == "reserved"
+    db.commit.assert_called()
+
+
+def test_reconcile_once_survives_payments_outage():
+    order = _chain_order("reserved", "awaiting_payment")
+    fake.fund(order.escrow_contract_address)
+    fake.fail_with = EscrowUnavailableError("down")
+    db = _reconcile_db(order)
+
+    counts = asyncio.run(reconcile_once(db))
+
+    assert counts == _counts(noop=1)
+    assert order.status == "reserved"
+    assert order.escrow_status == "awaiting_payment"
+    _outbox_stub.emit_event.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_reconcile_once_refunds_cancelled_order():
+    order = _chain_order("cancelled", "funded")
+    fake.fund(order.escrow_contract_address)
+    db = _reconcile_db(order)
+
+    counts = asyncio.run(reconcile_once(db))
+
+    assert counts == _counts(refund=1)
+    assert "cancel_escrow" in fake.calls
+    assert fake.contracts[order.escrow_contract_address]["state"] == "cancelled"
+    assert order.escrow_status == "cancelled"
+    assert order.status == "cancelled"
+    db.commit.assert_called()
+
+    # Variant: the contract refuses -> counted, logged, nothing mutated, no raise
+    fake.calls.clear()
+    order2 = _chain_order("cancelled", "funded", order_id=2)
+    fake.fund(order2.escrow_contract_address)
+    fake.fail_on = {"cancel_escrow": EscrowRejectedError("Cannot cancel.")}
+    db2 = _reconcile_db(order2)
+
+    counts = asyncio.run(reconcile_once(db2))
+
+    assert counts == _counts(refund=1)
+    assert "cancel_escrow" in fake.calls
+    assert order2.escrow_status == "funded"
+    db2.commit.assert_not_called()
+
+
+def test_reconciler_query_targets_open_escrow_orders():
+    rendered = str(open_escrow_orders_query())
+    assert "orders_schema.orders.escrow_contract_address IS NOT NULL" in rendered
+    assert "escrow_status IN" in rendered
+    assert "orders_schema.orders.payment_method =" in rendered

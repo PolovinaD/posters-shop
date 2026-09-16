@@ -41,6 +41,7 @@ from payment_client import (
 )
 from order_paid import mark_order_paid, InvalidPaidTransition
 from escrow_rules import WALLET_RE
+from escrow_reconciler import escrow_reconciler_worker
 import catalog_client
 from catalog_client import CatalogServiceError, UnknownSkuError
 from circuit_breaker import CircuitOpenError
@@ -89,6 +90,7 @@ class CourierBindRequest(BaseModel):
 # Background task control
 outbox_task = None
 status_task = None
+escrow_task = None
 
 
 @asynccontextmanager
@@ -98,7 +100,7 @@ async def lifespan(app: FastAPI):
     logger.info("Service starting", note="Ensure migrations are applied via 'alembic upgrade head'")
 
     # Start outbox worker
-    global outbox_task, status_task
+    global outbox_task, status_task, escrow_task
     outbox_task = asyncio.create_task(outbox_worker(poll_interval=2.0))
     logger.info("Outbox worker started", poll_interval=2.0)
 
@@ -109,6 +111,11 @@ async def lifespan(app: FastAPI):
     init_orders_by_status()
     status_task = asyncio.create_task(orders_by_status_worker(refresh_interval=15.0))
     logger.info("Orders-by-status refresher started", refresh_interval=15.0)
+
+    # Escrow reconciler: marks paid orders whose browser died after paying and
+    # retries deferred courier bindings / refunds. Idempotent per replica.
+    escrow_task = asyncio.create_task(escrow_reconciler_worker())
+    logger.info("Escrow reconciler started")
 
     yield
 
@@ -123,6 +130,12 @@ async def lifespan(app: FastAPI):
         status_task.cancel()
         try:
             await status_task
+        except asyncio.CancelledError:
+            pass
+    if escrow_task:
+        escrow_task.cancel()
+        try:
+            await escrow_task
         except asyncio.CancelledError:
             pass
     logger.info("Shutdown complete")
