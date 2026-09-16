@@ -23,3 +23,17 @@ def next_status(status: str, updated_at: datetime, now: datetime, interval: floa
     if age < interval:
         return None
     return "in_transit" if status == "dispatched" else "delivered"
+
+
+def courier_binding_wallet(old_status: str, new_status: str, courier_wallet: str | None, default_wallet: str | None) -> str | None:
+    """Wallet to bind to the order's escrow contract on THIS transition, or None.
+
+    Only the pick-up (dispatched -> in_transit) binds a courier — that is when a
+    real person takes the parcel. An explicit wallet (the courier's profile, sent
+    by the dashboard) wins; LOGISTICS_DEFAULT_COURIER_WALLET covers the
+    unattended worker; neither set -> None, and the order simply has no courier
+    to bind.
+    """
+    if old_status != "dispatched" or new_status != "in_transit":
+        return None
+    return courier_wallet or default_wallet or None

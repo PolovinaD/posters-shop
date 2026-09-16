@@ -78,3 +78,29 @@ async def fetch_shipping_address(order_id: int) -> dict | None:
     except Exception as e:
         logger.error(f"Error fetching shipping address for order {order_id}: {e}")
         return None
+
+
+async def notify_courier_assigned(order_id: int, courier_wallet: str) -> bool:
+    """Tell orders which wallet picked the parcel up (CONTRACT B: POST /internal/orders/{id}/courier).
+
+    Orders binds it to the escrow contract when the order is an escrow order; for
+    card orders it only stores it. Fire-and-forget: any non-200 (incl. 404 before
+    the orders side ships) is logged and swallowed.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=internal_headers()) as client:
+            response = await client.post(
+                f"{ORDERS_SERVICE_URL}/internal/orders/{order_id}/courier",
+                json={"courier_wallet": courier_wallet},
+            )
+            if response.status_code == 200:
+                logger.info(f"Courier wallet sent to orders for order {order_id}: {response.text}")
+                return True
+            logger.error(
+                f"Failed to send courier wallet for order {order_id}: "
+                f"{response.status_code} - {response.text}"
+            )
+            return False
+    except Exception as e:
+        logger.error(f"Error sending courier wallet for order {order_id}: {e}")
+        return False
