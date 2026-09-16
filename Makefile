@@ -158,6 +158,12 @@ dev-test: ## [local] Run health checks on all services
 		fi; \
 	done
 
+.PHONY: contract-compile
+contract-compile: ## [local] Recompile services/payments/contracts/OrderEscrow.sol into the committed OrderEscrow.json (solc 0.8.28 in docker)
+	docker run --rm -v "$(CURDIR)/services/payments/contracts:/src" ethereum/solc:0.8.28 \
+		--combined-json abi,bin --optimize /src/OrderEscrow.sol \
+		| python3 services/payments/contracts/compile.py services/payments/contracts/OrderEscrow.sol services/payments/contracts/OrderEscrow.json
+
 # ============================================================
 # Cloud Deployment
 # ============================================================
