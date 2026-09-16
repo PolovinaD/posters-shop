@@ -15,7 +15,7 @@ from commons import SERVICE_NAME, UserRole
 logger = get_logger(__name__)
 from database import get_db, engine
 from models import User, RefreshToken
-from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser, RefreshIn
+from schemas import RegisterIn, LoginIn, UserOut, TokenOut, ChangePasswordRequest, ChangeRoleRequest, AdminCreateUser, RefreshIn, WalletIn
 from auth import (
     hash_password,
     verify_password,
@@ -192,6 +192,20 @@ def me(claims=Depends(get_current_user_claims), db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.email == claims["sub"])).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.put("/users/me/wallet", response_model=UserOut)
+def set_my_wallet(payload: WalletIn, claims=Depends(get_current_user_claims), db: Session = Depends(get_db)):
+    """Store the caller's Ethereum wallet (ESC-04). Any authenticated user may set one; only couriers are paid to it
+    (logistics sends it to orders on pick-up), so restricting the role would only complicate the demo."""
+    user = db.execute(select(User).where(User.email == claims["sub"])).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.wallet_address = payload.wallet_address
+    db.commit()
+    db.refresh(user)
+    logger.info("Wallet address updated", user_id=user.id, role=user.role)
     return user
 
 

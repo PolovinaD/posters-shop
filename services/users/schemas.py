@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from commons import UserRole
+from wallet import normalize_wallet
 
 PASS_MIN_LENGTH = 8
 
@@ -23,6 +24,18 @@ class UserOut(BaseModel):
     role: str
     first_name: str | None = None
     last_name: str | None = None
+    wallet_address: str | None = None
+
+
+class WalletIn(BaseModel):
+    """PUT /users/me/wallet body (ESC-04). min/max length is the fast pre-check;
+    normalize_wallet carries the real 0x + 40 hex rule (ValueError -> 422)."""
+    wallet_address: str = Field(..., min_length=42, max_length=42)
+
+    @field_validator("wallet_address")
+    @classmethod
+    def _valid(cls, v: str) -> str:
+        return normalize_wallet(v)
 
 
 class TokenOut(BaseModel):

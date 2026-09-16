@@ -14,6 +14,7 @@ class User(Base):
     role = Column(String, nullable=False, default="customer")
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
+    wallet_address = Column(String(42), nullable=True)  # Ethereum address; couriers set it in the courier dashboard (ESC-04)
 
 
 class RefreshToken(Base):
