@@ -208,6 +208,16 @@ export const ordersApi = {
   getOrderStats: () => authFetchJSON(`${API_BASE}/orders/orders/stats/by-status`),
   getOutboxStats: () => authFetchJSON(`${API_BASE}/orders/outbox/stats`),
   createCheckout: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/checkout`, { method: 'POST' }),
+  // Ether escrow (ESC-05). createEscrow is idempotent: it deploys the per-order
+  // contract once and hands back the unsigned pay() invoice + chain config the
+  // browser signs with ethers; verifyEscrow reads the chain and marks the order
+  // PAID; confirmEscrowDelivery is the customer's authenticated release button.
+  createEscrow: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/escrow`, { method: 'POST' }),
+  getEscrow: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/escrow`),
+  verifyEscrow: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/escrow/verify`, { method: 'POST' }),
+  confirmEscrowDelivery: (id) => authFetchJSON(`${API_BASE}/orders/orders/${id}/escrow/confirm-delivery`, {
+    method: 'POST',
+  }),
 };
 
 // ============== Production API ==============
@@ -234,9 +244,12 @@ export const logisticsApi = {
   // button was dead. Switching it here is a repair, not just a follow-on.
   getShipments: () => authFetchJSON(`${API_BASE}/logistics/shipments`),
   getShipment: (id) => authFetchJSON(`${API_BASE}/logistics/shipments/${id}`),
-  updateShipmentStatus: (id, status) => authFetchJSON(`${API_BASE}/logistics/shipments/${id}/status`, {
+  // courierWallet is optional: the courier dashboard sends it on pick-up
+  // (in_transit) so orders can bind the courier on an escrow contract; the
+  // existing two-argument callers keep sending the bare {status} body.
+  updateShipmentStatus: (id, status, courierWallet) => authFetchJSON(`${API_BASE}/logistics/shipments/${id}/status`, {
     method: 'PUT',
-    body: JSON.stringify({ status }),
+    body: JSON.stringify(courierWallet ? { status, courier_wallet: courierWallet } : { status }),
   }),
 };
 
@@ -250,6 +263,10 @@ export const paymentsApi = {
   completeSession: (id) => fetchJSON(`${API_BASE}/payments/v1/checkout/sessions/${id}/complete`, {
     method: 'POST',
   }),
+  // Public reads (no token): whether escrow is on and which chain to sign for,
+  // plus Ganache's deterministic demo accounts (404 when not exposed).
+  getEscrowConfig: () => fetchJSON(`${API_BASE}/payments/v1/escrow/config`),
+  getEscrowDemoAccounts: () => fetchJSON(`${API_BASE}/payments/v1/escrow/demo-accounts`),
 };
 
 // ============== Infrastructure API ==============
@@ -310,6 +327,11 @@ export const usersApi = {
 
   // Authenticated endpoints -- use authFetchJSON (no manual token param)
   getMe: () => authFetchJSON(`${API_BASE}/users/users/me`),
+  // Courier payout wallet (ESC-04); 422 on anything but 0x + 40 hex.
+  setWallet: (wallet_address) => authFetchJSON(`${API_BASE}/users/users/me/wallet`, {
+    method: 'PUT',
+    body: JSON.stringify({ wallet_address }),
+  }),
 
   // Logout endpoints
   logout: (refreshToken) => authFetchJSON(`${API_BASE}/users/auth/logout`, {
