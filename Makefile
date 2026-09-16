@@ -132,10 +132,18 @@ dev-db: ## [local] Connect to local PostgreSQL
 	docker compose exec postgres psql -U root -d postershop
 
 .PHONY: dev-seed
-dev-seed: ## [local] Seed all services with sample data
+dev-seed: ## [local] Seed all services with sample data (FORCE=1 to rebuild)
 	@echo "Seeding services..."
-	curl -s -X POST localhost:8006/seed | jq  # inventory
-	curl -s -X POST localhost:8002/seed | jq  # catalog
+	@TOKEN=$$(curl -s -X POST localhost:8001/login \
+		-H 'Content-Type: application/json' \
+		-d '{"email":"admin@postershop.com","password":"admin1234"}' \
+		| sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'); \
+	if [ -z "$$TOKEN" ]; then \
+		echo "❌ Could not log in as owner — is the users service up?"; exit 1; \
+	fi; \
+	Q=$$([ -n "$(FORCE)" ] && echo "?force=true"); \
+	curl -s -X POST "localhost:8006/seed$$Q" -H "Authorization: Bearer $$TOKEN"; echo; \
+	curl -s -X POST "localhost:8002/seed$$Q" -H "Authorization: Bearer $$TOKEN"; echo
 	@echo "✅ Data seeded"
 
 .PHONY: dev-test
