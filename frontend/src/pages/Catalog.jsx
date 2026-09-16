@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Package, Plus, Pencil, Trash2, Eye, EyeOff, ImageIcon, RefreshCw, Database } from 'lucide-react';
+import { Package, Plus, Pencil, Trash2, Eye, EyeOff, ImageIcon, RefreshCw, Database, Layers } from 'lucide-react';
 import { 
   Card, 
   CardHeader, 
@@ -33,7 +33,6 @@ function ProductModal({ open, onClose, product, categories }) {
     price: product.price,
     category: product.category,
     image_url: product.image_url || '',
-    sizes: product.sizes || 'A4,A3,A2',
     active: product.active,
   } : {
     sku: '',
@@ -42,7 +41,6 @@ function ProductModal({ open, onClose, product, categories }) {
     price: '',
     category: 'Nature',
     image_url: '',
-    sizes: 'A4,A3,A2',
     active: true,
   });
   
@@ -82,7 +80,7 @@ function ProductModal({ open, onClose, product, categories }) {
           label="SKU"
           value={form.sku}
           onChange={(e) => setForm({ ...form, sku: e.target.value })}
-          placeholder="e.g., POSTER-SUNSET-A3"
+          placeholder="e.g., POSTER-SUNSET"
           required
           disabled={isEdit}
         />
@@ -126,12 +124,6 @@ function ProductModal({ open, onClose, product, categories }) {
           onChange={(e) => setForm({ ...form, image_url: e.target.value })}
           placeholder="https://..."
         />
-        <Input
-          label="Sizes (comma-separated)"
-          value={form.sizes}
-          onChange={(e) => setForm({ ...form, sizes: e.target.value })}
-          placeholder="A4,A3,A2"
-        />
         <div className="flex items-center gap-2">
           <input
             type="checkbox"
@@ -160,7 +152,355 @@ function ProductModal({ open, onClose, product, categories }) {
   );
 }
 
-function SyncInventoryModal({ open, onClose, products }) {
+// A family is not sellable; its variants are. This is where an owner decides
+// which formats a motif is sold in and what each one costs.
+function VariantsModal({ open, onClose, product, sizes }) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState({ size: '', price: '' });
+  const [error, setError] = useState(null);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['catalog-products'] });
+  const fail = (e) => setError(e?.message || 'Request failed');
+
+  const addVariant = useMutation({
+    mutationFn: (data) => catalogApi.createVariant(product.sku, data),
+    onSuccess: () => { setDraft({ size: '', price: '' }); setError(null); refresh(); },
+    onError: fail,
+  });
+  const editVariant = useMutation({
+    mutationFn: ({ sku, data }) => catalogApi.updateVariant(sku, data),
+    onSuccess: () => { setError(null); refresh(); },
+    onError: fail,
+  });
+  const removeVariant = useMutation({
+    mutationFn: (sku) => catalogApi.deleteVariant(sku),
+    onSuccess: () => { setError(null); refresh(); },
+    onError: fail,
+  });
+
+  if (!product) return null;
+
+  const variants = product.variants ?? [];
+  const taken = new Set(variants.map((v) => v.size));
+  const available = (sizes ?? []).filter((s) => !taken.has(s.name));
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Formats — ${product.name}`} size="lg">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-400">
+          Each format is a separate SKU with its own price and its own stock.
+          The SKU is derived from the family so inventory can find it.
+        </p>
+
+        {error && <ErrorMessage message={error} />}
+
+        <div className="space-y-2">
+          {variants.length === 0 && (
+            <p className="text-slate-500 text-sm">
+              No formats yet — this motif cannot be ordered until one is added.
+            </p>
+          )}
+          {variants.map((v) => (
+            <div key={v.sku} className="flex items-center gap-2 p-2 bg-slate-800 rounded">
+              <span className="w-10 font-semibold">{v.size}</span>
+              <span className="flex-1 font-mono text-xs text-slate-500">{v.sku}</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                defaultValue={parseFloat(v.price)}
+                onBlur={(e) => {
+                  const price = parseFloat(e.target.value);
+                  if (!Number.isNaN(price) && price !== parseFloat(v.price)) {
+                    editVariant.mutate({ sku: v.sku, data: { price } });
+                  }
+                }}
+                className="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-right"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => editVariant.mutate({ sku: v.sku, data: { active: !v.active } })}
+              >
+                {v.active ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => removeVariant.mutate(v.sku)}>
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        {available.length > 0 ? (
+          <div className="flex items-end gap-2 border-t border-slate-800 pt-4">
+            <Select
+              label="Add format"
+              className="flex-1"
+              value={draft.size}
+              onChange={(e) => setDraft({ ...draft, size: e.target.value })}
+              options={[
+                { value: '', label: 'Choose…' },
+                ...available.map((s) => ({ value: s.name, label: s.name })),
+              ]}
+            />
+            <Input
+              label="Price"
+              type="number"
+              step="0.01"
+              min="0"
+              className="w-32"
+              value={draft.price}
+              onChange={(e) => setDraft({ ...draft, price: e.target.value })}
+            />
+            <Button
+              disabled={!draft.size || draft.price === ''}
+              loading={addVariant.isPending}
+              onClick={() =>
+                addVariant.mutate({ size: draft.size, price: parseFloat(draft.price) })
+              }
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
+          </div>
+        ) : (
+          <p className="text-slate-500 text-sm border-t border-slate-800 pt-4">
+            Every defined format is already priced for this motif.
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+// A frame colour and its per-format prices. The prices differ by format on
+// purpose: an A1 frame needs about twice the moulding of an A4.
+function FramesModal({ open, onClose, frames, sizes }) {
+  const queryClient = useQueryClient();
+  const [colour, setColour] = useState({ name: '', sku_prefix: '' });
+  const [draft, setDraft] = useState({});
+  const [error, setError] = useState(null);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['catalog-frames'] });
+  const fail = (e) => setError(e?.message || 'Request failed');
+  const ok = () => { setError(null); refresh(); };
+
+  const addColour = useMutation({
+    mutationFn: (data) => catalogApi.createFrame(data),
+    onSuccess: () => { setColour({ name: '', sku_prefix: '' }); ok(); },
+    onError: fail,
+  });
+  const removeColour = useMutation({
+    mutationFn: (id) => catalogApi.deleteFrame(id, true),
+    onSuccess: ok,
+    onError: fail,
+  });
+  const addPrice = useMutation({
+    mutationFn: ({ frameId, data }) => catalogApi.createFrameVariant(frameId, data),
+    onSuccess: () => { setDraft({}); ok(); },
+    onError: fail,
+  });
+  const editPrice = useMutation({
+    mutationFn: ({ sku, data }) => catalogApi.updateFrameVariant(sku, data),
+    onSuccess: ok,
+    onError: fail,
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Frames" size="lg">
+      <div className="space-y-5">
+        {error && <ErrorMessage message={error} />}
+
+        {(frames ?? []).map((frame) => {
+          const taken = new Set((frame.variants ?? []).map((v) => v.size));
+          const free = (sizes ?? []).filter((s) => !taken.has(s.name));
+          const d = draft[frame.id] ?? { size: '', price: '' };
+          return (
+            <div key={frame.id} className="p-3 bg-slate-800 rounded space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-semibold">{frame.name}</span>
+                  <span className="ml-2 font-mono text-xs text-slate-500">
+                    {frame.sku_prefix}
+                  </span>
+                </div>
+                <Button size="sm" variant="danger" onClick={() => removeColour.mutate(frame.id)}>
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {(frame.variants ?? []).map((v) => (
+                  <div key={v.sku} className="flex items-center gap-1">
+                    <span className="text-xs text-slate-400 w-7">{v.size}</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      defaultValue={parseFloat(v.price)}
+                      onBlur={(e) => {
+                        const price = parseFloat(e.target.value);
+                        if (!Number.isNaN(price) && price !== parseFloat(v.price)) {
+                          editPrice.mutate({ sku: v.sku, data: { price } });
+                        }
+                      }}
+                      className="w-20 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-right text-sm"
+                    />
+                  </div>
+                ))}
+                {(frame.variants ?? []).length === 0 && (
+                  <span className="text-slate-500 text-sm">
+                    Not priced for any format yet, so it cannot be chosen.
+                  </span>
+                )}
+              </div>
+
+              {free.length > 0 && (
+                <div className="flex items-end gap-2">
+                  <Select
+                    className="w-28"
+                    value={d.size}
+                    onChange={(e) =>
+                      setDraft({ ...draft, [frame.id]: { ...d, size: e.target.value } })
+                    }
+                    options={[
+                      { value: '', label: 'Format' },
+                      ...free.map((s) => ({ value: s.name, label: s.name })),
+                    ]}
+                  />
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="Price"
+                    className="w-28"
+                    value={d.price}
+                    onChange={(e) =>
+                      setDraft({ ...draft, [frame.id]: { ...d, price: e.target.value } })
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!d.size || d.price === ''}
+                    onClick={() =>
+                      addPrice.mutate({
+                        frameId: frame.id,
+                        data: { size: d.size, price: parseFloat(d.price) },
+                      })
+                    }
+                  >
+                    <Plus className="w-3 h-3" />
+                  </Button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-end gap-2 border-t border-slate-800 pt-4">
+          <Input
+            label="New colour"
+            className="flex-1"
+            placeholder="Brushed Steel"
+            value={colour.name}
+            onChange={(e) => setColour({ ...colour, name: e.target.value })}
+          />
+          <Input
+            label="SKU prefix"
+            className="flex-1"
+            placeholder="FRAME-STEEL"
+            value={colour.sku_prefix}
+            onChange={(e) => setColour({ ...colour, sku_prefix: e.target.value })}
+          />
+          <Button
+            disabled={!colour.name || !colour.sku_prefix}
+            loading={addColour.isPending}
+            onClick={() => addColour.mutate(colour)}
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// The format vocabulary. A variant may only use a format defined here — that
+// check is what stops the catalogue and the warehouse drifting apart again.
+function SizesModal({ open, onClose, sizes }) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState({ name: '', sort_order: '' });
+  const [error, setError] = useState(null);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['catalog-sizes'] });
+  const fail = (e) => setError(e?.message || 'Request failed');
+
+  const addSize = useMutation({
+    mutationFn: (data) => catalogApi.createSize(data),
+    onSuccess: () => { setDraft({ name: '', sort_order: '' }); setError(null); refresh(); },
+    onError: fail,
+  });
+  const removeSize = useMutation({
+    mutationFn: ({ id, force }) => catalogApi.deleteSize(id, force),
+    onSuccess: () => { setError(null); refresh(); },
+    onError: fail,
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Formats">
+      <div className="space-y-4">
+        {error && <ErrorMessage message={error} />}
+        <div className="space-y-2">
+          {(sizes ?? []).map((s) => (
+            <div key={s.id} className="flex items-center gap-2 p-2 bg-slate-800 rounded">
+              <span className="flex-1 font-semibold">{s.name}</span>
+              <span className="font-mono text-xs text-slate-500">#{s.sort_order}</span>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => removeSize.mutate({ id: s.id, force: false })}
+              >
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-end gap-2 border-t border-slate-800 pt-4">
+          <Input
+            label="Name"
+            className="flex-1"
+            placeholder="A0"
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          />
+          <Input
+            label="Order"
+            type="number"
+            className="w-24"
+            value={draft.sort_order}
+            onChange={(e) => setDraft({ ...draft, sort_order: e.target.value })}
+          />
+          <Button
+            disabled={!draft.name}
+            loading={addSize.isPending}
+            onClick={() =>
+              addSize.mutate({
+                name: draft.name,
+                sort_order: parseInt(draft.sort_order || '0', 10),
+              })
+            }
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+function SyncInventoryModal({ open, onClose, products, frames }) {
   const queryClient = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [results, setResults] = useState(null);
@@ -173,20 +513,34 @@ function SyncInventoryModal({ open, onClose, products }) {
     const skipped = [];
     const errors = [];
     
-    for (const product of products) {
+    // Stock is held per sellable unit, not per family: POSTER-SUNSET is never
+    // ordered, POSTER-SUNSET-A2 is. Frames are stocked in their own right too.
+    const sellable = [
+      ...(products ?? []).flatMap((p) =>
+        (p.variants ?? [])
+          .filter((v) => v.active !== false)
+          .map((v) => ({ sku: v.sku, name: `${p.name} (${v.size})` }))
+      ),
+      ...(frames ?? []).flatMap((f) =>
+        (f.variants ?? [])
+          .filter((v) => v.active !== false)
+          .map((v) => ({ sku: v.sku, name: `${f.name} (${v.size})` }))
+      ),
+    ];
+
+    for (const item of sellable) {
       try {
-        // Try to create stock for this product
         await inventoryApi.createStock({
-          sku: product.sku,
-          name: product.name,
+          sku: item.sku,
+          name: item.name,
           available: 100, // Default initial stock
         });
-        created.push(product.sku);
+        created.push(item.sku);
       } catch (err) {
         if (err.message.includes('already exists')) {
-          skipped.push(product.sku);
+          skipped.push(item.sku);
         } else {
-          errors.push({ sku: product.sku, error: err.message });
+          errors.push({ sku: item.sku, error: err.message });
         }
       }
     }
@@ -201,10 +555,11 @@ function SyncInventoryModal({ open, onClose, products }) {
     <Modal open={open} onClose={onClose} title="Sync to Inventory">
       <div className="space-y-4">
         <p className="text-slate-300">
-          This will create inventory stock entries for all catalog products that don't already exist in inventory.
+          Creates inventory stock for every sellable unit that has none — each
+          poster format and each frame format, not the product families.
         </p>
         <p className="text-slate-400 text-sm">
-          New items will be created with 100 units of initial stock.
+          New items start with 100 units. Existing ones are left alone.
         </p>
         
         {results && (
@@ -247,6 +602,9 @@ export default function Catalog() {
   const queryClient = useQueryClient();
   const [productModal, setProductModal] = useState({ open: false, product: null });
   const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [variantsModal, setVariantsModal] = useState({ open: false, product: null });
+  const [framesModalOpen, setFramesModalOpen] = useState(false);
+  const [sizesModalOpen, setSizesModalOpen] = useState(false);
   
   const { data: products, isLoading, error, refetch } = useQuery({
     queryKey: ['catalog-products'],
@@ -265,7 +623,7 @@ export default function Catalog() {
   
   const { data: frames } = useQuery({
     queryKey: ['catalog-frames'],
-    queryFn: catalogApi.getFrames,
+    queryFn: () => catalogApi.getFrames(),
   });
   
   const seedMutation = useMutation({
@@ -432,6 +790,14 @@ export default function Catalog() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          title="Formats and prices"
+                          onClick={() => setVariantsModal({ open: true, product })}
+                        >
+                          <Layers className="w-3 h-3" />
+                        </Button>
                         <Button 
                           size="sm" 
                           variant="secondary"
@@ -473,8 +839,11 @@ export default function Catalog() {
       {/* Sizes & Frames */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Sizes</CardTitle>
+            <Button size="sm" variant="secondary" onClick={() => setSizesModalOpen(true)}>
+              Manage
+            </Button>
           </CardHeader>
           <CardContent>
             {sizes && sizes.length > 0 ? (
@@ -482,9 +851,9 @@ export default function Catalog() {
                 {sizes.map((size) => (
                   <div key={size.id} className="flex justify-between items-center p-2 bg-slate-800 rounded">
                     <span>{size.name}</span>
-                    <span className={`font-mono ${parseFloat(size.price_delta) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {parseFloat(size.price_delta) >= 0 ? '+' : ''}{parseFloat(size.price_delta).toFixed(2)}
-                    </span>
+                    {/* A format no longer carries a price: each variant is
+                        priced on its own row. */}
+                    <span className="font-mono text-slate-500">#{size.sort_order}</span>
                   </div>
                 ))}
               </div>
@@ -495,18 +864,30 @@ export default function Catalog() {
         </Card>
         
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Frame Options</CardTitle>
+            <Button size="sm" variant="secondary" onClick={() => setFramesModalOpen(true)}>
+              Manage
+            </Button>
           </CardHeader>
           <CardContent>
             {frames && frames.length > 0 ? (
               <div className="space-y-2">
                 {frames.map((frame) => (
-                  <div key={frame.id} className="flex justify-between items-center p-2 bg-slate-800 rounded">
-                    <span>{frame.name}</span>
-                    <span className="font-mono text-green-400">
-                      +${parseFloat(frame.extra_price).toFixed(2)}
-                    </span>
+                  <div key={frame.id} className="p-2 bg-slate-800 rounded">
+                    <div className="flex justify-between items-center">
+                      <span>{frame.name}</span>
+                      <span className="font-mono text-slate-500 text-xs">{frame.sku_prefix}</span>
+                    </div>
+                    {/* The price of a frame depends on the format it is made
+                        for, so each format is listed with its own price. */}
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {(frame.variants ?? []).map((v) => (
+                        <span key={v.sku} className="font-mono text-xs text-green-400">
+                          {v.size} ${parseFloat(v.price).toFixed(2)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -528,6 +909,28 @@ export default function Catalog() {
         open={syncModalOpen}
         onClose={() => setSyncModalOpen(false)}
         products={activeProducts}
+        frames={frames}
+      />
+      <VariantsModal
+        open={variantsModal.open}
+        onClose={() => setVariantsModal({ open: false, product: null })}
+        product={
+          // Re-read from the live list so the modal reflects edits immediately.
+          products?.find((p) => p.sku === variantsModal.product?.sku) ??
+          variantsModal.product
+        }
+        sizes={sizes}
+      />
+      <FramesModal
+        open={framesModalOpen}
+        onClose={() => setFramesModalOpen(false)}
+        frames={frames}
+        sizes={sizes}
+      />
+      <SizesModal
+        open={sizesModalOpen}
+        onClose={() => setSizesModalOpen(false)}
+        sizes={sizes}
       />
     </div>
   );

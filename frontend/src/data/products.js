@@ -5,7 +5,7 @@
 
 export const products = [
   {
-    sku: 'POSTER-SUNSET-A3',
+    sku: 'POSTER-SUNSET',
     name: 'Golden Sunset',
     description: 'A breathtaking view of the sun setting over the ocean, painting the sky in shades of orange, pink, and purple.',
     price: 24.99,
@@ -15,7 +15,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-MOUNTAIN-A3',
+    sku: 'POSTER-MOUNTAIN',
     name: 'Mountain Majesty',
     description: 'Snow-capped peaks rising above the clouds, capturing the raw beauty and power of nature.',
     price: 29.99,
@@ -25,7 +25,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-CITYNIGHT-A3',
+    sku: 'POSTER-CITYNIGHT',
     name: 'City Lights',
     description: 'The vibrant energy of a metropolis at night, with countless lights creating a galaxy on earth.',
     price: 27.99,
@@ -35,7 +35,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-FOREST-A3',
+    sku: 'POSTER-FOREST',
     name: 'Enchanted Forest',
     description: 'Sunlight filtering through ancient trees, creating a magical atmosphere in this mystical woodland.',
     price: 24.99,
@@ -45,7 +45,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-OCEAN-A3',
+    sku: 'POSTER-OCEAN',
     name: 'Deep Blue',
     description: 'The mesmerizing depths of the ocean, where light dances through crystal clear water.',
     price: 26.99,
@@ -55,7 +55,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-ABSTRACT-A3',
+    sku: 'POSTER-ABSTRACT',
     name: 'Color Flow',
     description: 'An explosion of colors blending seamlessly, perfect for adding a modern touch to any space.',
     price: 22.99,
@@ -65,7 +65,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-MINIMAL-A3',
+    sku: 'POSTER-MINIMAL',
     name: 'Serene Minimalism',
     description: 'Clean lines and subtle tones create a sense of calm and sophistication.',
     price: 21.99,
@@ -75,7 +75,7 @@ export const products = [
     inStock: true,
   },
   {
-    sku: 'POSTER-BOTANICAL-A3',
+    sku: 'POSTER-BOTANICAL',
     name: 'Botanical Garden',
     description: 'Lush greenery and delicate flowers captured in stunning detail.',
     price: 25.99,

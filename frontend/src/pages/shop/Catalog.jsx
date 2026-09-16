@@ -28,7 +28,10 @@ function ProductCard({ product }) {
   };
   
   const imageUrl = product.image_url || product.image;
-  const price = typeof product.price === 'string' ? parseFloat(product.price) : product.price;
+  // A family has no single price: show the cheapest format it sells.
+  const rawPrice = product.price_from ?? product.price;
+  const price = typeof rawPrice === 'string' ? parseFloat(rawPrice) : rawPrice;
+  const hasFormats = (product.variants?.length ?? 0) > 1;
   const isInStock = product.in_stock !== false; // Default to true if not specified
   
   return (

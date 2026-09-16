@@ -14,6 +14,9 @@ export default function ProductDetail() {
   const { addItem } = useCart();
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
+  // null means "not chosen yet" — the first in-stock format is used until then.
+  const [sizeName, setSizeName] = useState(null);
+  const [frameSku, setFrameSku] = useState(null);
   
   // Fetch product from catalog API
   const { data: apiProduct, isLoading, error } = useQuery({
@@ -30,6 +33,23 @@ export default function ProductDetail() {
     staleTime: 30000,
   });
   
+  // The chosen format decides which frames can be offered and what they cost,
+  // so this has to be resolved before the frames query runs — and both hooks
+  // must sit above the early returns below.
+  const apiVariants = apiProduct?.variants ?? [];
+  const activeSize =
+    sizeName ??
+    apiVariants.find((v) => v.in_stock)?.size ??
+    apiVariants[0]?.size ??
+    null;
+
+  const { data: frameOptions = [] } = useQuery({
+    queryKey: ['shop-frames', activeSize],
+    queryFn: () => catalogApi.getFrames(activeSize),
+    enabled: Boolean(activeSize),
+    staleTime: 30000,
+  });
+
   // Use API product or fallback to mock
   const product = apiProduct || getProductBySku(sku);
   
@@ -57,34 +77,61 @@ export default function ProductDetail() {
   
   // Normalize product fields (API uses image_url, mock uses image)
   const imageUrl = product.image_url || product.image;
-  const price = typeof product.price === 'string' ? parseFloat(product.price) : product.price;
-  const isInStock = product.in_stock !== false;
-  const available = product.available;
-  
+
+  // A family is not sellable; its variants are. Everything below prices and
+  // reserves against the chosen variant's own SKU.
+  const variants = product.variants ?? [];
+  const variant =
+    variants.find((v) => v.size === activeSize) ?? variants[0] ?? null;
+
+  // Frames are offered per format, so a colour only appears if it exists in the
+  // chosen size, already priced for it.
+  const frameChoices = frameOptions.flatMap((f) => f.variants ?? []);
+  const frame = frameChoices.find((f) => f.sku === frameSku) ?? null;
+
+  const posterPrice = parseFloat(
+    variant?.price ?? product.price_from ?? product.price ?? 0
+  );
+  const framePrice = frame ? parseFloat(frame.price) : 0;
+  const price = posterPrice + framePrice;
+
+  const isInStock = variant ? variant.in_stock !== false : product.in_stock !== false;
+  const available = variant ? variant.available : product.available;
+
+  // One order line per physical thing: the poster, and the frame if chosen.
+  // Inventory reserves each independently, and the saga already compensates
+  // when the poster is available but the frame is not.
+  const cartLines = () => {
+    const lines = [
+      {
+        sku: variant?.sku ?? product.sku,
+        name: variant ? `${product.name} (${variant.size})` : product.name,
+        price: posterPrice,
+        image: imageUrl,
+        description: product.description,
+        category: product.category,
+      },
+    ];
+    if (frame) {
+      lines.push({
+        sku: frame.sku,
+        name: `${frame.frame_name} (${frame.size})`,
+        price: framePrice,
+        image: imageUrl,
+        category: 'Frame',
+      });
+    }
+    return lines;
+  };
+
   const handleAddToCart = () => {
-    const cartItem = {
-      sku: product.sku,
-      name: product.name,
-      price: price,
-      image: imageUrl,
-      description: product.description,
-      category: product.category,
-    };
-    addItem(cartItem, quantity);
+    cartLines().forEach((line) => addItem(line, quantity));
     setAdded(true);
     setTimeout(() => setAdded(false), 2000);
   };
   
   const handleBuyNow = () => {
-    const cartItem = {
-      sku: product.sku,
-      name: product.name,
-      price: price,
-      image: imageUrl,
-      description: product.description,
-      category: product.category,
-    };
-    addItem(cartItem, quantity);
+    cartLines().forEach((line) => addItem(line, quantity));
     navigate('/shop/checkout');
   };
   
@@ -141,9 +188,97 @@ export default function ProductDetail() {
           
           <p className="text-stone-600 text-lg mb-6">{product.description}</p>
           
-          <div className="text-3xl font-bold text-stone-900 mb-8">
-            ${price.toFixed(2)}
+          <div className="mb-8">
+            <div className="text-3xl font-bold text-stone-900">
+              ${price.toFixed(2)}
+            </div>
+            {frame && (
+              <div className="text-sm text-stone-500 mt-1">
+                ${posterPrice.toFixed(2)} poster + ${framePrice.toFixed(2)} frame
+              </div>
+            )}
           </div>
+
+          {/* Format — each is its own SKU with its own price and stock */}
+          {variants.length > 0 && (
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-stone-700 mb-2">
+                Format
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {variants.map((v) => {
+                  const soldOut = v.in_stock === false;
+                  const selected = variant?.sku === v.sku;
+                  return (
+                    <button
+                      key={v.sku}
+                      type="button"
+                      disabled={soldOut}
+                      onClick={() => {
+                        setSizeName(v.size);
+                        setFrameSku(null); // a frame SKU belongs to one format
+                      }}
+                      className={`px-4 py-2 rounded-lg border text-sm transition ${
+                        selected
+                          ? 'border-orange-500 bg-orange-50 text-orange-700'
+                          : 'border-stone-300 text-stone-700 hover:border-stone-400'
+                      } ${soldOut ? 'opacity-40 cursor-not-allowed line-through' : ''}`}
+                    >
+                      <span className="font-semibold">{v.size}</span>
+                      <span className="block text-xs opacity-70">
+                        ${parseFloat(v.price).toFixed(2)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Frame — priced for the chosen format, not a flat surcharge */}
+          {frameChoices.length > 0 && (
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-stone-700 mb-2">
+                Frame <span className="font-normal text-stone-400">· optional</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFrameSku(null)}
+                  className={`px-4 py-2 rounded-lg border text-sm transition ${
+                    !frame
+                      ? 'border-orange-500 bg-orange-50 text-orange-700'
+                      : 'border-stone-300 text-stone-700 hover:border-stone-400'
+                  }`}
+                >
+                  <span className="font-semibold">No frame</span>
+                  <span className="block text-xs opacity-70">—</span>
+                </button>
+                {frameChoices.map((f) => {
+                  const soldOut = f.in_stock === false;
+                  const selected = frame?.sku === f.sku;
+                  return (
+                    <button
+                      key={f.sku}
+                      type="button"
+                      disabled={soldOut}
+                      onClick={() => setFrameSku(f.sku)}
+                      className={`px-4 py-2 rounded-lg border text-sm transition ${
+                        selected
+                          ? 'border-orange-500 bg-orange-50 text-orange-700'
+                          : 'border-stone-300 text-stone-700 hover:border-stone-400'
+                      } ${soldOut ? 'opacity-40 cursor-not-allowed line-through' : ''}`}
+                    >
+                      <span className="font-semibold">{f.frame_name}</span>
+                      <span className="block text-xs opacity-70">
+                        +${parseFloat(f.price).toFixed(2)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           
           {/* Quantity */}
           <div className="mb-6">
@@ -230,7 +365,7 @@ export default function ProductDetail() {
           {/* SKU */}
           <div className="mt-6">
             <p className="text-sm text-stone-400">
-              SKU: <span className="font-mono">{product.sku}</span>
+              SKU: <span className="font-mono">{variant?.sku ?? product.sku}</span>
             </p>
           </div>
         </div>

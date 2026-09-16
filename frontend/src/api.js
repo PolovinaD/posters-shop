@@ -118,7 +118,54 @@ export const catalogApi = {
   }),
   getCategories: () => fetchJSON(`${API_BASE}/catalog/categories`),
   getSizes: () => fetchJSON(`${API_BASE}/catalog/sizes`),
-  getFrames: () => fetchJSON(`${API_BASE}/catalog/frames`),
+  // Pass a size and each colour comes back with that format's variant,
+  // priced for it — an A1 frame is not an A4 frame with a surcharge.
+  getFrames: (size) =>
+    fetchJSON(`${API_BASE}/catalog/frames${size ? `?size=${encodeURIComponent(size)}` : ''}`),
+
+  // --- owner-only: the sellable units and the option vocabulary -------------
+  createVariant: (productSku, data) =>
+    authFetchJSON(`${API_BASE}/catalog/products/${productSku}/variants`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateVariant: (sku, data) =>
+    authFetchJSON(`${API_BASE}/catalog/variants/${sku}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteVariant: (sku) =>
+    authFetchJSON(`${API_BASE}/catalog/variants/${sku}`, { method: 'DELETE' }),
+
+  createSize: (data) =>
+    authFetchJSON(`${API_BASE}/catalog/sizes`, { method: 'POST', body: JSON.stringify(data) }),
+  updateSize: (id, data) =>
+    authFetchJSON(`${API_BASE}/catalog/sizes/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteSize: (id, force = false) =>
+    authFetchJSON(`${API_BASE}/catalog/sizes/${id}${force ? '?force=true' : ''}`, {
+      method: 'DELETE',
+    }),
+
+  createFrame: (data) =>
+    authFetchJSON(`${API_BASE}/catalog/frames`, { method: 'POST', body: JSON.stringify(data) }),
+  updateFrame: (id, data) =>
+    authFetchJSON(`${API_BASE}/catalog/frames/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteFrame: (id, force = false) =>
+    authFetchJSON(`${API_BASE}/catalog/frames/${id}${force ? '?force=true' : ''}`, {
+      method: 'DELETE',
+    }),
+  createFrameVariant: (frameId, data) =>
+    authFetchJSON(`${API_BASE}/catalog/frames/${frameId}/variants`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateFrameVariant: (sku, data) =>
+    authFetchJSON(`${API_BASE}/catalog/frame-variants/${sku}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteFrameVariant: (sku) =>
+    authFetchJSON(`${API_BASE}/catalog/frame-variants/${sku}`, { method: 'DELETE' }),
   seed: () => authFetchJSON(`${API_BASE}/catalog/seed`, { method: 'POST' }),
 };
 
