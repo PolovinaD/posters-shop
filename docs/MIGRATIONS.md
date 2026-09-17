@@ -11,7 +11,9 @@ services/
 ├── orders/
 │   ├── alembic/
 │   │   ├── versions/
-│   │   │   └── 001_initial_schema.py
+│   │   │   ├── 001_initial_schema.py
+│   │   │   ├── 002_shipping_address.py
+│   │   │   └── 003_escrow.py
 │   │   ├── env.py
 │   │   └── script.py.mako
 │   └── alembic.ini
@@ -180,8 +182,23 @@ Alembic stores versions in a `alembic_version` table within each schema:
 -- Check current version
 SELECT * FROM orders_schema.alembic_version;
 
--- Result: version_num = '001'
+-- Result: version_num = '003'
 ```
+
+### Current revisions
+
+Every revision file in the repository, in upgrade order (14 files across 7 services).
+Revision ids are what `alembic_version` stores; users names its revisions after the file.
+
+| Service | Files (revision id) |
+|---------|---------------------|
+| orders | `001_initial_schema.py` (`001`) → `002_shipping_address.py` (`002`) → `003_escrow.py` (`003`) — escrow columns + `ix_orders_escrow_status` |
+| users | `001_initial_schema.py` (`001`) → `002_add_refresh_tokens.py` (`002_add_refresh_tokens`) → `003_wallet_address.py` (`003_wallet_address`) — `users.wallet_address` |
+| logistics | `001_initial_schema.py` (`001`) → `002_delivery_address.py` (`002`) → `003_courier_binding.py` (`003`) — `courier_id`, `courier_wallet`, `courier_bound_at` |
+| catalog | `001_initial_schema.py` (`001`) → `002_product_variants.py` (`002`) |
+| inventory | `001_initial_schema.py` (`001`) |
+| production | `001_initial_schema.py` (`001`) |
+| notifications | `001_initial_schema.py` (`001`) |
 
 ## Troubleshooting
 

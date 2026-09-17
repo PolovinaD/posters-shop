@@ -10,6 +10,8 @@ This document defines the APIs used for service-to-service communication.
 |--------|--------|---------|----------|
 | Orders | Inventory | Stock reservation/commit | Sync HTTP |
 | Orders | Payments | Checkout sessions | Sync HTTP |
+| Orders | Payments | Escrow contract deploy / state / courier / release / cancel (`/v1/escrow`) | Sync HTTP |
+| Logistics | Orders | Courier wallet binding on pick-up (CONTRACT B) | Sync HTTP (fire-and-forget) |
 | Orders (Outbox) | Production | Order events (ORDER_PAID, ORDER_CANCELLED) | Async HTTP |
 | Orders (Outbox) | Notifications | Order events (all four types) — transactional email | Async HTTP |
 | Production | Orders | Status updates | Sync HTTP |
@@ -208,6 +210,129 @@ GET /v1/checkout/sessions/{session_id}
 
 ---
 
+### Escrow (Ethereum, `OrderEscrow` on Ganache)
+
+**Called by:** Orders Service with a service token — except `/config` and `/demo-accounts`,
+which are public reads the SPA makes before login  
+**When:** An order was placed with `payment_method: "escrow"`
+
+Payments drives one `OrderEscrow` contract per order on an Ethereum JSON-RPC node
+(`ESCROW_RPC_URL`; Ganache in every environment so far) from the shop-owned key
+`ESCROW_OWNER_PRIVATE_KEY`. Escrow state lives on chain and on the orders row, so payments
+stays stateless. Every route below except `/config` and `/demo-accounts` carries
+`require_service_or_owner`, and `{address}` must match `^0x[0-9a-fA-F]{40}$`
+(`services/payments/main.py`, `services/payments/escrow.py`). The handlers are plain `def`:
+web3 is synchronous and runs in FastAPI's threadpool.
+
+```http
+GET /v1/escrow/config
+```
+
+Public and never 503s: `enabled` is `false` (with `chain_id` and `owner_address` `null`)
+when no owner key is configured or the chain is unreachable, so the SPA hides the Ether
+option instead of failing.
+
+**Response (200 OK):**
+```json
+{
+  "rpc_url": "/rpc",
+  "wei_per_usd": 1000000000000000,
+  "courier_share_bps": 2000,
+  "enabled": true,
+  "chain_id": 1337,
+  "owner_address": "0x..."
+}
+```
+
+```http
+GET /v1/escrow/demo-accounts
+```
+
+Public; `404` unless `ESCROW_EXPOSE_DEMO_ACCOUNTS` is true **and** the node identifies
+as Ganache. Returns the ten deterministic accounts as
+`[{"index": 0, "address": "0x...", "private_key": "0x..."}, ...]`.
+
+```http
+POST /v1/escrow
+Content-Type: application/json
+
+{
+  "order_id": 123,
+  "customer_address": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+  "amount_usd": "49.98"
+}
+```
+
+Deploys the contract from the owner key; `amount_usd` is converted at `WEI_PER_USD`.
+
+**Response (200 OK):**
+```json
+{
+  "contract_address": "0x...",
+  "deploy_tx_hash": "0x...",
+  "amount_wei": "49980000000000000"
+}
+```
+
+```http
+GET /v1/escrow/{address}
+```
+
+Live chain state: `{state, owner, customer, courier, price_wei, balance_wei}`. `state` is
+one of `awaiting_payment`, `funded`, `in_delivery`, `released`, `cancelled`; `courier` is
+`null` until bound; the wei fields are decimal strings because 10^18 does not fit a JSON
+number.
+
+```http
+GET /v1/escrow/{address}/invoice
+```
+
+The unsigned `pay()` transaction the customer's wallet signs and sends:
+`{to, value, data, chain_id}` (`value` is a decimal string; ethers fills nonce and gas).
+
+```http
+POST /v1/escrow/{address}/courier
+Content-Type: application/json
+
+{
+  "courier_address": "0x22d491bde2303f2f43325b2108d26f1eaba1e32b"
+}
+```
+
+`assignCourier()` from the owner key; the contract must be `funded`.
+
+```http
+POST /v1/escrow/{address}/release
+```
+
+`confirmDelivery()`: pays the courier `ESCROW_COURIER_SHARE_BPS` of the price and the
+owner the rest, then closes the contract. Reverts with `"Delivery not complete."` when no
+courier was ever bound.
+
+```http
+POST /v1/escrow/{address}/cancel
+```
+
+`cancel()`: refunds the customer if the contract is funded, then closes it.
+
+`courier`, `release` and `cancel` all answer:
+```json
+{
+  "tx_hash": "0x...",
+  "state": "in_delivery"  // the contract state after the transaction
+}
+```
+
+**Error Responses (shared by every escrow route except `/config`):**
+- `409 Conflict` - the contract reverted; `detail` is the bare `require` reason
+  (`"Only owner."`, `"Order closed."`, `"Transfer not complete."`,
+  `"Delivery not complete."`, `"Cannot cancel."`, ...)
+- `404 Not Found` - no contract code at `{address}`
+- `503 Service Unavailable` - `"Escrow unavailable: ..."` — the chain is down or no owner
+  key is configured (`/config` answers `enabled: false` instead of 503)
+
+---
+
 ## Orders Service APIs (Internal)
 
 ### Update Order Status
@@ -273,6 +398,73 @@ errors:
 | Order not found | `{"status": "not_found", "order_id": ...}` |
 | Order not in `reserved` | `{"status": "no_action", "current_status": ...}` |
 | Order in `reserved` | Order flips to `cancelled` and an `ORDER_CANCELLED` event is written to the outbox |
+
+For an escrow order this path also cancels the open `OrderEscrow` contract (refunding the
+customer if it was funded) and reports the outcome as `escrow_refunded` in the event payload.
+
+### Courier Binding (CONTRACT B)
+
+**Called by:** Logistics Service (background task on the pick-up transition)  
+**When:** A shipment moves `dispatched -> in_transit` and a courier wallet is known — the
+one in the `PUT /shipments/{id}/status` body, else `LOGISTICS_DEFAULT_COURIER_WALLET`
+
+```http
+POST /internal/orders/{order_id}/courier
+Content-Type: application/json
+
+{
+  "courier_wallet": "0x22d491bde2303f2f43325b2108d26f1eaba1e32b"
+}
+```
+
+Takes `require_service_or_owner` like the reservation-expired callback. Logistics posts
+it fire-and-forget (`orders_client.notify_courier_assigned`), so the handler is
+idempotent and **always answers `200 OK`**; the escrow reconciler retries anything that
+could not be completed on chain from the stored wallet.
+
+| `status` | Meaning |
+|----------|---------|
+| `not_found` | No such order — no-op |
+| `stored` | Wallet saved on the order; not an escrow order (or no contract yet) |
+| `already_bound` | `escrow_status` is already `in_delivery` or `released` |
+| `bound` | Wallet saved **and** `assignCourier()` succeeded on chain — `escrow_status` becomes `in_delivery` |
+| `deferred` | Wallet saved but payments/chain unavailable or the contract is not yet funded — `escrow_status` unchanged, the reconciler retries |
+
+**Response (200 OK):**
+```json
+{
+  "status": "bound",
+  "order_id": 123,
+  "escrow_status": "in_delivery"
+}
+```
+
+### Escrow (customer-facing, listed for completeness)
+
+Not service-to-service — the SPA calls these with the customer's JWT (owner too; `GET`
+also for a courier) — but they are the orders-side half of the payments escrow contract
+above:
+
+```http
+POST /orders/{order_id}/escrow
+GET /orders/{order_id}/escrow
+POST /orders/{order_id}/escrow/verify
+POST /orders/{order_id}/escrow/confirm-delivery
+```
+
+- `POST /orders/{id}/escrow` — deploy (or resume): the order must be `reserved` and carry
+  `customer_wallet`; deploys through `POST /v1/escrow` exactly once and returns the
+  contract address, the `pay()` invoice and the chain config. `POST /orders/{id}/checkout`
+  answers `400` for an escrow order.
+- `GET /orders/{id}/escrow` — the stored row plus the live chain state (`chain`,
+  `chain_error` when payments cannot be reached).
+- `POST /orders/{id}/escrow/verify` — reads the chain; when the contract is funded it runs
+  `order_paid.mark_order_paid`, the **same path as the Stripe webhook** (commit stock,
+  `paid`, `ORDER_PAID`). Idempotent; `409` when the contract vanished from the chain
+  (`escrow_status` -> `failed`).
+- `POST /orders/{id}/escrow/confirm-delivery` — the customer confirms receipt; the order
+  must be `delivered`; payments sends `confirmDelivery()` from the owner key. `409` with
+  the contract reason (e.g. `"Delivery not complete."` when no courier was bound).
 
 ---
 
@@ -481,6 +673,11 @@ Stripe-Signature: t=1234567890,v1=abc123...
   "new_status": "paid"
 }
 ```
+
+`checkout.session.completed` (`services/orders/stripe_webhook.py`) and escrow
+`POST /orders/{id}/escrow/verify` share one code path: `order_paid.mark_order_paid`
+commits the stock, sets `paid` and emits `ORDER_PAID` in a single transaction, so a card
+order and an Ether order become `paid` through exactly the same function.
 
 ---
 

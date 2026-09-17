@@ -43,6 +43,7 @@ Stores user accounts and authentication data.
 | role | VARCHAR | NOT NULL | Role: customer, owner, courier |
 | first_name | VARCHAR | NULLABLE | First name |
 | last_name | VARCHAR | NULLABLE | Last name |
+| wallet_address | VARCHAR(42) | NULLABLE | Ethereum wallet (`0x` + 40 hex), set via `PUT /users/me/wallet`; couriers are paid to it (`003_wallet_address.py`) |
 
 **Indexes:**
 - `ix_users_email` (UNIQUE) on email
@@ -152,13 +153,21 @@ Order records with status tracking.
 | status | VARCHAR | NOT NULL, INDEX | Order status |
 | total_amount | NUMERIC(10,2) | NOT NULL | Order total |
 | checkout_session_id | VARCHAR | NULLABLE | Stripe checkout session |
-| payment_intent_id | VARCHAR | NULLABLE | Stripe payment intent |
+| payment_intent_id | VARCHAR | NULLABLE | Stripe payment intent (for escrow orders: the contract address) |
+| payment_method | VARCHAR | NOT NULL, DEFAULT 'stripe' | `stripe` or `escrow` (`003_escrow.py`; pre-existing rows stay card orders) |
+| customer_wallet | VARCHAR(42) | NULLABLE | Customer's Ethereum address (escrow orders only) |
+| courier_wallet | VARCHAR(42) | NULLABLE | Courier's payout address, stored on pick-up (CONTRACT B) |
+| escrow_contract_address | VARCHAR(42) | NULLABLE | The order's `OrderEscrow` contract |
+| escrow_deploy_tx | VARCHAR(66) | NULLABLE | Deploy transaction hash |
+| escrow_amount_wei | VARCHAR | NULLABLE | Price in wei as a decimal string — 10^18 does not fit a JS number |
+| escrow_status | VARCHAR | NULLABLE, INDEX | Escrow state mirror (see below) |
 | created_at | TIMESTAMP | DEFAULT now() | Order created |
 | updated_at | TIMESTAMP | DEFAULT now() | Last update |
 
 **Indexes:**
 - `ix_orders_customer_email` on customer_email
 - `ix_orders_status` on status
+- `ix_orders_escrow_status` on escrow_status (the escrow reconciler polls open escrow rows)
 
 **Status values:**
 - `created` - Order placed, not yet reserved
@@ -169,6 +178,16 @@ Order records with status tracking.
 - `delivered` - Delivered
 - `cancelled` - Cancelled
 - `failed` - Failed
+
+**Escrow status values** (`EscrowStatus` in `services/orders/models.py`; the contract enum
+plus a local `failed`; `awaiting_payment` and `funded` are the OPEN states in which
+`cancel()` refunds):
+- `awaiting_payment` - Contract deployed, `pay()` not yet sent
+- `funded` - Customer paid the exact price into the contract
+- `in_delivery` - Courier bound on chain (`assignCourier()`)
+- `released` - `confirmDelivery()` paid courier share + owner remainder
+- `cancelled` - `cancel()` closed the contract (refund if it was funded)
+- `failed` - Contract vanished from the chain (local state only)
 
 ### order_items
 
@@ -246,8 +265,14 @@ Shipment tracking records.
 | order_id | INTEGER | NOT NULL | Associated order |
 | status | VARCHAR | NOT NULL | Shipment status |
 | tracking | VARCHAR | NULLABLE | Tracking number |
+| courier_id | VARCHAR | NULLABLE | Who bound the wallet: the courier's JWT `sub` (their email); NULL when the auto-advance worker bound the default wallet (rendered "system") |
+| courier_wallet | VARCHAR(42) | NULLABLE | The wallet sent to orders on pick-up (`003_courier_binding.py`) |
+| courier_bound_at | TIMESTAMP | NULLABLE | When the pick-up transition bound the wallet |
 | created_at | TIMESTAMP | DEFAULT now() | Shipment created |
 | updated_at | TIMESTAMP | DEFAULT now() | Last update |
+
+The three courier columns are written only on the `dispatched -> in_transit` transition
+that binds a wallet and are exposed on every shipment response.
 
 **Status values:**
 - `preparing` - Being prepared

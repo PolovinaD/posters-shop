@@ -188,3 +188,53 @@ one. A compromised service could forge an owner token. Asymmetric signing
 state and is recorded in `docs/BACKLOG.md`, along with ALB-level path denial as
 defence in depth.
 
+
+## 11. Escrow price is a fixed `WEI_PER_USD` rate
+
+**Symptom**: An escrow order's price in Ether never tracks the market. The contract is deployed for `round(total_amount_usd * WEI_PER_USD)` wei, and that is the exact amount `pay()` demands, whatever ETH is worth that day.
+
+**Why it persists**: `services/payments/escrow.py` converts with the fixed `WEI_PER_USD` (default `1000000000000000`, i.e. `10**15` = 0.001 ETH per dollar) and consults no price oracle — Phase 8 decision 4 (`.planning/phases/08-ethereum-escrow-payment/08-CONTEXT.md`). On a simulator whose Ether has no market value, a rate is all the conversion needs; the number is exposed to the SPA through `GET /v1/escrow/config` so the two sides always agree.
+
+**Real-world impact**: none on Ganache; on a public network the shop would be under- or over-charging by whatever the market moved since the rate was set.
+
+**Fix shape**: an on-chain or HTTP price oracle read at deploy time, with the quoted rate stored on the order so the invoice cannot drift between deploy and `pay()`. Deferred together with public-network support (limitation 12).
+
+## 12. Escrow runs only on Ganache
+
+**Symptom**: The Ether payment option only exists against the `ganache` simulator (docker-compose service, helm-only chart). There is no MetaMask, no public testnet, and the demo keys are served by the API.
+
+**Why it persists**: three deliberate simulator-only shortcuts. `GET /v1/escrow/demo-accounts` serves the ten deterministic Ganache accounts **with private keys**, so the checkout page can offer a "use demo account" picker; the customer pastes a private key and the browser signs `pay()` with ethers (`frontend/src/lib/escrow.js`), a signer model that is only acceptable when the key is worthless; and `/rpc` (`frontend/nginx.conf`, `frontend/vite.config.js`) is an unauthenticated proxy to the node. Each is double-gated to the simulator where it matters — demo accounts answer `404` unless `ESCROW_EXPOSE_DEMO_ACCOUNTS` is true **and** the node identifies as Ganache — but none of it belongs in front of a network whose Ether is real.
+
+**Real-world impact**: none for the thesis demo; it is the scope. Sepolia (public testnet) and MetaMask signing are recorded as deferred in the Phase 8 context.
+
+**Fix shape**: a browser wallet as the signer (ethers already abstracts it — a one-file change), `ESCROW_RPC_URL` pointed at a public node with the top-up and demo-account code paths disabled by their existing gates, and the `/rpc` proxy removed.
+
+## 13. The escrow owner key must never rotate while contracts are open
+
+**Symptom**: Replacing `OWNER_PRIVATE_KEY` in Secrets Manager `postershop/escrow` (or the compose `ESCROW_OWNER_PRIVATE_KEY`) makes every previously deployed `OrderEscrow` contract unmanageable: `assignCourier()`, `confirmDelivery()` and `cancel()` all `require(msg.sender == owner, "Only owner.")`, and `owner` is fixed at deploy time to whichever key deployed the contract.
+
+**Why it persists**: one key owns every contract by design (the customer signs exactly one transaction, `pay()`; the shop key sends everything else), and the contract has no owner-transfer function. In-flight escrows deployed by the old key cannot bind a courier, release or refund from the new one — the customer's funds sit in the contract with nobody able to move them.
+
+**Real-world impact**: total loss of control over open escrows if the key changes. `deploy/full-deploy.sh` therefore generates the key **once** — only when `postershop/escrow` has no `OWNER_PRIVATE_KEY` property — and reuses it on every later run; the `postershop-escrow` ExternalSecret (`deploy/secrets/external-secrets.yaml`) mirrors it into the cluster.
+
+**Fix shape**: a `transferOwnership(address)` function on the contract plus a migration step that calls it for every open contract before the old key is retired; or a key-per-contract model with the deploying key recorded on the orders row. Both are additions for a shop that expects to rotate; the thesis demo does not.
+
+## 14. Escrow has not been exercised on EKS
+
+**Symptom**: Everything Phase 8 added for the cluster — `deploy/charts/ganache` (Recreate Deployment, ClusterIP 8545, 1Gi PVC), the `postershop-escrow` ExternalSecret, the payments chart's escrow env, `deploy/deploy.sh` installing `ganache` before `payments` — exists but has never run against a live cluster.
+
+**Why it persists**: the feature was verified end-to-end on docker-compose (contract rules, deploy → pay → verify → courier → confirm-delivery → payout, refund on cancel) and the chart was checked with `helm template` only (Phase 8 plan 05 summary). No cluster was up while the phase was executed, and this project tears its cluster down between sessions.
+
+**Real-world impact**: the first EKS deploy of the escrow path is an untested path. The likely trouble spots are the ones compose does not have: the PVC storage class for the chain, the owner-key top-up racing a not-yet-Ready node (the deploy order guards this), and `/rpc` reaching the node through the frontend pod's nginx since the Ingress has no rule for it.
+
+**Fix shape**: one `deploy/deploy.sh` run on a live cluster followed by a single escrow order driven to payout — the same script the integration test `tests/integration/test_escrow_flow.py` runs against compose.
+
+## 15. Escrow reconciler polls per replica
+
+**Symptom**: With the orders HPA at N replicas, the chain is read N times per `ESCROW_RECONCILE_INTERVAL` (default 15 s) for every open escrow row, and two pods can act on the same order in the same pass.
+
+**Why it persists**: `escrow_reconciler_worker` (`services/orders/escrow_reconciler.py`) is started in the orders lifespan like the outbox and status-gauge workers — one `asyncio` task per process, work-then-sleep, with no leader election and no shared lock. It exists to close the gaps a browser or an outage can leave open (paid on chain but the tab died before `/escrow/verify`; a courier reported while payments was down or before funding; a refund that failed on cancel/expiry), so every replica has to be able to do the work.
+
+**Real-world impact**: low. Every action the reconciler takes is idempotent by construction — `mark_order_paid` returns `False` when the order is already `paid`, `assignCourier` reverts `"Transfer not complete."` or `"Order closed."` and the revert is caught and logged, and `cancel()` on a closed contract reverts `"Cannot cancel."` — so a race costs a wasted transaction or a logged revert, never a double payment. The cost is N-fold RPC load on the node, invisible on Ganache. It is the same shape as limitation 9 (per-process state standing in for shared state).
+
+**Fix shape**: the outbox worker has the same property and the same answer applies — either a leader-elected single worker, or `SELECT ... FOR UPDATE SKIP LOCKED` over the open escrow rows so replicas partition the work instead of repeating it.

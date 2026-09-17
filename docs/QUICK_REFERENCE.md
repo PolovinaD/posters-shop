@@ -17,6 +17,7 @@ Practical reference card for the PosterShop platform. For deeper docs, see [READ
 | notifications | 8009   | 8000           |
 | frontend   | 3000      | 80             |
 | postgres   | 5432      | 5432           |
+| ganache    | 8545      | 8545           |
 
 ## Common Environment Variables
 
@@ -35,6 +36,10 @@ Practical reference card for the PosterShop platform. For deeper docs, see [READ
 | `EMAIL_PROVIDER` | `logging` / `ses` | notifications (transport selector) |
 | `EMAIL_FROM` | `no-reply@postershop.example` | notifications (SES verified sender) |
 | `SES_REGION` | `eu-central-1` | notifications (independent of `AWS_REGION` by design) |
+| `ESCROW_OWNER_PRIVATE_KEY` | `0x...` (64 hex) | payments (escrow disabled without it; compose ships a dev key) |
+| `WEI_PER_USD` / `ESCROW_COURIER_SHARE_BPS` | `1000000000000000` / `2000` | payments (fixed rate 0.001 ETH per dollar; courier share 20 %) |
+| `ESCROW_RECONCILE_INTERVAL` | `15` | orders (escrow reconciler worker, seconds) |
+| `LOGISTICS_DEFAULT_COURIER_WALLET` | `0x22d491bde2303f2f43325b2108d26f1eaba1e32b` (Ganache account[2]) | logistics (wallet the auto-advance worker binds on pick-up) |
 
 Full list: see [env.example](../env.example).
 
@@ -62,6 +67,18 @@ docker compose run --rm users-migrate
 # Seed catalog and inventory
 curl -X POST http://localhost:8002/seed
 curl -X POST http://localhost:8006/seed
+
+# Or do all of it as the owner, and set the demo courier's wallet to Ganache account 3
+make dev-seed
+
+# Recompile the OrderEscrow contract into the committed artifact (solc 0.8.28 in docker)
+make contract-compile
+
+# Escrow config as the SPA sees it — "enabled": false means no owner key or Ganache is down
+curl localhost:8007/v1/escrow/config
+
+# Is the Ethereum simulator up? (-> {"jsonrpc":"2.0","id":1,"result":"0x539"} = chainId 1337)
+curl -s localhost:8545 -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 ```
 
 ## Common curl Examples

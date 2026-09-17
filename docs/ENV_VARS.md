@@ -56,6 +56,7 @@ This document lists all environment variables used by each service.
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature verification | `whsec_test_secret_key_12345` | Yes (in prod) |
 | `CB_FAILURE_THRESHOLD` | Consecutive failures that open the inventory/payment circuit breaker | `5` | No |
 | `CB_RECOVERY_TIMEOUT` | Seconds the circuit stays open before a trial call | `30` | No |
+| `ESCROW_RECONCILE_INTERVAL` | Seconds between passes of the escrow reconciler worker (one worker per replica; `escrow_reconciler.py`) | `15` | No |
 
 **`CB_FAILURE_THRESHOLD` counts per process, not per platform.** Each orders replica keeps
 its own failure counter, so the effective platform-wide threshold is 5 x the current
@@ -82,6 +83,7 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 | `ORDERS_SERVICE_URL` | Orders service base URL | `http://orders:8000` | No |
 | `JWT_SECRET` | JWT secret (for courier auth) | `change_me` | No |
 | `LOGISTICS_AUTO_ADVANCE_INTERVAL` | Seconds a shipment sits in a status before the worker advances it | `120` | No |
+| `LOGISTICS_DEFAULT_COURIER_WALLET` | Courier wallet sent to orders on pick-up when the status update carries none; unset = the auto-advance worker binds no wallet. docker-compose and the chart set Ganache account[2] | `-` | No |
 
 ---
 
@@ -93,8 +95,19 @@ replica count (see `docs/KNOWN_LIMITATIONS.md` #9).
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | `whsec_test_secret_key_12345` | No |
 | `FRONTEND_URL` | Base URL a customer returns to after Stripe checkout | `http://localhost:3000` | No |
 | `JWT_SECRET` | Signs and verifies service-to-service tokens (`service_auth.py`) | `change_me` | Yes |
+| `ESCROW_RPC_URL` | Ethereum JSON-RPC endpoint payments talks to (web3) | `http://ganache:8545` | No |
+| `ESCROW_PUBLIC_RPC_URL` | The RPC URL handed to the browser in `/v1/escrow/config` (the nginx `/rpc` proxy) | `/rpc` | No |
+| `ESCROW_OWNER_PRIVATE_KEY` | Shop-owned key that deploys every `OrderEscrow` contract and sends everything but `pay()`; without it payments starts with escrow disabled | `-` | Yes (to enable escrow) |
+| `WEI_PER_USD` | Fixed conversion rate, wei per dollar (0.001 ETH) — no oracle | `1000000000000000` | No |
+| `ESCROW_COURIER_SHARE_BPS` | Courier's share of the price on `confirmDelivery()`, in basis points (20 %) | `2000` | No |
+| `ESCROW_OWNER_MIN_BALANCE_ETH` | On Ganache: top the owner up from the node's account[0] when its balance is below this | `10` | No |
+| `ESCROW_OWNER_TOPUP_ETH` | How much that startup top-up transfers | `100` | No |
+| `ESCROW_EXPOSE_DEMO_ACCOUNTS` | Serve Ganache's ten deterministic accounts (with keys) at `/v1/escrow/demo-accounts`; only honoured when the node is Ganache | `true` | No |
+| `ESCROW_RPC_TIMEOUT` | Seconds per JSON-RPC call | `5` | No |
 
-**Note:** Payments service is stateless (no database) - uses in-memory storage for sessions.
+**Note:** Payments is stateless: checkout sessions live at Stripe and escrow state lives on
+chain and on the orders row. Defaults above are the `os.getenv` values in
+`services/payments/escrow.py`.
 
 ---
 
@@ -164,6 +177,10 @@ stringData:
 - `db-credentials` - DATABASE_URL for all database-backed services
 - `jwt-secret` - JWT_SECRET for users service
 - `stripe-secrets` - STRIPE_WEBHOOK_SECRET for orders/payments
+- `postershop-escrow` - `OWNER_PRIVATE_KEY` for payments (`ESCROW_OWNER_PRIVATE_KEY`), an
+  ExternalSecret from Secrets Manager `postershop/escrow`
+  (`deploy/secrets/external-secrets.yaml`). `deploy/full-deploy.sh` generates the key once
+  and reuses it on every later run — rotating it would orphan every open contract
 
 **Notifications requires no secret.** Its only external credential is AWS SES access,
 which is granted through an IAM role assumed via IRSA rather than a stored key. Nothing

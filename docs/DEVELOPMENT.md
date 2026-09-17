@@ -77,10 +77,11 @@ pip install -r requirements.txt
 alembic upgrade head
 uvicorn main:app --reload --port 8006
 
-# Payments Service (no database)
+# Payments Service (no database; escrow needs a Ganache node)
 cd services/payments
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8007
+docker compose up -d ganache   # start the simulator first; without it payments starts with escrow disabled
+ESCROW_RPC_URL=http://localhost:8545 uvicorn main:app --reload --port 8007
 
 # Infra Service (no database)
 cd services/infra
@@ -137,13 +138,20 @@ alembic history
 
 ### Running Tests
 
-```bash
-# Run tests for a service (if tests exist)
-cd services/<service>
-pytest
+The suite lives in `tests/` at the repo root, not per service: 13 unit files in
+`tests/unit` and 3 integration files in `tests/integration` (162 tests: 158 unit + 4
+integration; see `tests/README.md`).
 
-# Run with coverage
-pytest --cov=. --cov-report=html
+```bash
+pip install -r tests/requirements.txt
+
+# Unit tests — 158 tests, no services needed
+pytest tests/unit -q
+
+# Integration tests — 4 tests; need the compose stack up, including a healthy `ganache`
+# (test_escrow_contract_chain skips without it, test_escrow_flow fails on purpose)
+docker compose ps ganache
+pytest tests/integration -q
 ```
 
 ### Viewing Logs
@@ -343,6 +351,21 @@ service you first suspect.
 1. Check CORS settings in backend
 2. Verify API_BASE_URL in frontend config
 3. Check network tab for actual error responses
+
+### Frontend container never becomes healthy
+
+The compose healthcheck probes `http://127.0.0.1/health` on purpose: nginx in the alpine
+image does not listen on ::1, and `localhost` may resolve there first, so a `localhost`
+probe fails against a perfectly healthy container (commit `ee5c25d`). Keep the literal
+IPv4 address if you edit the check.
+
+### Ether payment option missing or "Escrow unavailable"
+
+1. `curl localhost:8007/v1/escrow/config` — `"enabled": false` means payments has no
+   `ESCROW_OWNER_PRIVATE_KEY` or cannot reach the node
+2. `docker compose ps ganache` must be `healthy`; payments `depends_on` it
+3. Ganache is the only compose service on `restart: on-failure` — a frontend image build
+   has OOM-killed it (exit 137) before; the chain survives on the `ganache-data` volume
 
 ---
 

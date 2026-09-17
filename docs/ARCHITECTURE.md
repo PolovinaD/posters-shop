@@ -28,12 +28,13 @@ graph TB
     subgraph "Processing Services"
         PRODUCTION[Production Service<br/>Job processing]
         LOGISTICS[Logistics Service<br/>Shipping]
-        PAYMENTS[Payments Service<br/>Stripe Checkout]
+        PAYMENTS[Payments Service<br/>Stripe Checkout<br/>Ethereum escrow]
         NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>event dedup]
     end
     
     subgraph "Infrastructure"
         INFRA[Infra Service<br/>K8s management]
+        GANACHE[Ganache<br/>Ethereum simulator]
     end
     
     subgraph "Data Layer"
@@ -59,6 +60,8 @@ graph TB
     PRODUCTION -->|sync| LOGISTICS
     LOGISTICS -->|sync| ORDERS
     CATALOG -->|sync| INVENTORY
+    PAYMENTS -->|web3 JSON-RPC| GANACHE
+    FE -.->|/rpc via nginx| GANACHE
     
     USERS --> PG
     CATALOG --> PG
@@ -172,6 +175,60 @@ sequenceDiagram
 Delivery is sequential within one worker pass, and the retry unit is the whole event
 rather than the individual subscriber.
 
+### Escrow variant (pay with Ether)
+
+An order placed with `payment_method: "escrow"` takes the same shape with one
+`OrderEscrow` contract per order standing in for the Stripe session. The customer signs
+exactly one transaction, `pay()`; the shop-owned key (`ESCROW_OWNER_PRIVATE_KEY`) sends
+everything else through the payments service.
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Frontend
+    participant Orders
+    participant Payments
+    participant Ganache
+    participant Logistics
+    
+    Frontend->>Orders: POST /orders (payment_method: escrow, customer_wallet)
+    Orders-->>Frontend: Order created (reserved)
+    
+    Frontend->>Orders: POST /orders/{id}/escrow
+    Orders->>Payments: POST /v1/escrow (order_id, customer_address, amount_usd)
+    Payments->>Ganache: deploy OrderEscrow from the owner key
+    Payments-->>Orders: contract_address, amount_wei
+    Orders-->>Frontend: contract + pay() invoice + chain config
+    
+    Customer->>Ganache: pay() signed in the browser (ethers), sent via /rpc
+    Frontend->>Orders: POST /orders/{id}/escrow/verify
+    Orders->>Payments: GET /v1/escrow/{address}
+    Payments->>Ganache: status()
+    Note over Orders: funded -> mark_order_paid (same as the Stripe webhook):<br/>commit stock, PAID, ORDER_PAID to outbox
+    
+    Note over Orders,Logistics: ... production, shipment as for a card order ...
+    
+    Logistics->>Orders: POST /internal/orders/{id}/courier (courier_wallet, on pick-up)
+    Orders->>Payments: POST /v1/escrow/{address}/courier
+    Payments->>Ganache: assignCourier()
+    Note over Orders: escrow_status = in_delivery
+    
+    Logistics->>Orders: POST /orders/{id}/deliver
+    Customer->>Frontend: Confirm delivery
+    Frontend->>Orders: POST /orders/{id}/escrow/confirm-delivery
+    Orders->>Payments: POST /v1/escrow/{address}/release
+    Payments->>Ganache: confirmDelivery() -> courier 20 %, owner 80 %
+    Note over Orders: escrow_status = released
+```
+
+A per-replica **escrow reconciler** in orders (`escrow_reconciler.py`, every
+`ESCROW_RECONCILE_INTERVAL` = 15 s) closes the gaps a browser or an outage can leave: it
+marks an order paid when the customer funded the contract but the tab died before
+`/escrow/verify`, retries the courier binding reported while payments was down or before
+funding, and retries a refund that failed on cancel or reservation expiry. Every action is
+idempotent, so two replicas racing on the same order is safe (see
+`docs/KNOWN_LIMITATIONS.md` #15).
+
 ---
 
 ## Stock Reservation Flow
@@ -255,6 +312,13 @@ erDiagram
         decimal total_amount
         string checkout_session_id
         string payment_intent_id
+        string payment_method
+        string customer_wallet
+        string courier_wallet
+        string escrow_contract_address
+        string escrow_deploy_tx
+        string escrow_amount_wei
+        string escrow_status
         timestamp created_at
         timestamp updated_at
     }
@@ -308,6 +372,9 @@ erDiagram
         int order_id
         string status
         string tracking
+        string courier_id
+        string courier_wallet
+        timestamp courier_bound_at
     }
     
     users_schema_users {
@@ -315,6 +382,7 @@ erDiagram
         string email UK
         string password_hash
         string role
+        string wallet_address
     }
     
     catalog_schema_products {
@@ -352,6 +420,7 @@ graph TB
                     PAYMENTS_DEP[payments<br/>Deployment]
                     INFRA_DEP[infra<br/>Deployment]
                     NOTIFICATIONS_DEP[notifications<br/>Deployment<br/>no ingress]
+                    GANACHE_DEP[ganache<br/>Deployment + PVC]
                 end
                 
                 subgraph "kube-system"
@@ -387,6 +456,7 @@ graph TB
     INVENTORY_DEP --> RDS
     PRODUCTION_DEP --> RDS
     LOGISTICS_DEP --> RDS
+    PAYMENTS_DEP --> GANACHE_DEP
     
     FLUENTBIT --> LOKI
 ```
@@ -414,6 +484,13 @@ and nginx proxies it onward from its `location /api/infra/` block
 (`frontend/nginx.conf:78`). `notifications` has neither an Ingress rule nor an
 nginx block, so it is not reachable from outside the cluster at all; it is only
 ever called service-to-service, by the orders outbox worker.
+
+`/rpc` — the Ethereum JSON-RPC the browser signs escrow payments against — likewise has
+no Ingress rule of its own (`deploy/charts/frontend` declares none). It matches the `/`
+catch-all and `frontend/nginx.conf:93-101` (`location /rpc/` and `location = /rpc`)
+proxies it to `ganache:8545`, exactly the way `/api/infra/` reaches infra. The `ganache`
+chart exposes only a ClusterIP Service; the node is never reachable except through that
+proxy and from payments.
 
 ### Why the ALB health check targets `/healthz`
 

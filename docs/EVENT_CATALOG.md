@@ -26,7 +26,10 @@ Events are delivered using the **Transactional Outbox Pattern**:
 
 **Producer:** Orders Service  
 **Consumers:** Production Service, Notifications Service  
-**Trigger:** Order status transitions to `paid` after successful payment
+**Trigger:** The order reaches `paid` through `order_paid.mark_order_paid`
+(`services/orders/order_paid.py`) — from the Stripe `checkout.session.completed` webhook,
+from escrow `POST /orders/{id}/escrow/verify`, or from the escrow reconciler. All three
+run the same function: commit stock, set `paid`, emit this event, one transaction.
 
 **Payload:**
 ```json
@@ -34,6 +37,7 @@ Events are delivered using the **Transactional Outbox Pattern**:
   "order_id": 123,
   "customer_email": "customer@example.com",
   "total_amount": "99.99",
+  "payment_intent": "pi_test_xyz789",
   "items": [
     {
       "sku": "POSTER-SUNSET-A3",
@@ -43,6 +47,9 @@ Events are delivered using the **Transactional Outbox Pattern**:
   ]
 }
 ```
+
+`payment_intent` is the Stripe payment intent for a card order and the `OrderEscrow`
+contract address for an escrow order (`mark_order_paid`'s `payment_ref`).
 
 **Consumer behavior:**
 - Production service creates a `Job` in `queued` status
@@ -66,9 +73,14 @@ Events are delivered using the **Transactional Outbox Pattern**:
   "customer_email": "customer@example.com",
   "previous_status": "reserved",
   "released_stock": true,
+  "escrow_refunded": false,
   "reason": "cancelled by customer"
 }
 ```
+
+`escrow_refunded` is `true` when an open `OrderEscrow` contract was cancelled (and the
+customer refunded) on the way — from `POST /orders/{id}/cancel` and from the
+reservation-expired callback alike; `false` for card orders and when no contract was open.
 
 `customer_email` and `reason` are required by the notifications consumer. The
 `checkout.session.expired` path previously emitted no event at all; it now emits
