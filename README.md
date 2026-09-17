@@ -46,15 +46,17 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
 | **orders** | 8000 | Order lifecycle, outbox event emission |
 | **production** | 8000 | Print job management (event-driven) |
 | **logistics** | 8000 | Shipment tracking |
-| **payments** | 8000 | Real Stripe Hosted Checkout sessions |
+| **payments** | 8000 | Real Stripe Hosted Checkout sessions and Ethereum escrow (`OrderEscrow` on Ganache via web3) |
 | **infra** | 8000 | Kubernetes cluster introspection API |
 | **notifications** | 8000 | Transactional email on order events (pluggable: logging / AWS SES) |
 | **frontend** | 80 | React SPA (shop + admin panel) |
+| **ganache** | 8545 | Ethereum simulator (`trufflesuite/ganache:v7.9.2`, deterministic wallet, chainId 1337) — compose service and helm-only chart, no image of our own |
 
 ## Key Features
 
 - **Outbox Pattern**: Reliable event delivery between services (orders → production, notifications)
 - **Transactional Email**: Order confirmation, shipping, delivery and cancellation email via a pluggable provider (AWS SES in production, log-only locally)
+- **Escrow Payment**: pay with Ether into a per-order smart contract; released 80/20 to owner and courier on confirmed delivery, refunded on cancel
 - **Schema Isolation**: Each service owns its PostgreSQL schema
 - **JWT Auth**: Stateless authentication with role-based access
 - **Admin Panel**: Full management UI for all services
@@ -103,6 +105,7 @@ helm upgrade --install inventory  deploy/charts/inventory  -n postershop
 helm upgrade --install orders     deploy/charts/orders     -n postershop
 helm upgrade --install production deploy/charts/production -n postershop
 helm upgrade --install logistics  deploy/charts/logistics  -n postershop
+helm upgrade --install ganache    deploy/charts/ganache    -n postershop   # before payments: the owner key is funded at startup
 helm upgrade --install payments   deploy/charts/payments   -n postershop
 helm upgrade --install infra      deploy/charts/infra      -n postershop
 helm upgrade --install notifications deploy/charts/notifications -n postershop
@@ -111,7 +114,7 @@ helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 
 ## Database Configuration
 
-The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe) and `infra` (reads live Kubernetes state) are stateless and own no schema:
+The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe; escrow state on chain and on the orders row) and `infra` (reads live Kubernetes state) are stateless and own no schema:
 
 ```
 postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3D<schema>
@@ -139,6 +142,7 @@ shop-platform/
 │   ├── production/
 │   ├── logistics/
 │   ├── payments/
+│   │   └── contracts/      # OrderEscrow.sol + compiled artifact
 │   ├── notifications/
 │   └── infra/
 ├── frontend/               # React SPA

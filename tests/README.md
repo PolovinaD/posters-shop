@@ -21,6 +21,7 @@ pytest tests/unit/ -v
 | `test_orders_escrow.py` | orders escrow endpoints, `mark_order_paid`, cancel refund, CONTRACT B courier binding and the reconciler decision table, on a `FakeEscrow` payment client |
 | `test_users_wallet.py` | `normalize_wallet` accepts `0x` + 40 hex and rejects everything else |
 | `test_logistics_courier.py` | `courier_binding_wallet` (only `dispatched -> in_transit` binds; explicit wallet beats the default) |
+| `test_logistics_courier_record.py` | `courier_id_from_claims` (JWT `sub` as-is, `None` for `service:` subjects) and the three audit columns (`courier_id`, `courier_wallet`, `courier_bound_at`) recorded on the pick-up paths |
 
 ## Integration Tests (requires live stack)
 

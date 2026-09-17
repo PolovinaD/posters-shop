@@ -651,6 +651,13 @@ contracts, so never regenerate it while orders are open. The browser reaches the
 through the frontend's nginx at `/rpc` (an unauthenticated RPC — acceptable for a Ganache demo,
 never for a real node).
 
+`deploy/deploy.sh` installs the charts in dependency order and puts **ganache before payments**
+so the node is Ready when payments funds the owner key at startup (the `SERVICES` array,
+`deploy.sh:81-84`); its post-upgrade `CORS_ORIGINS` patch skips ganache, which is not a FastAPI
+service. CI never builds it: `build-and-push.yaml`'s `buildable()` guard drops any chart without
+`services/<name>/Dockerfile` from the image matrix, and `ganache` appears only as a
+`workflow_dispatch` option of `deploy.yaml`, so the chart can be helm-deployed on its own.
+
 ### Benefits
 
 - **Single source of truth**: No password mismatches between DB init and K8s secrets

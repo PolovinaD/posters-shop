@@ -29,6 +29,7 @@ Authentication and user management service.
 | role | VARCHAR | customer, owner, courier |
 | first_name | VARCHAR | Optional |
 | last_name | VARCHAR | Optional |
+| wallet_address | VARCHAR(42) | Optional Ethereum wallet (`0x` + 40 hex); couriers set it and are paid to it (`003_wallet_address.py`) |
 
 ## API Endpoints
 
@@ -38,6 +39,7 @@ Authentication and user management service.
 | POST | /login | Login, get JWT token | - |
 | GET | /users/me | Get current user info | JWT |
 | POST | /users/me/password | Change password | JWT |
+| PUT | /users/me/wallet | Set the caller's Ethereum wallet (`{wallet_address}`, 422 unless `0x` + 40 hex) | JWT |
 | GET | /admin/users | List all users | Owner |
 | POST | /admin/users | Create user with role | Owner |
 | PUT | /users/{id}/role | Change user role | Owner |
@@ -76,7 +78,9 @@ uvicorn main:app --reload --port 8001
 
 - **customer**: Default role, can place orders and view own orders
 - **owner**: Admin role, full access to all services
-- **courier**: Can update shipment status
+- **courier**: Can update shipment status; sets a `wallet_address` to receive the escrow
+  courier share (`make dev-seed` sets `courier@postershop.com`'s wallet to Ganache demo
+  account 3)
 
 ## Events
 

@@ -33,14 +33,14 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - npm - Frontend dependencies via `package.json` with `npm ci` in Docker builds
 - Lockfile: `package-lock.json` present for frontend; no `pip` lockfiles (pinned versions vary by service)
 ## Frameworks
-- FastAPI - All 8 backend microservices, REST API framework
+- FastAPI - All 9 backend microservices, REST API framework
 - Uvicorn 0.38.0 - ASGI server for all Python services (uniform since 86c329c; notifications and payments keep the `[standard]` extra, the other seven do not)
 - React 19.2 - Frontend SPA (`frontend/package.json`)
 - Vite 5.4 - Frontend build tool and dev server
 - SQLAlchemy 2.0+ - ORM for all database-backed services (users, catalog, orders, production, logistics, inventory)
 - Alembic >= 1.13.0 - Database migrations for all database-backed services
 - psycopg2-binary - PostgreSQL driver
-- pytest 8.3.4 - Test framework; the suite lives in `tests/` (7 unit files + 1 integration), not per-service (`tests/requirements.txt`)
+- pytest 8.3.4 - Test framework; the suite lives in `tests/` (13 unit files + 3 integration, 162 tests: 158 unit + 4 integration), not per-service (`tests/requirements.txt`)
 - Docker / Docker Compose - Local development and container builds (`docker-compose.yaml`)
 - Make - Build automation (`Makefile`)
 - Helm 3.19.0 - Kubernetes package management (`deploy/charts/`); nothing in the repo pins it — CI uses `azure/setup-helm@v3` with no `version:`
@@ -65,6 +65,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | boto3 | 1.38.0 | AWS SDK — SES email in notifications; pinned but never imported in catalog and logistics | Low - pinned |
 | kubernetes | unpinned | K8s Python client (infra service) | Low |
 | websockets | unpinned | WebSocket support (infra service) | Low |
+| web3 | >=7.13,<8 | Ethereum JSON-RPC client — the escrow provider in payments (`services/payments/escrow.py`) | Low - pinned major |
 | Tailwind CSS | ^3.4.19 | Utility-first CSS framework (frontend) | Low |
 | lucide-react | ^0.562.0 | Icon library (frontend) | Low |
 | clsx | ^2.1.1 | Conditional CSS class utility (frontend) | Low |
@@ -111,10 +112,11 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | production | 8004 | PostgreSQL (production schema) | httpx |
 | logistics | 8005 | PostgreSQL (logistics schema) | httpx, PyJWT |
 | inventory | 8006 | PostgreSQL (inventory schema) | httpx, PyJWT |
-| payments | 8007 | None — sessions live at Stripe | stripe |
+| payments | 8007 | None — sessions live at Stripe; escrow state on chain + the orders row | stripe, web3 |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
 | frontend | 3000 | None | React, Vite, Nginx |
+| ganache | 8545 | LevelDB on the `ganache-data` volume (not a Python service) | trufflesuite/ganache:v7.9.2 |
 <!-- GSD:stack-end -->
 
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
@@ -182,11 +184,11 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Architecture
 
 ## Pattern Overview
-- 9 independent Python/FastAPI backend services; the seven database-backed ones each own their own PostgreSQL schema, while payments and infra are stateless
+- 9 independent Python/FastAPI backend services; the seven database-backed ones each own their own PostgreSQL schema, while payments and infra are stateless; payments additionally drives one `OrderEscrow` contract per order on a Ganache node (compose service / helm-only chart) through web3
 - Single React SPA frontend acting as both admin dashboard and customer-facing shop
 - Synchronous HTTP inter-service communication via `httpx` async clients
 - Asynchronous event delivery via the Outbox Pattern, fanning out to multiple subscribers (orders -> production, notifications)
-- Nginx reverse proxy (in production Docker) routing `/api/{service}/` to backend services
+- Nginx reverse proxy (in production Docker) routing `/api/{service}/` to backend services and `/rpc` to `ganache:8545`
 - Each service runs on port 8000 internally, exposed on unique host ports (8001-8009)
 ## Layers
 - Purpose: Admin dashboard and customer-facing poster shop
@@ -219,7 +221,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ```
 - Server-side: Each service owns its state in its PostgreSQL schema
 - Frontend: React Query for server state (5s refetch interval), React Context for auth and cart
-- Payments service keeps no local state at all -- checkout sessions live at Stripe (`list_sessions()` returns `[]`)
+- Payments service keeps no local state at all -- checkout sessions live at Stripe (`list_sessions()` returns `[]`) and escrow state lives on chain and on the orders row (`payment_method`, `escrow_status`, `escrow_contract_address`, ...)
 - Notifications service dedups events durably in its own `processed_events` table -- the guard survives pod restarts and is shared across replicas; the only residual is the narrow send-then-record crash window
 ## Key Abstractions
 - Purpose: Typed async HTTP clients for inter-service calls
@@ -231,6 +233,9 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Purpose: Swappable email transport so local development needs no AWS credentials
 - Examples: `services/notifications/providers.py` (`EmailProvider` ABC, `LoggingProvider`, `SesProvider`)
 - Pattern: Abstract base class with a single `send(to, subject, body)` method, selected at startup by the `EMAIL_PROVIDER` env var (`get_provider()`). LoggingProvider renders into the structured log for docker-compose and demos; SesProvider calls AWS SES via boto3 with credentials from IRSA rather than any stored key.
+- Purpose: Ethereum escrow beside the Stripe adapter, so payments stays stateless
+- Examples: `services/payments/escrow.py` (`EscrowProvider`, `init_provider`/`get_provider`, `EscrowUnavailable` -> 503), `services/orders/order_paid.py` (`mark_order_paid`, shared by the Stripe webhook, escrow verify and the reconciler), `services/orders/escrow_reconciler.py`
+- Pattern: one `OrderEscrow` contract per order; the customer signs exactly one transaction (`pay()`), the owner key sends everything else; orders is the source of truth for escrow state (`EscrowStatus` mirrors the contract enum plus a local `failed`)
 - Purpose: Enforces valid order status transitions
 - Examples: `services/orders/models.py` (`OrderStatus` class)
 - Pattern: Explicit transition map: CREATED -> RESERVED -> PAID -> PRODUCING -> SHIPPED -> DELIVERED. Terminal states: CANCELLED, FAILED, DELIVERED.
@@ -246,7 +251,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Responsibilities: Renders admin dashboard (/) and customer shop (/shop) routes
 - Location: `services/{service}/main.py`
 - Triggers: HTTP requests (FastAPI/Uvicorn on port 8000)
-- Responsibilities: REST API endpoints, background workers (outbox, job processing, reservation expiry)
+- Responsibilities: REST API endpoints, background workers (outbox, job processing, reservation expiry, escrow reconciler)
 - Location: `docker-compose.yaml`
 - Triggers: `make dev` / `docker compose up`
 - Responsibilities: Orchestrates all services + PostgreSQL locally
