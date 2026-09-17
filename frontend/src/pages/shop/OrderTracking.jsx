@@ -209,6 +209,14 @@ export default function OrderTracking() {
     staleTime: 30000,
     retry: false,
   });
+  // Demo-account picker, the same one Checkout offers. A public read that the
+  // production payments service answers with 404 (not on Ganache), so the
+  // catch -> [] hides the select there.
+  const { data: demoAccounts = [] } = useQuery({
+    queryKey: ['escrowDemoAccounts'],
+    queryFn: () => paymentsApi.getEscrowDemoAccounts().catch(() => []),
+    enabled: isEscrow && !!escrowConfig?.enabled,
+  });
   const [payKey, setPayKey] = useState('');
   const [payBusy, setPayBusy] = useState(false);
   const [escrowMsg, setEscrowMsg] = useState(null); // { kind: 'error' | 'ok', text }
@@ -220,6 +228,7 @@ export default function OrderTracking() {
       return null;
     }
   }, [payKey]);
+  const selectedDemoIndex = demoAccounts.find((a) => a.private_key === payKey)?.index ?? '';
 
   // Locked decision 1: the customer's authenticated click; the backend signs
   // confirmDelivery() with the owner key. A 409 carries the bare revert reason
@@ -421,6 +430,28 @@ export default function OrderTracking() {
                     Paste the private key of your wallet{customerWallet ? ` (${shortAddress(customerWallet)})` : ''}.
                     It is signed in your browser with ethers.js and never sent to the server.
                   </p>
+                  {demoAccounts.length > 0 && (
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-stone-700 mb-2">
+                        Use demo account
+                      </label>
+                      <select
+                        value={selectedDemoIndex}
+                        onChange={(e) => {
+                          const picked = demoAccounts.find((a) => String(a.index) === e.target.value);
+                          setPayKey(picked ? picked.private_key : '');
+                        }}
+                        className="w-full px-4 py-3 rounded-xl border border-stone-200 bg-white text-stone-900 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                      >
+                        <option value="">— pick a Ganache account —</option>
+                        {demoAccounts.map((a) => (
+                          <option key={a.index} value={a.index}>
+                            Account {a.index} — {shortAddress(a.address)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <input
                     type="password"
                     autoComplete="off"
