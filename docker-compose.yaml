@@ -214,6 +214,9 @@ services:
     # Deterministic wallet => the ten well-known accounts (payments serves their keys as demo accounts);
     # chainId 1337; the chain is persisted on the volume so deployed contracts survive restarts.
     command: ["--wallet.deterministic", "--chain.chainId", "1337", "--server.host", "0.0.0.0", "--database.dbPath", "/data"]
+    # The one service not on restart "no": the chain lives on the ganache-data volume, so a revived node keeps
+    # every deployed contract. A frontend image build OOM-killed it (exit 137) on the 2 GB Docker VM on 2026-09-17.
+    restart: on-failure
     volumes:
       - ganache-data:/data
     ports:
