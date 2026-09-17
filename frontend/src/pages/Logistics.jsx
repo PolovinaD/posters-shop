@@ -18,6 +18,7 @@ import {
   StatusBadge
 } from '../components/ui';
 import { logisticsApi } from '../api';
+import { shortAddress } from '../lib/escrow';
 
 const SHIPMENT_STATUSES = ['pending', 'dispatched', 'in_transit', 'delivered'];
 
@@ -126,6 +127,7 @@ export default function Logistics() {
                 <TableHead>Order ID</TableHead>
                 <TableHead>Tracking</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Courier</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead></TableHead>
               </TableHeader>
@@ -141,6 +143,20 @@ export default function Logistics() {
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={shipment.status} />
+                      </TableCell>
+                      <TableCell>
+                        {shipment.courier_wallet ? (
+                          <div className="text-sm">
+                            <p title={shipment.courier_bound_at ? new Date(shipment.courier_bound_at).toLocaleString() : undefined}>
+                              {shipment.courier_id || 'system'}
+                            </p>
+                            <p className="font-mono text-slate-400" title={shipment.courier_wallet}>
+                              {shortAddress(shipment.courier_wallet)}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-slate-400">
                         {new Date(shipment.created_at).toLocaleString()}
