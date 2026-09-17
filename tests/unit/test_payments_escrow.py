@@ -116,6 +116,16 @@ def test_revert_reason_strips_prefix():
     assert esc.revert_reason(ContractLogicError("Something else")) == "Something else"
 
 
+def test_revert_reason_strips_ganache_prefix():
+    """ESC-02: Ganache v7 phrases a revert as 'VM Exception while processing
+    transaction: revert <reason>' behind web3's own prefix (observed live in 08-05);
+    the bare reason must come out of both shapes, quoted or not."""
+    ganache = "execution reverted: VM Exception while processing transaction: revert Order closed."
+    assert esc.revert_reason(ContractLogicError(ganache)) == "Order closed."
+    assert esc.revert_reason(ContractLogicError("VM Exception while processing transaction: revert Delivery not complete.")) == "Delivery not complete."
+    assert esc.revert_reason(ContractLogicError("execution reverted: 'Invalid amount.'")) == "Invalid amount."
+
+
 # ============== EscrowProvider against a fake Web3 ==============
 
 def test_ensure_owner_funded_tops_up_from_account0(artifact):

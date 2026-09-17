@@ -49,7 +49,8 @@ ARTIFACT_PATH = pathlib.Path(__file__).resolve().parent / "contracts" / "OrderEs
 STATE_NAMES = ["awaiting_payment", "funded", "in_delivery", "released", "cancelled"]   # index == Solidity enum
 ZERO_ADDRESS = "0x" + "00" * 20
 PAY_SELECTOR = "0x" + bytes(Web3.keccak(text="pay()"))[:4].hex()
-REVERT_PREFIX = "execution reverted:"
+REVERT_PREFIX = "execution reverted:"                                     # web3.py's ContractLogicError
+GANACHE_REVERT_PREFIX = "VM Exception while processing transaction: revert"  # what Ganache puts after it
 
 
 class EscrowUnavailable(Exception):
@@ -84,15 +85,22 @@ def revert_reason(exc: Exception) -> str:
     """The bare require() string out of a web3 ContractLogicError.
 
     web3 7 stores the text on ``.message``; ``str(exc)`` would render the whole
-    ``(message, data)`` args tuple, so it is only the fallback.
+    ``(message, data)`` args tuple, so it is only the fallback. Geth-style nodes
+    report ``execution reverted: <reason>``; Ganache v7 reports ``execution
+    reverted: VM Exception while processing transaction: revert <reason>`` --
+    both prefixes are stripped so the 409 detail (and orders' comparison
+    against the locked strings) always sees the bare reason.
     """
     message = getattr(exc, "message", None)
     if not message:
         message = exc.args[0] if exc.args else str(exc)
     message = str(message).strip()
-    if message.startswith(REVERT_PREFIX):
-        message = message[len(REVERT_PREFIX):]
-    return message.strip()
+    for prefix in (REVERT_PREFIX, GANACHE_REVERT_PREFIX):
+        if message.startswith(prefix):
+            message = message[len(prefix):].strip()
+    if len(message) >= 2 and message[0] == message[-1] and message[0] in "'\"":
+        message = message[1:-1].strip()
+    return message
 
 
 def demo_accounts(count: int = 10) -> list[dict]:
