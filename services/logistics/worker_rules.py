@@ -37,3 +37,17 @@ def courier_binding_wallet(old_status: str, new_status: str, courier_wallet: str
     if old_status != "dispatched" or new_status != "in_transit":
         return None
     return courier_wallet or default_wallet or None
+
+
+def courier_id_from_claims(claims: dict | None) -> str | None:
+    """Identity to record as the courier who bound a wallet, or None for "system".
+
+    `sub` is the caller's user identity -- users mints the email into it -- so a
+    human token records it as-is. A service token carries `service:<name>` and is
+    not a person: it records None, the same value the unattended worker records.
+    A missing or empty `sub` records None rather than guessing.
+    """
+    sub = (claims or {}).get("sub")
+    if not isinstance(sub, str) or not sub or sub.startswith("service:"):
+        return None
+    return sub

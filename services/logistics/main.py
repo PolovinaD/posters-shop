@@ -11,7 +11,7 @@ from logger import get_logger, LoggingMiddleware
 from service_auth import require_service_or_owner
 from database import engine, get_db, SessionLocal
 from models import Shipment
-from worker_rules import next_status, courier_binding_wallet
+from worker_rules import next_status, courier_binding_wallet, courier_id_from_claims
 from metrics import metrics_endpoint, track_metrics
 from auth import require_courier_or_admin, optional_auth
 import orders_client
@@ -36,6 +36,9 @@ def shipment_to_dict(s):
         "tracking": s.tracking,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "courier_id": s.courier_id,
+        "courier_wallet": s.courier_wallet,
+        "courier_bound_at": s.courier_bound_at.isoformat() if s.courier_bound_at else None,
         "shipping_address": {
             "recipient_name": s.recipient_name,
             "street": s.street,
@@ -69,13 +72,19 @@ async def shipment_worker():
                         old_status = s.status
                         s.status = new_status
                         s.updated_at = datetime.utcnow()
+                        # Unattended pick-up: record "system" (NULL courier_id) + the
+                        # default wallet in the same transaction as the status change
+                        wallet = courier_binding_wallet(old_status, s.status, None, LOGISTICS_DEFAULT_COURIER_WALLET)
+                        if wallet:
+                            s.courier_id = None
+                            s.courier_wallet = wallet
+                            s.courier_bound_at = datetime.utcnow()
                         db.commit()
                         logger.info("Auto-advanced shipment",
                                     shipment_id=s.id,
                                     from_status=old_status,
                                     to_status=s.status,
                                     order_id=s.order_id)
-                        wallet = courier_binding_wallet(old_status, s.status, None, LOGISTICS_DEFAULT_COURIER_WALLET)
                         if wallet:
                             asyncio.create_task(
                                 orders_client.notify_courier_assigned(s.order_id, wallet)
@@ -239,6 +248,7 @@ async def update_shipment_status(
     Update shipment status. Requires courier or owner role.
     On dispatched -> in_transit the courier's wallet (body `courier_wallet`, else
     LOGISTICS_DEFAULT_COURIER_WALLET) is sent to orders for escrow binding.
+    The binding (courier_id = caller's sub, courier_wallet, courier_bound_at) is recorded on the shipment.
     When status changes to 'delivered', automatically notifies the orders service.
     """
     s = db.get(Shipment, shipment_id)
@@ -265,16 +275,24 @@ async def update_shipment_status(
 
     old_status = s.status
     s.status = status
+
+    # Pick-up: record who bound which wallet, in the same transaction as the
+    # status change. orders keeps its own courier_wallet snapshot (CONTRACT B).
+    wallet = courier_binding_wallet(old_status, status, courier_wallet, LOGISTICS_DEFAULT_COURIER_WALLET)
+    if wallet:
+        s.courier_id = courier_id_from_claims(claims)
+        s.courier_wallet = wallet
+        s.courier_bound_at = datetime.utcnow()
+
     db.commit()
     db.refresh(s)
 
     logger.info(f"Shipment {shipment_id} status updated: {old_status} -> {status}")
 
     # Pick-up: hand the courier's wallet to orders (CONTRACT B), never blocking the courier
-    wallet = courier_binding_wallet(old_status, status, courier_wallet, LOGISTICS_DEFAULT_COURIER_WALLET)
     if wallet:
         background_tasks.add_task(orders_client.notify_courier_assigned, s.order_id, wallet)
-        logger.info(f"Queued courier binding for order {s.order_id} (wallet {wallet[:10]}…)")
+        logger.info(f"Queued courier binding for order {s.order_id} (wallet {wallet[:10]}…, courier {s.courier_id or 'system'})")
 
     # If delivered, notify orders service
     if status == "delivered" and old_status != "delivered":
