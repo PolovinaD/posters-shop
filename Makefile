@@ -132,7 +132,7 @@ dev-db: ## [local] Connect to local PostgreSQL
 	docker compose exec postgres psql -U root -d postershop
 
 .PHONY: dev-seed
-dev-seed: ## [local] Seed all services with sample data (FORCE=1 to rebuild)
+dev-seed: ## [local] Seed all services with sample data and the demo courier's wallet (FORCE=1 to rebuild)
 	@echo "Seeding services..."
 	@TOKEN=$$(curl -s -X POST localhost:8001/login \
 		-H 'Content-Type: application/json' \
@@ -144,6 +144,22 @@ dev-seed: ## [local] Seed all services with sample data (FORCE=1 to rebuild)
 	Q=$$([ -n "$(FORCE)" ] && echo "?force=true"); \
 	curl -s -X POST "localhost:8006/seed$$Q" -H "Authorization: Bearer $$TOKEN"; echo; \
 	curl -s -X POST "localhost:8002/seed$$Q" -H "Authorization: Bearer $$TOKEN"; echo
+	@COURIER_TOKEN=$$(curl -s -X POST localhost:8001/login \
+		-H 'Content-Type: application/json' \
+		-d '{"email":"courier@postershop.com","password":"courier1234"}' \
+		| sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'); \
+	if [ -z "$$COURIER_TOKEN" ]; then \
+		echo "ℹ️  courier demo user not found — skipping wallet"; exit 0; \
+	fi; \
+	WALLET=$$(curl -s localhost:8007/v1/escrow/demo-accounts \
+		| python3 -c 'import json,sys; print(next(a["address"] for a in json.load(sys.stdin) if a["index"] == 3))' 2>/dev/null); \
+	if [ -z "$$WALLET" ]; then \
+		echo "ℹ️  Ganache demo accounts unavailable (ganache down or not exposed) — skipping courier wallet"; exit 0; \
+	fi; \
+	curl -s -X PUT localhost:8001/users/me/wallet \
+		-H 'Content-Type: application/json' -H "Authorization: Bearer $$COURIER_TOKEN" \
+		-d "{\"wallet_address\":\"$$WALLET\"}"; echo; \
+	echo "✅ Courier wallet set to $$WALLET (Ganache account 3)"
 	@echo "✅ Data seeded"
 
 .PHONY: dev-test
