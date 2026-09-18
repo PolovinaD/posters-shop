@@ -1,0 +1,6 @@
+apiVersion: v2
+name: designs
+description: Designs service chart - AI poster studio (async generation worker, swappable image provider, local/S3 storage)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

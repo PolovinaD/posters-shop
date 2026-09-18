@@ -46,6 +46,8 @@ env:
     value: "http://payments"
   - name: NOTIFICATIONS_SERVICE_URL
     value: "http://notifications"
+  - name: DESIGNS_SERVICE_URL
+    value: "http://designs"
   - name: STRIPE_SECRET_KEY
     valueFrom:
       secretKeyRef:

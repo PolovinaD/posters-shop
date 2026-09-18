@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: designs
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: designs
+  template:
+    metadata:
+      labels:
+        app: designs
+    spec:
+      {{- if .Values.serviceAccount.name }}
+      # Set serviceAccount.name to bind the pod to an IRSA-annotated ServiceAccount
+      # (see deploy/designs-setup.sh). Left unset, the pod runs under the namespace
+      # default ServiceAccount, which is correct for STORAGE_BACKEND=local because
+      # LocalStorage needs no AWS credentials.
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
+      containers:
+        - name: designs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+{{ toYaml .Values.env | indent 12 }}
+            # Rendered from the `provider:` / `storage:` scalars rather than the `env`
+            # list, so that `--set provider.image=openai` is safe: setting a list
+            # element by index breaks whenever the list above changes length.
+            - name: IMAGE_PROVIDER
+              value: {{ .Values.provider.image | default "fake" | quote }}
+            - name: OPENAI_IMAGE_MODEL
+              value: {{ .Values.provider.openaiImageModel | default "gpt-image-1.5" | quote }}
+            - name: OPENAI_IMAGE_QUALITY
+              value: {{ .Values.provider.openaiImageQuality | default "medium" | quote }}
+            - name: OPENAI_CHAT_MODEL
+              value: {{ .Values.provider.openaiChatModel | default "gpt-4o-mini" | quote }}
+            - name: REPLICATE_MODEL
+              value: {{ .Values.provider.replicateModel | default "black-forest-labs/flux-schnell" | quote }}
+            - name: STORAGE_BACKEND
+              value: {{ .Values.storage.backend | default "local" | quote }}
+            - name: DESIGNS_STORAGE_DIR
+              value: {{ .Values.storage.dir | default "/data/images" | quote }}
+{{- if .Values.storage.bucket }}
+            - name: DESIGNS_S3_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+{{- end }}
+{{- if .Values.storage.region }}
+            - name: DESIGNS_S3_REGION
+              value: {{ .Values.storage.region | quote }}
+{{- end }}
+{{- if ne (.Values.storage.backend | default "local") "s3" }}
+          # Local storage: an emptyDir is enough for an un-configured install, but it
+          # is LOST on every pod restart (each printed product's image_url then
+          # dangles). full-deploy.sh switches to S3 when the bucket + IRSA SA exist.
+          volumeMounts:
+            - name: images
+              mountPath: {{ .Values.storage.dir | default "/data/images" | quote }}
+{{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+{{- if ne (.Values.storage.backend | default "local") "s3" }}
+      volumes:
+        - name: images
+          emptyDir:
+            sizeLimit: 1Gi
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: designs
+  labels:
+    app: designs
+spec:
+  type: ClusterIP
+  selector:
+    app: designs
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}

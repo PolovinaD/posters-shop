@@ -1,0 +1,127 @@
+image:
+  # Override with: --set image.repository=$ECR_REGISTRY/designs
+  repository: YOUR_ECR_REGISTRY/designs
+  tag: "latest"
+replicaCount: 1
+
+service:
+  port: 80
+  targetPort: 8000
+
+# Pillow + a 2-3 MB PNG in flight per generation; the fake provider paints a
+# 1024x1536 canvas and the real providers hand back a base64 body of that size.
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi
+
+env:
+  - name: SERVICE_NAME
+    value: "designs"
+  - name: LOG_LEVEL
+    value: "INFO"
+  # ALB-exposed: the frontend chart routes /api/designs here, so the service must
+  # know the prefix the ingress strips (same as catalog/orders/...). Without it the
+  # OpenAPI server URL at /docs and the image_url values would point nowhere.
+  - name: ROOT_PATH
+    value: "/api/designs"
+  - name: CORS_ORIGINS
+    value: "http://localhost:3000"
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: postershop-jwt
+        key: JWT_SECRET
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: postershop-db
+        key: DATABASE_URL_DESIGNS
+  - name: CATALOG_SERVICE_URL
+    value: "http://catalog"
+  - name: INVENTORY_SERVICE_URL
+    value: "http://inventory"
+  - name: DESIGNS_PUBLIC_URL_PREFIX
+    value: "/api/designs/images"
+  - name: AI_DAILY_QUOTA
+    value: "10"
+  - name: AI_POSTER_BASE_PRICE
+    value: "29.99"
+  - name: AI_POSTER_STOCK
+    value: "1000"
+  - name: DESIGNS_MAX_ATTEMPTS
+    value: "3"
+  - name: CB_FAILURE_THRESHOLD
+    value: "5"
+  - name: CB_RECOVERY_TIMEOUT
+    value: "30"
+  # Provider keys come from the postershop-designs Secret (ExternalSecret from
+  # postershop/designs). `optional: true` keeps an un-configured install schedulable:
+  # with IMAGE_PROVIDER=fake neither key is read, and a missing Secret must not turn
+  # into a CreateContainerConfigError.
+  # IMAGE_PROVIDER / STORAGE_BACKEND / model names are NOT listed here. They are
+  # rendered from the `provider:` and `storage:` blocks at the bottom of this file,
+  # because `env` is a list and `--set env[N].value=...` depends on positional
+  # indices that shift whenever the list changes. Scalars can be set safely from
+  # the command line (deploy/lib/live-config.sh does exactly that).
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: postershop-designs
+        key: OPENAI_API_KEY
+        optional: true
+  - name: REPLICATE_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: postershop-designs
+        key: REPLICATE_API_TOKEN
+        optional: true
+
+# Routing lives in the frontend chart's ALB Ingress (/api/designs -> designs:80);
+# nothing to enable here.
+ingress:
+  enabled: false
+
+# IRSA hook for S3 (s3:PutObject/GetObject on the designs bucket). Same contract as
+# notifications: set `name` to an eksctl-created, role-annotated ServiceAccount
+# (deploy/designs-setup.sh); leave empty for local storage, and the Deployment
+# renders no `serviceAccountName` at all.
+#
+#   create: false + name: designs        -> consume a ServiceAccount created outside
+#                                           Helm (`eksctl create iamserviceaccount`).
+#   create: true  + name + annotations   -> this chart creates and annotates the
+#                                           ServiceAccount itself.
+#
+# `create: true` with an empty `name` fails the render with an explicit message.
+serviceAccount:
+  create: false
+  name: ""            # e.g. designs
+  annotations: {}
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/postershop-designs-s3
+
+migrations:
+  enabled: true
+  secretName: postershop-db
+  secretKey: DATABASE_URL_DESIGNS
+
+# Scalars rendered by the Deployment template (index-safe for --set). Defaults make
+# a plain `helm install` work with no key and no bucket: the fake provider paints
+# placeholders and images live on an emptyDir (LOST on pod restart — full-deploy.sh
+# switches to s3 when the bucket and the IRSA ServiceAccount exist).
+provider:
+  image: "fake"                        # fake | openai | replicate
+  openaiImageModel: "gpt-image-1.5"
+  openaiImageQuality: "medium"
+  openaiChatModel: "gpt-4o-mini"
+  replicateModel: "black-forest-labs/flux-schnell"
+
+# backend "local" mounts an emptyDir at `dir`; backend "s3" drops the volume and
+# expects `bucket` (+ optionally `region`) and an IRSA ServiceAccount above.
+storage:
+  backend: "local"                     # local | s3
+  dir: "/data/images"
+  bucket: ""
+  region: ""

@@ -215,3 +215,24 @@ spec:
     matchNames:
       - postershop
 
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: designs
+  namespace: postershop
+  labels:
+    app: designs
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: designs
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - postershop

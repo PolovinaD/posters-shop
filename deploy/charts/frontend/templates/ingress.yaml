@@ -73,5 +73,12 @@ spec:
                 name: payments
                 port:
                   number: 80
+          - path: /api/designs
+            pathType: Prefix
+            backend:
+              service:
+                name: designs
+                port:
+                  number: 80
 {{- end }}
 
