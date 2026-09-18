@@ -15,6 +15,7 @@ email (see README).
 Email transport is pluggable (see providers.py): the logging provider is used
 for local dev (no AWS creds), the SES provider for production (via IRSA).
 """
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -34,6 +35,7 @@ from metrics import (
 from providers import get_provider
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 
 logger = get_logger(__name__)
 
@@ -81,16 +83,24 @@ app.add_middleware(
 
 # ============== Health & Metrics ==============
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
