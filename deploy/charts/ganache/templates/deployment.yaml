@@ -37,6 +37,7 @@ spec:
                 - "require('http').request({host:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).end('{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}')"
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             exec:
               command:
@@ -45,6 +46,7 @@ spec:
                 - "require('http').request({host:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).end('{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}')"
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
           resources:
 {{ toYaml .Values.resources | indent 12 }}
       volumes:

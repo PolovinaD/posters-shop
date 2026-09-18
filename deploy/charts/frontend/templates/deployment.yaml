@@ -24,12 +24,14 @@ spec:
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /health
               port: 80
             initialDelaySeconds: 10
             periodSeconds: 15
+            timeoutSeconds: 5
           resources:
 {{ toYaml .Values.resources | indent 12 }}
 ---
