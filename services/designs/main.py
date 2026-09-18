@@ -1,35 +1,59 @@
 """
 Designs Service — AI poster studio.
 
-Skeleton in 09-01: health, readiness and metrics only. 09-02 adds the generation
-API (POST /generations -> 202 + id, polled by the shop) and the background worker
-that claims queued rows and calls the image provider; later plans add print-this,
-the memory tiers and the ORDER_PAID subscription.
+Customer-facing API (all JWT-scoped to the caller's e-mail) and the background
+generation worker:
+
+  POST /generations              202 + the queued row; the shop polls GET /generations/{id}
+  GET  /generations[/{id}]       the caller's own rows, newest first / one row or 404
+  GET  /me/quota                 D-14 daily allowance (limit / used / remaining / resets_at)
+  GET|POST|DELETE /saved-prompts the caller's saved prompts
+  GET  /images/{key}             the PNG bytes, immutable cache headers, NO bearer required
+                                 (an <img> cannot send one; the 32-hex key is the capability)
+
+The worker (worker.py) is started in lifespan with asyncio.create_task and cancelled
+on shutdown (production's job_worker shape). Later plans add print-this, the memory
+tiers and the ORDER_PAID subscription.
 
 The image provider (providers.py, IMAGE_PROVIDER env) and the storage backend
 (storage.py, STORAGE_BACKEND env) are built lazily through provider()/storage(),
 so importing this module never touches the filesystem or the network — unit tests
 import it without running the lifespan.
 """
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import desc, select, text
+from sqlalchemy.orm import Session
 
-from database import engine
+from auth import get_current_user_claims
+from database import engine, get_db
 from logger import get_logger, LoggingMiddleware
 from metrics import metrics_endpoint, track_metrics, SERVICE_NAME
+from models import Generation, SavedPrompt
 from providers import get_image_provider
+from quota import check_quota, quota_status
+from schemas import (
+    GenerationCreate, GenerationOut, QuotaOut, SavedPromptCreate, SavedPromptOut,
+)
 from storage import get_storage
+from worker import worker_loop
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+AI_DAILY_QUOTA = int(os.getenv("AI_DAILY_QUOTA", "10"))  # D-14; 0 = unlimited
+# Where the shop reaches GET /images/{key}: through the nginx/vite proxy in compose and
+# on EKS (LocalStorage); a CDN/bucket URL when S3 serves the files directly.
+PUBLIC_URL_PREFIX = os.getenv("DESIGNS_PUBLIC_URL_PREFIX", "/api/designs/images").rstrip("/")
+PRODUCT_URL_PREFIX = "/shop/product"
 
 logger = get_logger(__name__)
 
 _provider = None
 _storage = None
+worker_task = None
 
 
 def provider():
@@ -55,8 +79,19 @@ async def lifespan(app: FastAPI):
         "Designs service starting",
         image_provider=provider().name,
         storage_backend=os.getenv("STORAGE_BACKEND", "local"),
+        daily_quota=AI_DAILY_QUOTA,
     )
+    global worker_task
+    worker_task = asyncio.create_task(worker_loop(provider, storage))
+
     yield
+
+    if worker_task:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
     logger.info("Shutdown complete")
 
 
@@ -96,3 +131,147 @@ def readyz():
 @app.get("/metrics")
 def metrics():
     return metrics_endpoint()
+
+
+# ============== Generations ==============
+
+def to_out(gen: Generation) -> GenerationOut:
+    """Row -> API shape. image_url is derived from image_key only once the image exists;
+    product_url once "Print this" has attached a catalog product."""
+    out = GenerationOut.model_validate(gen)
+    if gen.status == "ready" and gen.image_key:
+        out.image_url = f"{PUBLIC_URL_PREFIX}/{gen.image_key}"
+    if gen.catalog_product_sku:
+        out.product_url = f"{PRODUCT_URL_PREFIX}/{gen.catalog_product_sku}"
+    return out
+
+
+def _own_generation(db: Session, generation_id: int, email: str) -> Generation:
+    """The caller's own row or 404 — someone else's id is indistinguishable from a missing one."""
+    gen = db.execute(
+        select(Generation).where(Generation.id == generation_id, Generation.customer_email == email)
+    ).scalar_one_or_none()
+    if gen is None:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    return gen
+
+
+@app.post("/generations", response_model=GenerationOut, status_code=202)
+def create_generation(
+    payload: GenerationCreate,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    """Queue a generation (D-02): the row is inserted as `queued` and the worker picks it
+    up; the shop polls GET /generations/{id}. Over quota -> 429 + Retry-After (D-14)."""
+    email, role = claims["sub"], claims.get("role")
+    check_quota(db, email, role, AI_DAILY_QUOTA)
+    prompt = payload.prompt.strip()
+    gen = Generation(
+        customer_email=email,
+        prompt=prompt,
+        effective_prompt=prompt,
+        personalise=payload.personalise,
+        provider=provider().name,
+        params=provider().params(),
+        status="queued",
+        attempts=0,
+    )
+    db.add(gen)
+    db.commit()
+    db.refresh(gen)
+    logger.info("Generation queued", generation_id=gen.id, personalise=gen.personalise)
+    return to_out(gen)
+
+
+@app.get("/generations", response_model=list[GenerationOut])
+def list_generations(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    """The caller's own generations, newest first."""
+    rows = db.execute(
+        select(Generation)
+        .where(Generation.customer_email == claims["sub"])
+        .order_by(desc(Generation.created_at), desc(Generation.id))
+        .limit(limit)
+    ).scalars().all()
+    return [to_out(g) for g in rows]
+
+
+@app.get("/generations/{generation_id}", response_model=GenerationOut)
+def get_generation(
+    generation_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    return to_out(_own_generation(db, generation_id, claims["sub"]))
+
+
+# ============== Quota ==============
+
+@app.get("/me/quota", response_model=QuotaOut)
+def me_quota(db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    return quota_status(db, claims["sub"], claims.get("role"), AI_DAILY_QUOTA)
+
+
+# ============== Saved prompts ==============
+
+@app.get("/saved-prompts", response_model=list[SavedPromptOut])
+def list_saved_prompts(db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    return db.execute(
+        select(SavedPrompt)
+        .where(SavedPrompt.customer_email == claims["sub"])
+        .order_by(desc(SavedPrompt.created_at), desc(SavedPrompt.id))
+    ).scalars().all()
+
+
+@app.post("/saved-prompts", response_model=SavedPromptOut, status_code=201)
+def create_saved_prompt(
+    payload: SavedPromptCreate,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    saved = SavedPrompt(customer_email=claims["sub"], title=payload.title.strip(), prompt=payload.prompt.strip())
+    db.add(saved)
+    db.commit()
+    db.refresh(saved)
+    return saved
+
+
+@app.delete("/saved-prompts/{saved_prompt_id}", status_code=204)
+def delete_saved_prompt(
+    saved_prompt_id: int,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    email = claims["sub"]
+    saved = db.execute(
+        select(SavedPrompt).where(SavedPrompt.id == saved_prompt_id, SavedPrompt.customer_email == email)
+    ).scalar_one_or_none()
+    if saved is None or saved.customer_email != email:
+        raise HTTPException(status_code=404, detail="Saved prompt not found")
+    db.delete(saved)
+    db.commit()
+    return Response(status_code=204)
+
+
+# ============== Images ==============
+
+@app.get("/images/{key}")
+def get_image(key: str = Path(pattern=r"^[0-9a-f]{32}\.png$")):  # == storage.KEY_RE
+    """Serve a generated PNG. Deliberately unauthenticated: <img> tags cannot send a
+    bearer, and the unguessable 32-hex key is the capability. Keys never change, so
+    the response is immutable for a year; anything not matching KEY_RE is rejected by
+    the path validator before storage is asked."""
+    try:
+        data = storage().get(key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Image not found")
+    return Response(
+        content=data,
+        media_type="image/png",
+        # keys are unique per image and never rewritten, so a year of immutable caching is safe
+        headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{key}"'},
+    )
