@@ -42,8 +42,25 @@ Every order leaves a 15-min inventory reservation that the expiry worker cancels
 | run | healthz p50 ms | p95 ms | max ms | failures | orders/s | error % |
 |-----|----------------|--------|--------|----------|----------|---------|
 | before (2026-09-18, 50 clients, 60 s) | 110.5 | 292.7 | 292.7 | 295 of 298 probes timed out | 1.7 | 100.0 (all 100 requests hit the 30 s client timeout) |
-| after | - | - | - | - | - | - |
+| after (2026-09-18, 50 clients, 60 s) | 31.3 | 129.2 | 769.9 | 0 of 287 | 86.8 | 98.14 (97 x 201, 5103 x 503 catalog circuit open, 10 x timeout — see below) |
+| after, 20 clients, 30 s | 49.6 | 104.1 | 262.4 | 0 of 150 | 39.1 | 0.0 |
 
 Before the fix the orders container did not recover on its own: with no liveness probe
 in compose it stayed parked in `pool_timeout=30` waits on the event loop at 0 % CPU and
 had to be restarted by hand.
+
+What changed between the rows: every SQLAlchemy call in an `async def` handler or
+lifespan loop now runs through `run_in_threadpool` / `asyncio.to_thread`, `/healthz` is a
+pure async handler, `/readyz` is bounded at 2 s, and every chart's probes carry
+`timeoutSeconds: 5` (the kubelet default is 1 s). The liveness probe is the deliverable:
+it answers throughout the run instead of timing out 295 times.
+
+The 50-client order error rate is a second, separate defect that the fix exposes rather
+than causes: FastAPI runs `def` handler bodies and response validation on one 40-token
+threadpool, and each service's pool is 8-10 connections with `pool_timeout=30`. When a
+burst parks 40 threads in pool waits, the connection holders cannot get a token to
+serialise their response and release the connection, so the whole batch fails after
+30 s (reproduced on catalog alone: 50 concurrent `/internal/resolve-prices` -> 10 x 200
+after 30.5 s, 40 x 500, ten sessions `idle in transaction` the whole time). Orders then
+opens its catalog circuit and answers 503 fast for the rest of the run. Below that
+threshold (20 clients) the pipeline is clean: 0 % errors at 39 orders/s.
