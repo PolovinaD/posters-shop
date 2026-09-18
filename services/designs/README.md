@@ -37,6 +37,7 @@ become a style profile that personalises later generations.
 | POST | /generations | Queue a generation; 202 + the `queued` row; 429 + `Retry-After` over the daily quota | Bearer |
 | GET | /generations | The caller's generations, newest first (`?limit=` 1..200, default 50) | Bearer |
 | GET | /generations/{id} | One generation (someone else's id is a 404) | Bearer |
+| GET | /admin/generations | Every customer's generations, newest first (`?limit=` 1..200, default 100; `?customer=` exact e-mail; `?status=` queued \| generating \| ready \| failed) | Owner |
 | POST | /generations/{id}/print | Create the catalog family + stock; 201 created / 200 already printed / 409 not ready / 502 downstream refusal / 503 outage or open breaker | Bearer |
 | GET, HEAD | /images/{key} | The generated PNG; `key` is 32 hex + `.png`; immutable for a year | - (the key is the capability) |
 | GET | /saved-prompts | The caller's saved prompts, newest first | Bearer |
@@ -69,6 +70,9 @@ In Kubernetes the whole service sits behind the frontend ingress at `/api/design
 | `started_at`, `finished_at` | The last attempt's window; `finished_at` is stamped after the provider call returns |
 | `purchased_at` | Set by the ORDER_PAID consumer when one of this design's variants was bought |
 | `catalog_product_sku`, `product_url` | `AI-{id}` and `/shop/product/AI-{id}` once printed |
+
+Rows of `GET /admin/generations` are `AdminGenerationOut` = `GenerationOut` +
+`customer_email` + `attempts` (provider attempts spent so far).
 
 `POST /generations/{id}/print` answers `{sku, product_url, created}`; the status code
 carries the idempotency (201 created now, 200 already existed).

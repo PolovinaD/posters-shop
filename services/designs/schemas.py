@@ -3,7 +3,8 @@
 GenerationOut mirrors the Generation row (from_attributes) plus two derived fields
 the route fills in: `image_url` (from image_key, never stored — the public prefix is
 deployment-specific) and `product_url` (from catalog_product_sku once "Print this"
-has run). OutboxEventPayload is the orders outbox envelope, verbatim from
+has run); AdminGenerationOut widens it with the owner-only `customer_email` and
+`attempts` for GET /admin/generations. OutboxEventPayload is the orders outbox envelope, verbatim from
 notifications, for the ORDER_PAID subscription (09-05).
 """
 from datetime import datetime
@@ -34,6 +35,13 @@ class GenerationOut(BaseModel):
     purchased_at: Optional[datetime] = None
     catalog_product_sku: Optional[str] = None
     product_url: Optional[str] = None        # filled by the route: /shop/product/{catalog_product_sku}
+
+
+class AdminGenerationOut(GenerationOut):
+    """One row of GET /admin/generations: GenerationOut plus who queued it and how
+    many provider attempts the worker has spent (owner-only fields)."""
+    customer_email: str
+    attempts: int = 0
 
 
 class SavedPromptCreate(BaseModel):

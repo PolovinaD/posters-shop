@@ -16,6 +16,7 @@ generation worker:
                                  (an <img> cannot send one; the 32-hex key is the capability)
   POST /events/order-paid        the orders outbox's third ORDER_PAID subscriber (D-07):
                                  service or owner token; DB-only and idempotent (events.py)
+  GET  /admin/generations        every customer's rows, newest first; owner only (?customer=, ?status=)
 
 The worker (worker.py) is started in lifespan with asyncio.create_task and cancelled
 on shutdown (production's job_worker shape).
@@ -29,6 +30,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +39,7 @@ from sqlalchemy.orm import Session
 
 import catalog_client
 import inventory_client
-from auth import get_current_user_claims
+from auth import get_current_user_claims, require_owner
 from circuit_breaker import CircuitOpenError
 from database import engine, get_db
 from events import process_order_paid
@@ -48,8 +50,8 @@ from printing import print_generation
 from providers import get_image_provider
 from quota import check_quota, quota_status
 from schemas import (
-    GenerationCreate, GenerationOut, OutboxEventPayload, PrintOut, QuotaOut, SavedPromptCreate,
-    SavedPromptOut, StyleProfileOut,
+    AdminGenerationOut, GenerationCreate, GenerationOut, OutboxEventPayload, PrintOut, QuotaOut,
+    SavedPromptCreate, SavedPromptOut, StyleProfileOut,
 )
 from service_auth import require_service_or_owner
 from storage import get_storage
@@ -156,10 +158,11 @@ def metrics():
 
 # ============== Generations ==============
 
-def to_out(gen: Generation) -> GenerationOut:
+def to_out(gen: Generation, model: type[GenerationOut] = GenerationOut) -> GenerationOut:
     """Row -> API shape. image_url is derived from image_key only once the image exists;
-    product_url once "Print this" has attached a catalog product."""
-    out = GenerationOut.model_validate(gen)
+    product_url once "Print this" has attached a catalog product. `model` lets the admin
+    route reuse the derivation for its wider AdminGenerationOut."""
+    out = model.model_validate(gen)
     if gen.status == "ready" and gen.image_key:
         out.image_url = f"{PUBLIC_URL_PREFIX}/{gen.image_key}"
     if gen.catalog_product_sku:
@@ -262,6 +265,29 @@ async def print_design(
         response.status_code = 200
     logger.info("Design printed", generation_id=generation_id, sku=sku, created=created)
     return PrintOut(sku=sku, product_url=f"{PRODUCT_URL_PREFIX}/{sku}", created=created)
+
+
+# ============== Admin ==============
+
+@app.get("/admin/generations", response_model=list[AdminGenerationOut])
+def admin_list_generations(
+    limit: int = Query(100, ge=1, le=200),
+    customer: Optional[str] = Query(None, description="Exact customer e-mail"),
+    status: Optional[str] = Query(None, pattern=r"^(queued|generating|ready|failed)$"),
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_owner),
+):
+    """Every customer's generations, newest first — the admin dashboard's Designs page.
+    Owner only; `customer` is an exact e-mail match, `status` one of the four states."""
+    query = select(Generation)
+    if customer:
+        query = query.where(Generation.customer_email == customer.strip())
+    if status:
+        query = query.where(Generation.status == status)
+    rows = db.execute(
+        query.order_by(desc(Generation.created_at), desc(Generation.id)).limit(limit)
+    ).scalars().all()
+    return [to_out(g, AdminGenerationOut) for g in rows]
 
 
 # ============== Quota ==============

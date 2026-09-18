@@ -761,7 +761,10 @@ Authorization: Bearer <token>
 | `failed` | `failure_reason` — the provider's refusal text, or a generic outage / configuration message |
 
 Someone else's `id` is a `404`, indistinguishable from a missing one. `GET /generations`
-lists the caller's rows newest first (`?limit=` 1..200).
+lists the caller's rows newest first (`?limit=` 1..200). The owner-only
+`GET /admin/generations` (called by the admin dashboard's `/designs` page) lists every
+customer's rows with the same shape plus `customer_email` and `attempts`, filterable by
+`?customer=` (exact e-mail) and `?status=` (`queued` | `generating` | `ready` | `failed`).
 
 ### Image
 
