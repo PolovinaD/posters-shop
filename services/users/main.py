@@ -1,3 +1,4 @@
+import asyncio
 import os
 import hashlib
 from datetime import datetime, UTC
@@ -29,6 +30,7 @@ from init_db import init_db
 from metrics import metrics_endpoint, track_metrics
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
 
 limiter = Limiter(key_func=get_remote_address)
@@ -54,16 +56,24 @@ def startup():
     init_db()
 
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
