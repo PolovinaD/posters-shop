@@ -193,6 +193,7 @@ load_or_generate_passwords() {
         export LOGISTICS_SVC_PASSWORD=$(read_or_generate LOGISTICS_SVC_PASSWORD)
         export INVENTORY_SVC_PASSWORD=$(read_or_generate INVENTORY_SVC_PASSWORD)
         export NOTIFICATIONS_SVC_PASSWORD=$(read_or_generate NOTIFICATIONS_SVC_PASSWORD)
+        export DESIGNS_SVC_PASSWORD=$(read_or_generate DESIGNS_SVC_PASSWORD)
         export DB_PASSWORD=$(read_or_generate DB_PASSWORD)
         export JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.JWT_SECRET // empty')
         [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32)
@@ -215,6 +216,7 @@ load_or_generate_passwords() {
     export LOGISTICS_SVC_PASSWORD=$(generate_password)
     export INVENTORY_SVC_PASSWORD=$(generate_password)
     export NOTIFICATIONS_SVC_PASSWORD=$(generate_password)
+    export DESIGNS_SVC_PASSWORD=$(generate_password)
     export DB_PASSWORD=$(generate_password)
     export JWT_SECRET=$(openssl rand -hex 32)
     # No STRIPE_WEBHOOK_SECRET here either — see the note on the load path above.
@@ -468,6 +470,7 @@ if [ "$DRY_RUN" = false ]; then
     "LOGISTICS_SVC_PASSWORD": "$LOGISTICS_SVC_PASSWORD",
     "INVENTORY_SVC_PASSWORD": "$INVENTORY_SVC_PASSWORD",
     "NOTIFICATIONS_SVC_PASSWORD": "$NOTIFICATIONS_SVC_PASSWORD",
+    "DESIGNS_SVC_PASSWORD": "$DESIGNS_SVC_PASSWORD",
     "DB_PASSWORD": "$DB_PASSWORD",
     "JWT_SECRET": "$JWT_SECRET",
     "STRIPE_WEBHOOK_SECRET": "$STRIPE_WEBHOOK_SECRET"
@@ -519,6 +522,37 @@ EOF
 EOF
 )
     store_secrets_in_aws "postershop/escrow" "$ESCROW_JSON"
+
+    # Image-provider keys for the designs service. Read-before-write, like the escrow key: an explicit OPENAI_API_KEY /
+    # REPLICATE_API_TOKEN in the environment wins, an existing value in postershop/designs is kept, and anything still
+    # unknown gets a self-describing placeholder — ESO refuses to sync a Secret with a missing property, and the designs
+    # chart marks both refs optional, so a placeholder means "fake provider" rather than a CreateContainerConfigError.
+    DESIGNS_PLACEHOLDER="MISSING-set-postershop/designs"
+    EXISTING_DESIGNS_JSON=$(aws secretsmanager get-secret-value --secret-id postershop/designs --region "$AWS_REGION" \
+        --query SecretString --output text 2>/dev/null || echo "{}")
+    DESIGNS_OPENAI_KEY="${OPENAI_API_KEY:-$(echo "$EXISTING_DESIGNS_JSON" | jq -r '.OPENAI_API_KEY // empty' 2>/dev/null || true)}"
+    DESIGNS_REPLICATE_TOKEN="${REPLICATE_API_TOKEN:-$(echo "$EXISTING_DESIGNS_JSON" | jq -r '.REPLICATE_API_TOKEN // empty' 2>/dev/null || true)}"
+    # A placeholder read back from AWS counts as "absent", so the warning repeats on every run instead of
+    # decaying into a fake success (the same rule lib/stripe-secret.sh applies to its placeholder).
+    [ "$DESIGNS_OPENAI_KEY" = "$DESIGNS_PLACEHOLDER" ] && DESIGNS_OPENAI_KEY=""
+    [ "$DESIGNS_REPLICATE_TOKEN" = "$DESIGNS_PLACEHOLDER" ] && DESIGNS_REPLICATE_TOKEN=""
+    [ -z "$DESIGNS_OPENAI_KEY" ] && DESIGNS_OPENAI_KEY="$DESIGNS_PLACEHOLDER"
+    [ -z "$DESIGNS_REPLICATE_TOKEN" ] && DESIGNS_REPLICATE_TOKEN="$DESIGNS_PLACEHOLDER"
+    DESIGNS_JSON=$(cat << EOF
+{
+    "OPENAI_API_KEY": "$DESIGNS_OPENAI_KEY",
+    "REPLICATE_API_TOKEN": "$DESIGNS_REPLICATE_TOKEN"
+}
+EOF
+)
+    store_secrets_in_aws "postershop/designs" "$DESIGNS_JSON"
+    if [ "$DESIGNS_OPENAI_KEY" = "$DESIGNS_PLACEHOLDER" ]; then
+        log_info "postershop/designs has no OpenAI key — designs will run the fake provider (set OPENAI_API_KEY and re-run to switch)"
+    else
+        log_info "postershop/designs carries an OpenAI key — designs will run IMAGE_PROVIDER=openai"
+    fi
+    # Read by deploy/lib/live-config.sh (build_helm_config_args designs) in Step 9.
+    export DESIGNS_IMAGE_PROVIDER=$([ "$DESIGNS_OPENAI_KEY" = "$DESIGNS_PLACEHOLDER" ] && echo fake || echo openai)
 
     log_success "Secrets stored in AWS Secrets Manager"
 else
@@ -655,6 +689,7 @@ CREATE SCHEMA IF NOT EXISTS production_schema;
 CREATE SCHEMA IF NOT EXISTS logistics_schema;
 CREATE SCHEMA IF NOT EXISTS inventory_schema;
 CREATE SCHEMA IF NOT EXISTS notifications_schema;
+CREATE SCHEMA IF NOT EXISTS designs_schema;
 
 -- Drop existing users if they exist (for idempotency)
 DROP USER IF EXISTS users_svc;
@@ -664,6 +699,7 @@ DROP USER IF EXISTS production_svc;
 DROP USER IF EXISTS logistics_svc;
 DROP USER IF EXISTS inventory_svc;
 DROP USER IF EXISTS notifications_svc;
+DROP USER IF EXISTS designs_svc;
 
 -- Create service users
 CREATE USER users_svc WITH PASSWORD '${USERS_SVC_PASSWORD}';
@@ -673,6 +709,7 @@ CREATE USER production_svc WITH PASSWORD '${PRODUCTION_SVC_PASSWORD}';
 CREATE USER logistics_svc WITH PASSWORD '${LOGISTICS_SVC_PASSWORD}';
 CREATE USER inventory_svc WITH PASSWORD '${INVENTORY_SVC_PASSWORD}';
 CREATE USER notifications_svc WITH PASSWORD '${NOTIFICATIONS_SVC_PASSWORD}';
+CREATE USER designs_svc WITH PASSWORD '${DESIGNS_SVC_PASSWORD}';
 
 -- Grant permissions - each service only accesses its own schema
 GRANT USAGE ON SCHEMA users_schema TO users_svc;
@@ -717,8 +754,14 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA notifications_schema TO notificatio
 ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON TABLES TO notifications_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON SEQUENCES TO notifications_svc;
 
+GRANT USAGE ON SCHEMA designs_schema TO designs_svc;
+GRANT ALL PRIVILEGES ON SCHEMA designs_schema TO designs_svc;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA designs_schema TO designs_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA designs_schema GRANT ALL ON TABLES TO designs_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA designs_schema GRANT ALL ON SEQUENCES TO designs_svc;
+
 -- Grant CREATE on database so Alembic can run CREATE SCHEMA IF NOT EXISTS in env.py
-GRANT CREATE ON DATABASE postershop TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc, notifications_svc;
+GRANT CREATE ON DATABASE postershop TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc, notifications_svc, designs_svc;
 
 -- Done
 SELECT 'Database initialization complete' as status;
@@ -805,7 +848,8 @@ if [ "$DRY_RUN" = false ]; then
     "PRODUCTION_DATABASE_URL": "postgresql://production_svc:${PRODUCTION_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dproduction_schema",
     "LOGISTICS_DATABASE_URL": "postgresql://logistics_svc:${LOGISTICS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dlogistics_schema",
     "INVENTORY_DATABASE_URL": "postgresql://inventory_svc:${INVENTORY_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dinventory_schema",
-    "NOTIFICATIONS_DATABASE_URL": "postgresql://notifications_svc:${NOTIFICATIONS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dnotifications_schema"
+    "NOTIFICATIONS_DATABASE_URL": "postgresql://notifications_svc:${NOTIFICATIONS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Dnotifications_schema",
+    "DESIGNS_DATABASE_URL": "postgresql://designs_svc:${DESIGNS_SVC_PASSWORD}@${RDS_HOST}:5432/postershop?options=-c%20search_path%3Ddesigns_schema"
 }
 EOF
 )
@@ -872,7 +916,7 @@ EOF
     # SecretSyncedError — and the failure only surfaced later, when deploy.sh
     # aborted. Fail here instead, and say why.
     SYNC_FAILED=()
-    for secret in postershop-db postershop-jwt postershop-stripe postershop-escrow; do
+    for secret in postershop-db postershop-jwt postershop-stripe postershop-escrow postershop-designs; do
         synced=false
         for i in {1..30}; do
             if kubectl get secret "$secret" -n "$NAMESPACE" &> /dev/null; then
@@ -911,7 +955,7 @@ if [ "$DRY_RUN" = false ]; then
     # Login to ECR
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
     
-    SERVICES="users catalog orders production logistics inventory payments notifications frontend infra"
+    SERVICES="users catalog orders production logistics inventory payments notifications designs frontend infra"
     
     for svc in $SERVICES; do
         log_info "Building $svc..."
@@ -1005,6 +1049,32 @@ if [ "$DRY_RUN" = false ]; then
         [ -z "$SES_IDENTITY" ] && log_info "  no verified SES identity in $SES_REGION"
         [ -z "$SA_ROLE" ] && log_info "  no IRSA-annotated 'notifications' ServiceAccount"
         log_info "  run ./deploy/ses-setup.sh <address> to enable real delivery"
+    fi
+
+    # Decide the designs image storage the same way: DETECT both halves that ./deploy/designs-setup.sh produces —
+    #   1. the S3 bucket exists (head-bucket succeeds under this account), and
+    #   2. a `designs` ServiceAccount carries an eks.amazonaws.com/role-arn annotation.
+    # Without both, images go to an emptyDir and are LOST on every pod restart (every printed product's image_url
+    # then dangles), so say so loudly instead of silently shipping a demo-only configuration.
+    # DESIGNS_IMAGE_PROVIDER was exported in Step 3 from the key in postershop/designs; deploy/lib/live-config.sh
+    # reads all five DESIGNS_* variables when it builds the helm --set arguments for the designs chart.
+    export DESIGNS_S3_BUCKET="${DESIGNS_S3_BUCKET:-postershop-designs-${AWS_ACCOUNT_ID}}"
+    export DESIGNS_S3_REGION="${DESIGNS_S3_REGION:-$AWS_REGION}"
+    export DESIGNS_STORAGE_BACKEND="local"
+    export DESIGNS_SA=""
+    DESIGNS_SA_ROLE=$(kubectl get sa designs -n "$NAMESPACE" \
+        -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null || echo "")
+    DESIGNS_BUCKET_EXISTS=false
+    aws s3api head-bucket --bucket "$DESIGNS_S3_BUCKET" --region "$DESIGNS_S3_REGION" &>/dev/null && DESIGNS_BUCKET_EXISTS=true
+    if [ "$DESIGNS_BUCKET_EXISTS" = true ] && [ -n "$DESIGNS_SA_ROLE" ]; then
+        export DESIGNS_STORAGE_BACKEND="s3"
+        export DESIGNS_SA="designs"
+        log_success "Designs storage: S3 bucket $DESIGNS_S3_BUCKET via IRSA ServiceAccount designs"
+    else
+        log_warn "Designs storage: LOCAL emptyDir — generated images do not survive a pod restart"
+        [ "$DESIGNS_BUCKET_EXISTS" = false ] && log_info "  no bucket $DESIGNS_S3_BUCKET in $DESIGNS_S3_REGION"
+        [ -z "$DESIGNS_SA_ROLE" ] && log_info "  no IRSA-annotated 'designs' ServiceAccount"
+        log_info "  run ./deploy/designs-setup.sh to enable S3 storage"
     fi
 
     # NOTE: Production CPU HPA (K8S-04) is deployed via Helm chart deploy/charts/production/templates/hpa.yaml
@@ -1136,6 +1206,15 @@ if [ "$DRY_RUN" = false ]; then
     echo "   - postershop/jwt       - JWT signing secret"
     echo "   - postershop/stripe    - Stripe API key (SECRET_KEY) + webhook signing secret (WEBHOOK_SECRET)"
     echo "   - postershop/escrow    - escrow owner private key (OWNER_PRIVATE_KEY) — stable across deploys"
+    echo "   - postershop/designs   - designs image-provider keys (OPENAI_API_KEY, REPLICATE_API_TOKEN; placeholders when unset)"
+    echo ""
+
+    # Designs storage, repeated here because the Step 9 warning scrolls away during a long deploy.
+    if [ "${DESIGNS_STORAGE_BACKEND:-local}" = "s3" ]; then
+        echo "🖼️  Designs storage: s3 (bucket ${DESIGNS_S3_BUCKET}, IRSA ServiceAccount designs); provider: ${DESIGNS_IMAGE_PROVIDER:-fake}"
+    else
+        echo "🖼️  Designs storage: local emptyDir — images are LOST on pod restart; run ./deploy/designs-setup.sh for S3; provider: ${DESIGNS_IMAGE_PROVIDER:-fake}"
+    fi
     echo ""
 
     # Important notes
