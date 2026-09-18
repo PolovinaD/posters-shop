@@ -157,6 +157,25 @@ def test_run_generation_success_writes_png(d, worker, tmp_path):
     d.metrics.GENERATIONS_TOTAL.labels.assert_called_with(provider="fake", status="ready")
 
 
+def test_run_generation_stamps_finished_at_after_the_provider_call(d, worker, tmp_path):
+    """finished_at (and retry_after) must be read AFTER the provider returns: a 12 s OpenAI
+    call stamped 2 ms after started_at was the live symptom (09-03)."""
+    factory, session = _session_factory()
+    store = d.storage.LocalStorage(tmp_path)
+
+    class Slow(d.providers.FakeProvider):
+        async def generate(self, prompt, user_ref):
+            await asyncio.sleep(0.05)
+            return await super().generate(prompt, user_ref)
+
+    before = datetime.now(timezone.utc)
+    status = asyncio.run(worker.run_generation(
+        _row("slow"), provider=Slow(), storage=store, breaker=_breaker(d), session_factory=factory,
+    ))
+    assert status == "ready"
+    assert session.get.return_value.finished_at >= before + timedelta(milliseconds=50)
+
+
 def test_run_generation_reject(d, worker, tmp_path):
     factory, session = _session_factory()
     store = d.storage.LocalStorage(tmp_path)

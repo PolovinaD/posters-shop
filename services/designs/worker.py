@@ -139,10 +139,10 @@ async def run_generation(
 
     No session exists while the provider runs; the outcome is persisted through a fresh
     one. Storage writes are sync (filesystem or boto3) and run in a thread (pitfall 7)."""
-    now = now or datetime.now(timezone.utc)
     gid, email, attempts = row["id"], row["customer_email"], int(row.get("attempts") or 1)
     prompt = row.get("effective_prompt") or row["prompt"]
     started = time.monotonic()
+    error = None
     try:
         png = await breaker.call(lambda: provider.generate(prompt, user_ref(email)))
         key = new_image_key()
@@ -150,11 +150,16 @@ async def run_generation(
         outcome = Outcome(status="ready", image_key=key)
         PROVIDER_LATENCY.labels(provider=provider.name).observe(time.monotonic() - started)
     except Exception as exc:
-        outcome = outcome_for_error(exc, attempts, now)
+        error = exc
+    # Read the clock AFTER the provider call: finished_at and retry_after must mark when the
+    # attempt ended, not when it began (a real provider takes 10-60 s; the fake one 60 ms).
+    now = now or datetime.now(timezone.utc)
+    if error is not None:
+        outcome = outcome_for_error(error, attempts, now)
         log = logger.warning if outcome.status == "queued" else logger.error
         log(
             "Generation attempt failed",
-            generation_id=gid, attempt=attempts, error=str(exc), error_type=type(exc).__name__,
+            generation_id=gid, attempt=attempts, error=str(error), error_type=type(error).__name__,
             outcome=outcome.status,
             retry_after=outcome.retry_after.isoformat() if outcome.retry_after else None,
         )
