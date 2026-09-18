@@ -35,6 +35,7 @@ React SPA providing both the customer-facing shop and admin panel.
 | `/production` | Print job management |
 | `/logistics` | Shipment tracking |
 | `/outbox` | Event outbox monitoring |
+| `/designs` | AI studio generations across all customers |
 | `/users` | User management |
 | `/infrastructure` | K8s cluster dashboard |
 

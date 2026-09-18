@@ -13,7 +13,8 @@ import {
   X,
   Store,
   ExternalLink,
-  Server
+  Server,
+  Sparkles
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -27,6 +28,7 @@ import Logistics from './pages/Logistics';
 import Outbox from './pages/Outbox';
 import UsersPage from './pages/Users';
 import Infrastructure from './pages/Infrastructure';
+import Designs from './pages/Designs';
 
 // Shop Pages
 import ShopLayout from './pages/shop/ShopLayout';
@@ -64,6 +66,7 @@ const navigation = [
   { name: 'Production', href: '/production', icon: Factory },
   { name: 'Logistics', href: '/logistics', icon: Truck },
   { name: 'Outbox', href: '/outbox', icon: Activity },
+  { name: 'Designs', href: '/designs', icon: Sparkles },
   { name: 'Users', href: '/users', icon: Users },
   { name: 'Infrastructure', href: '/infrastructure', icon: Server },
 ];
@@ -153,6 +156,7 @@ function AdminLayout({ children }) {
       '/production': 'Production - PosterShop Admin',
       '/logistics': 'Logistics - PosterShop Admin',
       '/outbox': 'Outbox - PosterShop Admin',
+      '/designs': 'Designs - PosterShop Admin',
       '/users': 'Users - PosterShop Admin',
     };
     document.title = titles[location.pathname] || 'PosterShop Admin';
@@ -209,6 +213,7 @@ export default function App() {
               <Route path="/production" element={<AdminLayout><Production /></AdminLayout>} />
               <Route path="/logistics" element={<AdminLayout><Logistics /></AdminLayout>} />
               <Route path="/outbox" element={<AdminLayout><Outbox /></AdminLayout>} />
+              <Route path="/designs" element={<AdminLayout><Designs /></AdminLayout>} />
               <Route path="/users" element={<AdminLayout><UsersPage /></AdminLayout>} />
               <Route path="/infrastructure" element={<AdminLayout><Infrastructure /></AdminLayout>} />
 

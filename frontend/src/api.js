@@ -283,6 +283,12 @@ export const designsApi = {
     }),
   getGeneration: (id) => authFetchJSON(`${API_BASE}/designs/generations/${id}`),
   listGenerations: (limit = 50) => authFetchJSON(`${API_BASE}/designs/generations?limit=${limit}`),
+  // Owner only: every customer's generations, newest first (admin /designs page).
+  // params: { limit?, customer?, status? } — pass only the filters that are set.
+  adminGenerations: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return authFetchJSON(`${API_BASE}/designs/admin/generations${query ? `?${query}` : ''}`);
+  },
   printGeneration: (id) =>
     authFetchJSON(`${API_BASE}/designs/generations/${id}/print`, { method: 'POST' }),
   listSavedPrompts: () => authFetchJSON(`${API_BASE}/designs/saved-prompts`),
