@@ -255,8 +255,10 @@ export default function Studio() {
       queryClient.invalidateQueries({ queryKey: ['quota'] });
       queryClient.invalidateQueries({ queryKey: ['designs'] });
     },
-    // 429 arrives as "Too many attempts, please wait N seconds." from authFetchJSON;
-    // 422 / 5xx carry the service's detail. Both are already human-readable.
+    // 429 arrives from authFetchJSON as the quota detail plus a human wait —
+    // "Daily limit of 10 generations reached — try again in 6 h 7 min (at 02:00)."
+    // (see rateLimitError in api.js); 422 / 5xx carry the service's detail.
+    // All are already human-readable.
     onError: (err) => setNotice({ tone: 'error', text: err.message }),
   });
 

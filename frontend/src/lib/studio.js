@@ -70,3 +70,45 @@ export function cardTitle(gen) {
   const p = (gen?.prompt ?? '').trim();
   return p.length > 48 ? `${p.slice(0, 48)}…` : p;
 }
+
+/**
+ * A Retry-After value as a human duration: "45 seconds" (singular "1 second"),
+ * "2 min", "1 h", "6 h 7 min". Whole seconds under a minute; above that the
+ * minutes are rounded UP so "try again in X" is never early (61 s → "2 min",
+ * 21985 s = 6 h 6 min 25 s → "6 h 7 min"); a zero minutes part is omitted.
+ * Anything that is not a non-negative number (null, "", "x", an HTTP-date)
+ * → null.
+ *
+ * @param {number|string|null|undefined} seconds
+ * @returns {string|null}
+ */
+export function formatWait(seconds) {
+  if (seconds === null || seconds === undefined || seconds === '') return null;
+  const s = Math.floor(Number(seconds));
+  if (!Number.isFinite(s) || s < 0) return null;
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'}`;
+  const minutes = Math.ceil(s / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/**
+ * "try again in 2 min" | "try again in 6 h 7 min (at 02:00)" — for waits
+ * longer than an hour the reset is also given as a wall-clock time in the
+ * reader's local zone, because "at 02:00" reads better than a countdown that
+ * long. null when the wait is unknown (see formatWait).
+ *
+ * @param {number|string|null|undefined} seconds
+ * @param {number} [now] epoch ms the wait counts from; defaults to Date.now()
+ * @returns {string|null}
+ */
+export function retryAfterText(seconds, now = Date.now()) {
+  const wait = formatWait(seconds);
+  if (wait === null) return null;
+  const s = Math.floor(Number(seconds));
+  if (s <= 3600) return `try again in ${wait}`;
+  const at = new Date(now + s * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `try again in ${wait} (at ${at})`;
+}

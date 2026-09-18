@@ -2,7 +2,25 @@
  * API Client for PosterShop Microservices
  */
 
+import { retryAfterText } from './lib/studio';
+
 const API_BASE = '/api';
+
+// The one Error every 429 becomes. The message leads with the server's own
+// `detail` when the body has one (designs: "Daily limit of 10 generations
+// reached"), else "Too many attempts" (slowapi on users login/register sends
+// {"error": ...}, nothing worth showing); then the Retry-After header as a
+// human wait — "… — try again in 6 h 7 min (at 02:00)." — or ", please wait a
+// moment." when the header is missing or unparseable.
+async function rateLimitError(response) {
+  const retryAfter = response.headers.get('Retry-After');
+  const body = await response.json().catch(() => ({}));
+  const detail = typeof body?.detail === 'string' && body.detail.trim()
+    ? body.detail.trim().replace(/\.$/, '')
+    : 'Too many attempts';
+  const wait = retryAfterText(retryAfter);
+  return new Error(wait ? `${detail} — ${wait}.` : `${detail}, please wait a moment.`);
+}
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, {
@@ -14,8 +32,7 @@ async function fetchJSON(url, options = {}) {
   });
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get('Retry-After');
-    throw new Error(retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.');
+    throw await rateLimitError(response);
   }
 
   if (!response.ok) {
@@ -65,9 +82,7 @@ export async function authFetchJSON(url, options = {}) {
 
   // Handle rate limiting (D-12)
   if (response.status === 429) {
-    const retryAfter = response.headers.get('Retry-After');
-    const waitMsg = retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.';
-    throw new Error(waitMsg);
+    throw await rateLimitError(response);
   }
 
   // Handle 401 with refresh (D-05, D-06)
@@ -353,8 +368,7 @@ export const usersApi = {
     });
     if (!response.ok) {
       if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        throw new Error(retryAfter ? `Too many attempts, please wait ${retryAfter} seconds.` : 'Too many attempts, please wait.');
+        throw await rateLimitError(response);
       }
       const error = await response.json().catch(() => ({ detail: 'Registration failed' }));
       throw new Error(error.detail || `HTTP ${response.status}`);
