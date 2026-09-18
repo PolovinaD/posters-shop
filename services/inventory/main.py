@@ -16,6 +16,7 @@ from database import Base, engine, get_db, SessionLocal
 from models import Stock, Reservation, SCHEMA_NAME
 from schemas import (
     StockCreate, StockUpdate, StockOut,
+    InternalStockCreate, InternalStockResult,
     ReserveRequest, ReserveResponse,
     ReleaseRequest, ReleaseResponse,
     CommitRequest, CommitResponse,
@@ -248,6 +249,28 @@ def create_stock(payload: StockCreate, db: Session = Depends(get_db), _: dict = 
     
     STOCK_LEVEL.labels(sku=stock.sku).set(stock.available)
     return stock
+
+
+@app.post("/internal/stock", response_model=InternalStockResult)
+def create_internal_stock(payload: InternalStockCreate, db: Session = Depends(get_db), _: dict = Depends(require_service_or_owner)):
+    """Create stock rows for SKUs that do not exist yet; existing SKUs are skipped,
+    not 400'd, so a retry after a partial failure is safe. Print-on-demand items
+    get a large fixed quantity (AI_POSTER_STOCK) — 'virtual stock'."""
+    wanted = list(dict.fromkeys(i.sku for i in payload.items))
+    existing = set(db.execute(select(Stock.sku).where(Stock.sku.in_(wanted))).scalars().all())
+    created, skipped = [], []
+    for item in payload.items:
+        if item.sku in existing or item.sku in created:
+            skipped.append(item.sku)
+            continue
+        db.add(Stock(sku=item.sku, name=item.name, available=item.available, reserved=0))
+        created.append(item.sku)
+    db.commit()
+    for item in payload.items:
+        if item.sku in created:
+            STOCK_LEVEL.labels(sku=item.sku).set(item.available)
+    logger.info("Internal stock created", created=created, skipped=skipped)
+    return InternalStockResult(created=created, skipped=skipped)
 
 
 @app.patch("/stock/{sku}", response_model=StockOut)

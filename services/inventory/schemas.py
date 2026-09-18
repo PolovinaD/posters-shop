@@ -9,6 +9,17 @@ class StockCreate(BaseModel):
     available: int = Field(default=0, ge=0)
 
 
+class InternalStockCreate(BaseModel):
+    """Bulk, idempotent stock creation for other services (designs' print-on-demand
+    'virtual stock')."""
+    items: list[StockCreate] = Field(min_length=1, max_length=50)
+
+
+class InternalStockResult(BaseModel):
+    created: list[str]
+    skipped: list[str]
+
+
 class StockUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     available: Optional[int] = Field(None, ge=0)
