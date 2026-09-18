@@ -69,7 +69,13 @@ fails on purpose, because a stack without escrow is a broken demo stack.
 The design flow needs the `designs` compose service on 8010 with `IMAGE_PROVIDER=fake`
 (the compose default): a real provider would cost money on every run, and the
 `[reject]` hook that drives the refusal step only exists on the fake provider. It
-skips nothing either — the owner account is quota-exempt, so repeated runs never 429.
+skips nothing either. The flow runs as the self-registered customer
+`studio-integration@example.com` (the `studio_http` fixture registers it on the
+first run and logs in afterwards); the owner is used only for `/seed` and the
+admin-only `POST /orders/{id}/pay`, so the owner's studio history stays clean.
+Each run makes one accepted generation (the `[reject]` one fails and does not
+count), so the 10/day quota allows ten runs per UTC day, after which the
+generation step fails with a 429 message until midnight.
 
 Integration tests seed catalog and inventory via POST /seed before running.
 They poll the orders service for up to 30s waiting for status transitions and

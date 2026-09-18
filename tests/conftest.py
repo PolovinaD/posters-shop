@@ -8,6 +8,13 @@ import httpx
 OWNER_EMAIL = "admin@postershop.com"
 OWNER_PASSWORD = "admin1234"
 
+# Dedicated customer for the AI studio integration flow. It self-registers on
+# the first run (POST /register hardcodes role="customer") and logs in on every
+# run after that, so the generations, AI-* products and orders the suite makes
+# land in its own studio history rather than in the owner's "My designs".
+STUDIO_CUSTOMER_EMAIL = "studio-integration@example.com"
+STUDIO_CUSTOMER_PASSWORD = "studio-integration-pass"
+
 
 @pytest.fixture(scope="session")
 def users_url():
@@ -78,6 +85,45 @@ def http(owner_token):
     with httpx.Client(
         timeout=10.0,
         headers={"Authorization": f"Bearer {owner_token}"},
+    ) as client:
+        yield client
+
+
+@pytest.fixture(scope="session")
+def studio_customer_token(users_url):
+    """Register (first run) or log in (later runs) as the studio customer.
+
+    POST /register returns a TokenOut on success and 400 "Email already
+    registered" on a repeat, in which case POST /login with the same body
+    yields the token instead.
+    """
+    body = {"email": STUDIO_CUSTOMER_EMAIL, "password": STUDIO_CUSTOMER_PASSWORD}
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.post(f"{users_url}/register", json=body)
+        if resp.status_code in (200, 201):
+            return resp.json()["access_token"]
+        if resp.status_code == 400:
+            resp = client.post(f"{users_url}/login", json=body)
+            if resp.status_code == 200:
+                return resp.json()["access_token"]
+        pytest.fail(
+            f"Could not register or log in as the studio customer "
+            f"{STUDIO_CUSTOMER_EMAIL}: {resp.status_code} {resp.text}. The users "
+            f"service must be up for the integration tests; is the stack up?"
+        )
+
+
+@pytest.fixture(scope="session")
+def studio_http(studio_customer_token):
+    """HTTP client carrying the studio customer's bearer token on every request.
+
+    A plain customer, not the owner: the 10 accepted generations per UTC day
+    quota applies (failed generations do not count). Used so the design flow
+    never writes into the owner's studio history.
+    """
+    with httpx.Client(
+        timeout=10.0,
+        headers={"Authorization": f"Bearer {studio_customer_token}"},
     ) as client:
         yield client
 

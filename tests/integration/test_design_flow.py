@@ -16,8 +16,19 @@ Flow (the studio page, without a browser):
   designs -> the generation gets `purchased_at` -> the style profile refresh
   counts the purchase -> a `[reject]` prompt ends `failed` with the reason.
 
-Idempotent across runs: every run makes fresh generations, the owner account is
-quota-exempt (D-14) and the seeds are no-ops without `force`.
+Who runs it: the customer-side steps run as `studio-integration@example.com`
+(`studio_http`, self-registered on the first run and logged in afterwards), so
+the owner's "My designs" never fills up with test rows. The owner (`http`) is
+used only to seed and to hit the admin-only `POST /orders/{id}/pay` shortcut.
+The ORDER_PAID handler in designs attributes the purchase to the order's
+customer, which is the JWT sub of whoever CREATED the order — so the order must
+be the studio customer's; the owner may pay it.
+
+Idempotent across runs: every run makes fresh generations and the seeds are
+no-ops without `force`. The studio customer is a plain customer, so the 10 per
+UTC day quota applies: one accepted generation per run (the `[reject]` one fails
+and does not count), so ten runs per UTC day before the generation step 429s
+until midnight.
 
 Run with:
     pytest tests/integration/test_design_flow.py -v -s
@@ -28,11 +39,11 @@ from decimal import Decimal
 
 import httpx
 
+from tests.conftest import STUDIO_CUSTOMER_EMAIL
 from tests.integration.test_order_flow import (
     POLL_INTERVAL,
     POLL_TIMEOUT,
     POST_PRODUCTION_STATES,
-    TEST_CUSTOMER_EMAIL,
     TEST_SHIPPING_ADDRESS,
     wait_for_any_status,
 )
@@ -91,59 +102,66 @@ def wait_for_purchase(client: httpx.Client, designs_url: str, gen_id: int) -> di
 # Integration tests
 # ---------------------------------------------------------------------------
 
-def test_generate_print_order_paid_purchased(http, designs_url, catalog_url,
+def test_generate_print_order_paid_purchased(http, studio_http, designs_url, catalog_url,
                                              inventory_url, orders_url):
     """
     generate -> ready -> image served -> print -> unlisted family -> order ->
     pay -> production consumed it -> designs consumed it (purchased_at) ->
     style profile counts the purchase -> a refused prompt fails with a reason.
+
+    `studio_http` (studio-integration@example.com) does everything a customer
+    would; `http` (the owner) only seeds and pays — the two require_owner steps.
     """
-    # Step 1: seed (idempotent WITHOUT force — force=true would wipe the AI-* families)
+    # Step 1: seed as the owner (idempotent WITHOUT force — force=true would wipe the AI-* families)
     for url in (f"{catalog_url}/seed", f"{inventory_url}/seed"):
         seed = http.post(url)
         assert seed.status_code in (200, 201), f"Seed failed: {url} {seed.status_code} {seed.text}"
 
-    # Step 2: queue a generation — 202 + a queued row
-    create = http.post(
+    # Step 2: queue a generation as the studio customer — 202 + a queued row
+    create = studio_http.post(
         f"{designs_url}/generations",
         json={"prompt": "integration test poster: geometric lighthouse at dusk"},
     )
-    assert create.status_code == 202, f"POST /generations: {create.status_code} {create.text}"
+    assert create.status_code == 202, (
+        f"POST /generations: {create.status_code} {create.text}"
+        f" (429 = {STUDIO_CUSTOMER_EMAIL} hit its 10/day quota; it resets at UTC midnight)"
+    )
     queued = create.json()
     gen_id = queued["id"]
     assert queued["status"] == "queued", queued
     assert queued["image_url"] is None, queued
 
     # Step 3: the worker + fake provider make it ready; the PNG is served publicly
-    gen = wait_for_generation(http, designs_url, gen_id)
+    gen = wait_for_generation(studio_http, designs_url, gen_id)
     assert gen.get("status") == "ready", (
         f"Generation {gen_id} did not become ready within {POLL_TIMEOUT}s: {gen}"
     )
     image_url = gen["image_url"]
     assert image_url and IMAGE_URL_RE.match(image_url), f"Unexpected image_url: {image_url!r}"
     key = image_url.rsplit("/", 1)[1]
-    image = http.get(f"{designs_url}/images/{key}")
+    image = studio_http.get(f"{designs_url}/images/{key}")
     assert image.status_code == 200, f"GET /images/{key}: {image.status_code}"
     assert image.headers["content-type"].startswith("image/png"), image.headers
     assert image.content.startswith(b"\x89PNG"), image.content[:8]
     print(f"\n  generation {gen_id} ready: {image_url} ({len(image.content)} bytes)")
 
     # Step 4: print this — 201 on creation, 200 + created=false on the repeat
-    printed = http.post(f"{designs_url}/generations/{gen_id}/print")
+    printed = studio_http.post(f"{designs_url}/generations/{gen_id}/print")
     assert printed.status_code == 201, f"print: {printed.status_code} {printed.text}"
     assert printed.json() == {
         "sku": f"AI-{gen_id}",
         "product_url": f"/shop/product/AI-{gen_id}",
         "created": True,
     }, printed.json()
-    again = http.post(f"{designs_url}/generations/{gen_id}/print")
+    again = studio_http.post(f"{designs_url}/generations/{gen_id}/print")
     assert again.status_code == 200, f"repeat print: {again.status_code} {again.text}"
     assert again.json()["created"] is False, again.json()
     assert again.json()["sku"] == f"AI-{gen_id}", again.json()
 
     # Step 5: the catalog family exists by SKU, is unlisted, and never leaks into the grid
+    # (public GETs — the studio client is used for uniformity, any client would do)
     family_sku = f"AI-{gen_id}"
-    product_resp = http.get(f"{catalog_url}/products/{family_sku}")
+    product_resp = studio_http.get(f"{catalog_url}/products/{family_sku}")
     assert product_resp.status_code == 200, f"GET /products/{family_sku}: {product_resp.text}"
     product = product_resp.json()
     assert product["listed"] is False, product
@@ -155,21 +173,23 @@ def test_generate_print_order_paid_purchased(http, designs_url, catalog_url,
         variant = variants[f"AI-{gen_id}-{size}"]
         assert Decimal(str(variant["price"])) == LADDER[size], (size, variant["price"])
         assert variant["in_stock"] is True, variant
-    listed = http.get(f"{catalog_url}/products")
+    listed = studio_http.get(f"{catalog_url}/products")
     assert listed.status_code == 200, listed.text
     leaked = [p["sku"] for p in listed.json() if p["sku"].startswith("AI-")]
     assert not leaked, f"Unlisted AI families leaked into GET /products: {leaked}"
-    categories = http.get(f"{catalog_url}/categories")
+    categories = studio_http.get(f"{catalog_url}/categories")
     assert categories.status_code == 200, categories.text
     assert "Custom" not in categories.json(), categories.json()
     print(f"  {family_sku} printed: unlisted, 4 variants on the ladder, hidden from the grid")
 
-    # Step 6: an ordinary order for the A3 variant through the untouched orders service
+    # Step 6: an ordinary order for the A3 variant through the untouched orders service.
+    # Created by the STUDIO customer: designs attributes the ORDER_PAID purchase to the
+    # order's customer_email, which orders takes from the JWT sub, not from this body.
     variant_sku = f"AI-{gen_id}-{ORDERED_SIZE}"
-    order_resp = http.post(
+    order_resp = studio_http.post(
         f"{orders_url}/orders",
         json={
-            "customer_email": TEST_CUSTOMER_EMAIL,   # replaced by the JWT sub (the owner)
+            "customer_email": STUDIO_CUSTOMER_EMAIL,   # replaced by the JWT sub (the studio customer)
             "shipping_address": TEST_SHIPPING_ADDRESS,
             "items": [{"sku": variant_sku, "name": "ignored", "quantity": 1, "unit_price": 0.01}],
         },
@@ -178,20 +198,22 @@ def test_generate_print_order_paid_purchased(http, designs_url, catalog_url,
     order = order_resp.json()
     order_id = order["id"]
     assert order["status"] == "reserved", order
+    assert order["customer_email"] == STUDIO_CUSTOMER_EMAIL, order
     assert abs(float(order["total_amount"]) - float(LADDER[ORDERED_SIZE])) < 0.01, order["total_amount"]
     item_name = order["items"][0]["name"]
     assert item_name.startswith("Custom: ") and item_name.endswith(f"({ORDERED_SIZE})"), item_name
 
-    # Step 7: pay — ORDER_PAID hits the outbox; production still drives it past PAID
+    # Step 7: pay as the owner (the admin-dashboard shortcut past Stripe is require_owner) —
+    # ORDER_PAID hits the outbox; production still drives it past PAID
     pay = http.post(f"{orders_url}/orders/{order_id}/pay")
     assert pay.status_code in (200, 201), f"pay: {pay.status_code} {pay.text}"
     assert pay.json()["status"] == "paid", pay.json()
-    observed = wait_for_any_status(http, orders_url, order_id, POST_PRODUCTION_STATES)
+    observed = wait_for_any_status(studio_http, orders_url, order_id, POST_PRODUCTION_STATES)
     assert observed, f"Order {order_id} never left 'paid' within {POLL_TIMEOUT}s (production path)"
     print(f"  order {order_id} for {variant_sku}: paid -> {observed} through the unchanged pipeline")
 
     # Step 8: the third ORDER_PAID subscriber — designs stamps purchased_at on its own SKU
-    bought = wait_for_purchase(http, designs_url, gen_id)
+    bought = wait_for_purchase(studio_http, designs_url, gen_id)
     assert bought.get("purchased_at"), (
         f"Generation {gen_id} has no purchased_at within {POLL_TIMEOUT}s — "
         f"the outbox did not deliver ORDER_PAID to designs: {bought}"
@@ -200,7 +222,7 @@ def test_generate_print_order_paid_purchased(http, designs_url, catalog_url,
     print(f"  purchased_at set on generation {gen_id}: {bought['purchased_at']}")
 
     # Step 9: the style profile sees the purchase (deterministic summariser on fake)
-    profile = http.post(f"{designs_url}/me/style-profile/refresh")
+    profile = studio_http.post(f"{designs_url}/me/style-profile/refresh")
     assert profile.status_code == 200, f"refresh: {profile.status_code} {profile.text}"
     prof = profile.json()
     assert prof["purchase_count"] >= 1, prof
@@ -209,17 +231,17 @@ def test_generate_print_order_paid_purchased(http, designs_url, catalog_url,
     assert isinstance(prof["summary"], str) and prof["summary"].strip(), prof
 
     # Step 10: a refused prompt fails with the vendor's reason and no image
-    reject = http.post(
+    reject = studio_http.post(
         f"{designs_url}/generations",
         json={"prompt": "[reject] anything", "personalise": True},
     )
     assert reject.status_code == 202, f"POST /generations [reject]: {reject.status_code} {reject.text}"
     reject_id = reject.json()["id"]
-    failed = wait_for_generation(http, designs_url, reject_id)
+    failed = wait_for_generation(studio_http, designs_url, reject_id)
     assert failed.get("status") == "failed", f"[reject] generation did not fail: {failed}"
     assert failed["failure_reason"] and "rejected" in failed["failure_reason"], failed
     assert failed["image_url"] is None, failed
-    history = http.get(f"{designs_url}/generations")
+    history = studio_http.get(f"{designs_url}/generations")
     assert history.status_code == 200, history.text
     ids = [g["id"] for g in history.json()]
     assert reject_id in ids and gen_id in ids, ids
@@ -246,23 +268,23 @@ def test_studio_routes_require_auth(anon_http, designs_url):
     assert anon_http.get(f"{designs_url}/healthz").status_code == 200
 
 
-def test_saved_prompts_roundtrip(http, designs_url):
+def test_saved_prompts_roundtrip(studio_http, designs_url):
     """Saved prompts (memory tier 1): create -> listed -> delete 204 -> gone."""
-    created = http.post(
+    created = studio_http.post(
         f"{designs_url}/saved-prompts",
         json={"title": "Integration round trip", "prompt": "a saved prompt for the round trip"},
     )
     assert created.status_code == 201, f"POST /saved-prompts: {created.status_code} {created.text}"
     saved_id = created.json()["id"]
 
-    listed = http.get(f"{designs_url}/saved-prompts")
+    listed = studio_http.get(f"{designs_url}/saved-prompts")
     assert listed.status_code == 200, listed.text
     assert saved_id in [s["id"] for s in listed.json()], listed.json()
 
-    deleted = http.delete(f"{designs_url}/saved-prompts/{saved_id}")
+    deleted = studio_http.delete(f"{designs_url}/saved-prompts/{saved_id}")
     assert deleted.status_code == 204, f"DELETE: {deleted.status_code} {deleted.text}"
     assert deleted.content == b"", deleted.content
 
-    after = http.get(f"{designs_url}/saved-prompts")
+    after = studio_http.get(f"{designs_url}/saved-prompts")
     assert after.status_code == 200, after.text
     assert saved_id not in [s["id"] for s in after.json()], after.json()
