@@ -29,6 +29,7 @@ from metrics import (
     STOCK_LEVEL, ACTIVE_RESERVATIONS, RESERVATIONS_EXPIRED
 )
 from logger import get_logger, LoggingMiddleware
+from bulkhead import BulkheadMiddleware, bulkhead_limit, bulkhead_queue_timeout
 from service_auth import internal_headers, require_service_or_owner
 from auth import require_owner
 
@@ -172,6 +173,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"{SERVICE_NAME} service", lifespan=lifespan, root_path=ROOT_PATH)
+# First add_middleware = innermost: a request reaches the bulkhead only after CORS, the
+# metrics middleware and the request log have seen it, so a shed request is still logged
+# with its correlation id and counted in http_requests_total. Limit = pool_size +
+# max_overflow (BULKHEAD_LIMIT overrides), queue bounded by BULKHEAD_QUEUE_TIMEOUT (10 s).
+app.add_middleware(
+    BulkheadMiddleware,
+    limit=bulkhead_limit(engine),
+    queue_timeout=bulkhead_queue_timeout(),
+)
 app.add_middleware(LoggingMiddleware)
 app.middleware("http")(track_metrics)
 
