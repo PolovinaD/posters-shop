@@ -59,7 +59,7 @@ def main() -> int:
 async def run(args, token: str, body: dict) -> dict:
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     deadline = time.perf_counter() + args.duration
-    orders: list[tuple[int, float]] = []
+    orders: list[tuple[int, float, bool]] = []   # (status, ms, shed)
     healthz: list[float] = []
     failures = [0]
     auth = {"Authorization": f"Bearer {token}"}
@@ -76,10 +76,12 @@ async def run(args, token: str, body: dict) -> dict:
         )
     elapsed = args.duration
     by_status: dict[str, int] = {}
-    for status, _ in orders:
+    for status, _, _ in orders:
         by_status[str(status)] = by_status.get(str(status), 0) + 1
-    order_lat = sorted(ms for _, ms in orders)
-    errors = sum(1 for status, _ in orders if status != 201)
+    order_lat = sorted(ms for _, ms, _ in orders)
+    created = sum(1 for status, _, _ in orders if status == 201)
+    shed = sum(1 for _, _, s in orders if s)   # 503 + Retry-After: a bulkhead shed, not an error
+    errors = len(orders) - created - shed
     return {
         "base": args.base,
         "clients": args.clients,
@@ -96,6 +98,10 @@ async def run(args, token: str, body: dict) -> dict:
             "total": len(orders),
             "by_status": dict(sorted(by_status.items())),
             "per_second": round(len(orders) / elapsed, 1),
+            "created": created,
+            "created_per_second": round(created / elapsed, 1),
+            "shed": shed,
+            "shed_pct": round(100.0 * shed / len(orders), 2) if orders else None,
             "error_rate_pct": round(100.0 * errors / len(orders), 2) if orders else None,
             "p50_ms": percentile(order_lat, 50),
             "p95_ms": percentile(order_lat, 95),
@@ -109,9 +115,10 @@ async def writer(client, base, body, auth, deadline, out: list) -> None:
         try:
             r = await client.post(f"{base}/orders", json=body, headers=auth)
             status = r.status_code
+            shed = status == 503 and "retry-after" in r.headers
         except httpx.HTTPError:
-            status = 0
-        out.append((status, (time.perf_counter() - t) * 1000))
+            status, shed = 0, False
+        out.append((status, (time.perf_counter() - t) * 1000, shed))
 
 
 async def sampler(probe, base, interval, deadline, out: list, failures: list) -> None:
@@ -170,8 +177,8 @@ def report(s: dict) -> None:
     print(f"command:   {s['command']}")
     print(f"target:    {s['base']}  clients={s['clients']}  duration={s['duration']}s  started={s['started_at']}")
     print(f"healthz:   samples={h['samples']:<5} failures={h['failures']:<4} p50={h['p50_ms']} ms  p95={h['p95_ms']} ms  max={h['max_ms']} ms")
-    print(f"orders:    total={o['total']:<6} per_second={o['per_second']:<7} error_rate={o['error_rate_pct']}%  p50={o['p50_ms']} ms  p95={o['p95_ms']} ms")
-    print(f"           by_status={o['by_status']}")
+    print(f"orders:    total={o['total']:<6} per_second={o['per_second']:<7} created/s={o['created_per_second']:<7} error_rate={o['error_rate_pct']}%  p50={o['p50_ms']} ms  p95={o['p95_ms']} ms")
+    print(f"           shed={o['shed']} ({o['shed_pct']}%, 503 + Retry-After, excluded from error_rate)  by_status={o['by_status']}")
 
 
 def parse_args() -> argparse.Namespace:
