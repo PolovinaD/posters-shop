@@ -9,7 +9,9 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=5,
-    pool_timeout=30,
+    # bulkhead.py admits at most pool_size + max_overflow requests at once, so a wait
+    # here is a fault, not a burst: fail in 5 s instead of parking a thread for 30 s.
+    pool_timeout=5,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
