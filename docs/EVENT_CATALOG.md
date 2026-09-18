@@ -25,7 +25,7 @@ Events are delivered using the **Transactional Outbox Pattern**:
 ### ORDER_PAID
 
 **Producer:** Orders Service  
-**Consumers:** Production Service, Notifications Service  
+**Consumers:** Production Service, Notifications Service, Designs Service  
 **Trigger:** The order reaches `paid` through `order_paid.mark_order_paid`
 (`services/orders/order_paid.py`) — from the Stripe `checkout.session.completed` webhook,
 from escrow `POST /orders/{id}/escrow/verify`, or from the escrow reconciler. All three
@@ -56,6 +56,16 @@ contract address for an escrow order (`mark_order_paid`'s `payment_ref`).
 - Idempotency: Checks if job already exists for order_id before creating
 - Notifications service sends the order-confirmation email
 - Idempotency: `notifications_schema.processed_events` lookup by `event_id` (durable, shared across replicas)
+- Designs service (`POST /events/order-paid`, `services/designs/events.py`): for every item whose
+  SKU is one of its own print-on-demand variants (`AI-{id}-{size}`) it sets `purchased_at` on
+  generation `{id}` (once, never overwritten); every item — own design or ordinary poster — becomes
+  a `designs_schema.purchases` row (unique on `(order_id, sku)`); the customer's style profile is
+  marked `stale` so the next personalised generation or `POST /me/style-profile/refresh` rebuilds it.
+  Only `customer_email` and `items[].sku/name` are read. The handler is DB-only (no provider call)
+  and answers 200 for every business case — unknown SKUs, an empty `items`, a re-delivery — so it
+  stays inside the 10 s delivery timeout and never makes the outbox re-deliver to the other two
+- Idempotency: `designs_schema.processed_events` lookup by `event_id`, recorded with
+  `INSERT ... ON CONFLICT DO NOTHING` in the same commit as the purchases
 
 ---
 
@@ -164,8 +174,10 @@ status change to `delivered`
 │   │               │                 │               │           │                  │   │
 │   │  Order Paid   │─ ORDER_PAID ───▶│  Create Job   │           │                  │   │
 │   │               │   (outbox)      │   (queued)    │           │                  │   │
-│   │               │   └─────────────────────────────────────── ▶│  Confirmation    │   │
-│   │               │                 │               │           │  email           │   │
+│   │               │   ├─────────────────────────────────────── ▶│  Confirmation    │   │
+│   │               │   │             │               │           │  email           │   │
+│   │               │   └──▶ Designs Service: purchased_at on own AI-{id}-{size},    │   │
+│   │               │        purchases row per item, style profile marked stale      │   │
 │   │               │                 │               │           │                  │   │
 │   │  Order        │─ ORDER_CANCELLED│  Cancel Job   │           │                  │   │
 │   │  Cancelled    │   (outbox)  ───▶│  (if queued)  │           │                  │   │
@@ -179,8 +191,9 @@ status change to `delivered`
 │   │  Delivered    │   (outbox)      │               │           │                  │   │
 │   └───────────────┘                 └───────────────┘           └──────────────────┘   │
 │                                                                                         │
-│   ORDER_PAID and ORDER_CANCELLED fan out to BOTH consumers (publish-subscribe).          │
-│   ORDER_SHIPPED and ORDER_DELIVERED have a single consumer.                             │
+│   ORDER_PAID fans out to THREE consumers (production, notifications, designs) and       │
+│   ORDER_CANCELLED to two (publish-subscribe). ORDER_SHIPPED and ORDER_DELIVERED have a   │
+│   single consumer.                                                                      │
 │                                                                                         │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -233,13 +246,15 @@ Subscribers are configured in `services/orders/outbox.py`:
 
 ```python
 NOTIFICATIONS_SERVICE_URL = os.getenv("NOTIFICATIONS_SERVICE_URL", "http://notifications:8000")
+DESIGNS_SERVICE_URL = os.getenv("DESIGNS_SERVICE_URL", "http://designs:8000")
 
-# ORDER_PAID / ORDER_CANCELLED fan out to BOTH production and notifications;
-# ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
+# ORDER_PAID fans out to production, notifications AND designs; ORDER_CANCELLED to
+# production and notifications; ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
 EVENT_SUBSCRIBERS = {
     "ORDER_PAID": [
         os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-paid",
         NOTIFICATIONS_SERVICE_URL + "/events/order-paid",
+        DESIGNS_SERVICE_URL + "/events/order-paid",
     ],
     "ORDER_CANCELLED": [
         os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-cancelled",
@@ -254,7 +269,7 @@ EVENT_SUBSCRIBERS = {
 }
 ```
 
-Four event types across six subscriber URLs. Subscriber base URLs are read from
+Four event types across seven subscriber URLs. Subscriber base URLs are read from
 environment variables so the same map works in docker-compose and in Kubernetes.
 
 ---
@@ -303,15 +318,18 @@ emit_event(
    matters more now that email delivery rides the outbox: a subscriber outage
    longer than the retry window silently drops customer email.
 2. **No Event Idempotency** - Consumers should check for duplicates but don't have a
-   standardized mechanism; production and notifications each rolled their own. Both now
-   dedup against the database — production looks up the existing job for the order,
-   notifications selects `notifications_schema.processed_events` by `event_id` and records
-   the row with `INSERT ... ON CONFLICT DO NOTHING` after a successful send. The residual
-   is notifications' send-then-record window: a crash between handing the mail to the
-   provider and writing the row re-sends it on redelivery.
+   standardized mechanism; production, notifications and designs each rolled their own.
+   All three now dedup against the database — production looks up the existing job for the
+   order, notifications selects `notifications_schema.processed_events` by `event_id` and
+   records the row with `INSERT ... ON CONFLICT DO NOTHING` after a successful send, designs
+   does the same in `designs_schema.processed_events` inside the one commit that applies the
+   event (plus `uq_purchases_order_sku` as a second guard). The residual is notifications'
+   send-then-record window: a crash between handing the mail to the provider and writing
+   the row re-sends it on redelivery.
 3. **Retry Is Per-Event, Not Per-Subscriber** - Fan-out to multiple consumers is in
-   use (`ORDER_PAID` and `ORDER_CANCELLED` each go to two services), but the retry
-   unit is the whole event, not the individual subscriber. If any one subscriber
+   use (`ORDER_PAID` goes to three services, `ORDER_CANCELLED` to two), but the retry
+   unit is the whole event, not the individual subscriber. A designs outage therefore
+   re-delivers `ORDER_PAID` to production and notifications too — their dedup absorbs it. If any one subscriber
    fails, the entire event is retried and **re-delivered to subscribers that had
    already succeeded**. Consumers must therefore be idempotent even when they are
    themselves healthy.

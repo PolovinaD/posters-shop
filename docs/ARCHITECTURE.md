@@ -2,7 +2,7 @@
 
 ## System Overview
 
-The shop-platform is a microservices-based e-commerce system for selling custom posters. It demonstrates event-driven architecture patterns including the transactional outbox pattern for reliable messaging.
+The shop-platform is a microservices-based e-commerce system for selling custom posters: ten Python/FastAPI services (eight database-backed, plus the stateless payments and infra), one React SPA, a Ganache node and a PostgreSQL instance with a schema per service. It demonstrates event-driven architecture patterns including the transactional outbox pattern for reliable messaging, and — since the AI poster studio — an asynchronous job worker behind a swappable external provider.
 
 ---
 
@@ -30,6 +30,7 @@ graph TB
         LOGISTICS[Logistics Service<br/>Shipping]
         PAYMENTS[Payments Service<br/>Stripe Checkout<br/>Ethereum escrow]
         NOTIFICATIONS[Notifications Service<br/>Transactional email<br/>event dedup]
+        DESIGNS[Designs Service<br/>AI poster studio<br/>async generation worker]
     end
     
     subgraph "Infrastructure"
@@ -49,13 +50,19 @@ graph TB
     ALB --> PRODUCTION
     ALB --> LOGISTICS
     ALB --> PAYMENTS
+    ALB --> DESIGNS
     ALB --> INFRA
     
     ORDERS -->|sync| INVENTORY
     ORDERS -->|sync| PAYMENTS
     ORDERS -.->|outbox| PRODUCTION
     ORDERS -.->|outbox| NOTIFICATIONS
+    ORDERS -.->|outbox ORDER_PAID| DESIGNS
     NOTIFICATIONS -->|SES via IRSA| SES[AWS SES]
+    DESIGNS -->|sync /internal/products| CATALOG
+    DESIGNS -->|sync /internal/stock| INVENTORY
+    DESIGNS -->|Images API / chat| OPENAI[OpenAI or Replicate<br/>fake provider locally]
+    DESIGNS -->|S3 via IRSA| S3[AWS S3<br/>local volume in compose]
     PRODUCTION -->|sync| ORDERS
     PRODUCTION -->|sync| LOGISTICS
     LOGISTICS -->|sync| ORDERS
@@ -70,7 +77,19 @@ graph TB
     PRODUCTION --> PG
     LOGISTICS --> PG
     NOTIFICATIONS --> PG
+    DESIGNS --> PG
 ```
+
+**Designs is the one service with an external, paid dependency and an asynchronous job
+queue.** `POST /generations` inserts a `queued` row and answers 202; a worker task in
+the same process claims rows with `FOR UPDATE SKIP LOCKED`, calls the image provider
+through a circuit breaker with no DB session held, writes the PNG to storage and marks
+the row `ready` (or `failed` with a customer-visible reason). The provider is chosen by
+`IMAGE_PROVIDER` — `fake` (Pillow, the compose default), `openai` (Images API) or
+`replicate` — behind one `ImageProvider` ABC, so compose and the tests need no key.
+Storage is a second ABC: a local volume in compose, a private S3 bucket via IRSA on EKS,
+with the service itself serving `GET /images/{key}`. See the
+[AI Poster Studio Flow](#ai-poster-studio-flow) below.
 
 **Notifications touches PostgreSQL for exactly one thing: idempotency.** It owns
 `notifications_schema`, whose only table is `processed_events(event_id PK)` — one row per
@@ -231,6 +250,59 @@ idempotent, so two replicas racing on the same order is safe (see
 
 ---
 
+## AI Poster Studio Flow
+
+```mermaid
+sequenceDiagram
+    participant SPA as Shop (/shop/studio)
+    participant D as Designs API
+    participant W as Designs worker
+    participant P as Image provider<br/>(fake / OpenAI / Replicate)
+    participant S as Storage<br/>(volume / S3)
+    participant C as Catalog
+    participant I as Inventory
+    participant O as Orders (+ outbox)
+
+    SPA->>D: POST /generations {prompt, personalise}
+    D-->>SPA: 202 {id, status: queued}
+    W->>D: claim (FOR UPDATE SKIP LOCKED) -> generating
+    opt personalise
+        W->>W: ensure_summary() -> "Style notes: …" appended to effective_prompt
+    end
+    W->>P: generate(effective_prompt)
+    P-->>W: PNG (or PromptRejected / ProviderError)
+    W->>S: put(key, png)
+    W->>D: status ready, image_key
+    loop every 2 s while queued / generating
+        SPA->>D: GET /generations/{id}
+    end
+    D-->>SPA: 200 {status: ready, image_url: /api/designs/images/{key}}
+    SPA->>D: GET /images/{key}
+    D->>S: get(key)
+    D-->>SPA: image/png, immutable
+
+    SPA->>D: POST /generations/{id}/print
+    D->>C: POST /internal/products {sku: AI-{id}, listed: false, 4 variants}
+    C-->>D: 201 (or 200 if it exists)
+    D->>I: POST /internal/stock {AI-{id}-A4..A1 x AI_POSTER_STOCK}
+    I-->>D: 200 {created, skipped}
+    D-->>SPA: 201 {sku, product_url: /shop/product/AI-{id}}
+
+    SPA->>C: GET /products/AI-{id}
+    SPA->>O: POST /orders (AI-{id}-A3) -> pay (Stripe or escrow)
+    O-->>O: ORDER_PAID -> outbox
+    O-)D: POST /events/order-paid
+    D->>D: purchased_at, purchases row, style profile stale
+```
+
+The studio adds one new asynchronous edge (orders → designs on `ORDER_PAID`) and two
+synchronous ones (designs → catalog, designs → inventory, both idempotent and both behind
+a circuit breaker). The checkout, escrow, production and notifications code paths are
+byte-for-byte those of an ordinary poster: a printed design is just an unlisted catalog
+family with virtual stock.
+
+---
+
 ## Stock Reservation Flow
 
 ```mermaid
@@ -283,6 +355,11 @@ flowchart LR
         EP[Email Provider<br/>logging / SES]
     end
     
+    subgraph "Designs Service"
+        DEH[Event Handler]
+        DP[(purchases,<br/>style_profiles)]
+    end
+    
     BL -->|"1. Same TX"| OT
     OW -->|"2. Poll (2s)"| OT
     OW -->|"3a. HTTP POST"| EH
@@ -291,13 +368,18 @@ flowchart LR
     OW -->|"3b. HTTP POST"| NEH
     NEH -->|"4b. Render & send"| EP
     NEH -->|"5b. 200 OK"| OW
+    OW -->|"3c. HTTP POST (ORDER_PAID only)"| DEH
+    DEH -->|"4c. purchased_at, purchases, stale"| DP
+    DEH -->|"5c. 200 OK"| OW
     OW -->|"6. Mark delivered<br/>(only after ALL subscribers succeed)"| OT
 ```
 
 Step 6 is the important subtlety: the outbox row is marked delivered only once every
-subscriber for that event type has returned success. A failure at any single subscriber
-retries the whole event, re-delivering it to subscribers that already succeeded, which is
-why every consumer must be idempotent.
+subscriber for that event type has returned success (three for `ORDER_PAID`: production,
+notifications, designs; two for `ORDER_CANCELLED`; notifications alone for the rest). A
+failure at any single subscriber retries the whole event, re-delivering it to subscribers
+that already succeeded, which is why every consumer must be idempotent — production by the
+existing job, notifications and designs by a `processed_events` table keyed on `event_id`.
 
 ---
 
@@ -391,6 +473,33 @@ erDiagram
         string name
         decimal price
         string category
+        boolean listed
+    }
+    
+    designs_schema_generations {
+        int id PK
+        string customer_email
+        string prompt
+        string effective_prompt
+        string provider
+        string status
+        string image_key
+        timestamp purchased_at
+        string catalog_product_sku
+    }
+    
+    designs_schema_purchases {
+        int id PK
+        string customer_email
+        int order_id
+        string sku
+        string name
+    }
+    
+    designs_schema_style_profiles {
+        string customer_email PK
+        string summary
+        boolean stale
     }
     
     orders_schema_orders ||--o{ orders_schema_order_items : contains
@@ -398,6 +507,9 @@ erDiagram
     inventory_schema_stock ||--o{ inventory_schema_reservations : has
     production_schema_jobs ||--|| orders_schema_orders : processes
     logistics_schema_shipments ||--|| orders_schema_orders : ships
+    designs_schema_generations ||--o| catalog_schema_products : "printed as AI-{id}"
+    designs_schema_purchases }o--|| orders_schema_orders : "from ORDER_PAID"
+    designs_schema_purchases }o--|| designs_schema_style_profiles : feeds
 ```
 
 ---
@@ -420,6 +532,7 @@ graph TB
                     PAYMENTS_DEP[payments<br/>Deployment]
                     INFRA_DEP[infra<br/>Deployment]
                     NOTIFICATIONS_DEP[notifications<br/>Deployment<br/>no ingress]
+                    DESIGNS_DEP[designs<br/>Deployment<br/>emptyDir or S3 via IRSA]
                     GANACHE_DEP[ganache<br/>Deployment + PVC]
                 end
                 
@@ -447,6 +560,7 @@ graph TB
     ALB_EXT --> PRODUCTION_DEP
     ALB_EXT --> LOGISTICS_DEP
     ALB_EXT --> PAYMENTS_DEP
+    ALB_EXT --> DESIGNS_DEP
     ALB_EXT --> INFRA_DEP
     
     FE_DEP -.-> RDS
@@ -456,6 +570,9 @@ graph TB
     INVENTORY_DEP --> RDS
     PRODUCTION_DEP --> RDS
     LOGISTICS_DEP --> RDS
+    NOTIFICATIONS_DEP --> RDS
+    DESIGNS_DEP --> RDS
+    DESIGNS_DEP -.->|IRSA| S3_BUCKET[(S3 bucket<br/>postershop-designs-ACCOUNT)]
     PAYMENTS_DEP --> GANACHE_DEP
     
     FLUENTBIT --> LOKI
@@ -476,29 +593,30 @@ Source of truth: `deploy/charts/frontend/templates/ingress.yaml`.
 | `/api/logistics` | Prefix | logistics | 80 |
 | `/api/inventory` | Prefix | inventory | 80 |
 | `/api/payments` | Prefix | payments | 80 |
+| `/api/designs` | Prefix | designs | 80 |
 | `/` (catch-all) | Prefix | frontend | 80 |
 
 Two services are absent from that list by design. `infra` has no Ingress rule of
 its own — a request for it matches the `/` catch-all, lands on the frontend pod,
 and nginx proxies it onward from its `location /api/infra/` block
-(`frontend/nginx.conf:78`). `notifications` has neither an Ingress rule nor an
+(`frontend/nginx.conf:86`). `notifications` has neither an Ingress rule nor an
 nginx block, so it is not reachable from outside the cluster at all; it is only
 ever called service-to-service, by the orders outbox worker.
 
 `/rpc` — the Ethereum JSON-RPC the browser signs escrow payments against — likewise has
 no Ingress rule of its own (`deploy/charts/frontend` declares none). It matches the `/`
-catch-all and `frontend/nginx.conf:93-101` (`location /rpc/` and `location = /rpc`)
+catch-all and `frontend/nginx.conf:101-112` (`location /rpc/` and `location = /rpc`)
 proxies it to `ganache:8545`, exactly the way `/api/infra/` reaches infra. The `ganache`
 chart exposes only a ClusterIP Service; the node is never reachable except through that
 proxy and from payments.
 
 ### Why the ALB health check targets `/healthz`
 
-One Ingress annotation configures the health check for every target group the Ingress creates, so `alb.ingress.kubernetes.io/healthcheck-path` has to name a path that all of them answer. `deploy/charts/frontend/templates/ingress.yaml` declares eight path rules — `/` to frontend:80 plus seven `/api/*` backends (users, catalog, orders, production, logistics, inventory, payments) — and the AWS Load Balancer Controller turns those into eight target groups, all sharing the one annotation. (`infra` has no rule of its own; it is reached through the `/` catch-all and the `/api/infra/` proxy block in `frontend/nginx.conf`.)
+One Ingress annotation configures the health check for every target group the Ingress creates, so `alb.ingress.kubernetes.io/healthcheck-path` has to name a path that all of them answer. `deploy/charts/frontend/templates/ingress.yaml` declares nine path rules — `/` to frontend:80 plus eight `/api/*` backends (users, catalog, orders, production, logistics, inventory, payments, designs) — and the AWS Load Balancer Controller turns those into nine target groups, all sharing the one annotation. (`infra` has no rule of its own; it is reached through the `/` catch-all and the `/api/infra/` proxy block in `frontend/nginx.conf`.)
 
-The annotation was `/health` until commit `a1014dd`, and only the frontend nginx serves that path — the Python services expose `/healthz` and `/readyz`. Measured on the live cluster before the fix: the frontend target group healthy, all seven backend target groups `unhealthy`. The platform kept working only because an ALB fails open when every target in a group is unhealthy, so traffic still flowed while two properties were quietly missing — there was no usable health signal for any backend, and no way to drain a bad pod during a rolling deploy, since a group that is entirely unhealthy cannot take a member out of rotation. It also cost roughly 5900 404s per hour platform-wide, which dominated Loki stream cardinality.
+The annotation was `/health` until commit `a1014dd`, and only the frontend nginx serves that path — the Python services expose `/healthz` and `/readyz`. Measured on the live cluster before the fix (2026-08-17, before designs existed): the frontend target group healthy, all seven backend target groups of that day `unhealthy`. The platform kept working only because an ALB fails open when every target in a group is unhealthy, so traffic still flowed while two properties were quietly missing — there was no usable health signal for any backend, and no way to drain a bad pod during a rolling deploy, since a group that is entirely unhealthy cannot take a member out of rotation. It also cost roughly 5900 404s per hour platform-wide, which dominated Loki stream cardinality.
 
-Switching the annotation to `/healthz` fixed all eight target groups without rebuilding the frontend, because `frontend/nginx.conf:15` declares `location /health` — a **prefix** match, so `/healthz` lands in that block. That is the trap worth knowing before editing nginx: narrowing it to `location = /health` would silently return the frontend target group to fail-open, with nothing failing loudly to say so.
+Switching the annotation to `/healthz` fixed every target group without rebuilding the frontend, because `frontend/nginx.conf:15` declares `location /health` — a **prefix** match, so `/healthz` lands in that block. That is the trap worth knowing before editing nginx: narrowing it to `location = /health` would silently return the frontend target group to fail-open, with nothing failing loudly to say so.
 
 The ALB health check and the kubelet probes are separate mechanisms and are deliberately not aligned. The frontend's own readiness and liveness probes in `deploy/charts/frontend/templates/deployment.yaml` remain on `/health` and should stay there.
 

@@ -238,3 +238,63 @@ defence in depth.
 **Real-world impact**: low. Every action the reconciler takes is idempotent by construction — `mark_order_paid` returns `False` when the order is already `paid`, `assignCourier` reverts `"Transfer not complete."` or `"Order closed."` and the revert is caught and logged, and `cancel()` on a closed contract reverts `"Cannot cancel."` — so a race costs a wasted transaction or a logged revert, never a double payment. The cost is N-fold RPC load on the node, invisible on Ganache. It is the same shape as limitation 9 (per-process state standing in for shared state).
 
 **Fix shape**: the outbox worker has the same property and the same answer applies — either a leader-elected single worker, or `SELECT ... FOR UPDATE SKIP LOCKED` over the open escrow rows so replicas partition the work instead of repeating it.
+
+## 16. Designs images on EKS are ephemeral until S3 is configured
+
+**Symptom**: With the designs chart at its defaults (`storage.backend: local`) the generated PNGs live on an `emptyDir` mounted at `/data/images` (`deploy/charts/designs/templates/deployment.yaml`). A pod restart, a rollout or a node replacement empties it: every `GET /images/{key}` for an earlier design answers 404, and every printed product's `image_url` (a catalog row that survives) points at nothing.
+
+**Why it persists**: a plain `helm install` has to work with no AWS setup, and a PersistentVolume would only postpone the problem to the next node. The durable backend is `STORAGE_BACKEND=s3` with a private bucket and IRSA credentials — that needs an account-side step (`./deploy/designs-setup.sh`: bucket `postershop-designs-<ACCOUNT_ID>`, policy `postershop-designs-s3`, ServiceAccount `designs`) that `full-deploy.sh` deliberately detects rather than performs. When the bucket and the annotated ServiceAccount exist it deploys with `--set storage.backend=s3`; when they do not it prints `Designs storage: LOCAL emptyDir — generated images do not survive a pod restart` and continues.
+
+**Real-world impact**: none on docker-compose (the `designs-data` named volume persists); on a cluster deployed without the setup script, a demo that generates, prints and then redeploys shows broken images on the product page. Rows, prompts, history and the style profile are unaffected — only the bytes are gone.
+
+**Fix shape**: already built — run `./deploy/designs-setup.sh` once per account, then re-run `full-deploy.sh` (or the printed `helm upgrade --set storage.backend=s3 ...`). `deploy/lib/live-config.sh` carries the S3 setting through later CI deploys so it is not reset to `local`.
+
+## 17. Print resolution is the model's native output — no upscaling
+
+**Symptom**: A printed design is exactly the PNG the provider returned: `1024x1536` from OpenAI and the fake provider, about 832x1216 from flux-schnell on Replicate (`2:3` at 1 MP). At A1 (594 × 841 mm) that is roughly 45 dpi.
+
+**Why it persists**: D-08 chose native resolution deliberately. Upscaling (a second model call, or a local ESRGAN-style pass) adds cost, latency and a GPU dependency for a thesis demo whose point is the pipeline, not print quality; the catalog's four sizes exist so the checkout path is identical to an ordinary poster, not because the image is print-ready at every size.
+
+**Real-world impact**: a real print shop would need a larger source for A2/A1. The generation row keeps `params` (model, size, quality), so a later upscale step knows what it starts from.
+
+**Fix shape**: an `upscale` stage after the provider call in `services/designs/worker.py` (a second `ImageProvider`-like seam), writing a second storage key and leaving the preview at native size. Recorded as future work in the Phase 9 context.
+
+## 18. The Replicate provider is verified against mocked HTTP only
+
+**Symptom**: `ReplicateProvider` (`services/designs/providers.py`) is implemented — create prediction with `Prefer: wait=60`, poll to a 180 s deadline, download `output[0]`, `NSFW` → `PromptRejected` — and covered by unit tests on `httpx.MockTransport`, but it has never sent a request to `api.replicate.com`.
+
+**Why it persists**: the project has an OpenAI key and no Replicate token (Phase 9 decision D-10). The provider exists so the thesis comparison between a hosted image API and serverless GPU inference is made against real code behind the same seam, not a hypothetical.
+
+**Real-world impact**: `IMAGE_PROVIDER=replicate` with a real token may need adjustment on first contact — a changed response envelope or model name would surface as `ProviderConfigError` (generic `failed` reason, detail in the log), never as a crash and never as a refusal. Without a token the service logs a warning and runs the fake provider.
+
+**Fix shape**: one token in `.env` (compose) or `postershop/designs` (EKS), one generation, and the same live-check routine used for OpenAI in the 09-03 summary.
+
+## 19. Reference-image conditioning is deferred
+
+**Symptom**: The style profile personalises by **text only** (`Style notes:` appended to the prompt). A customer cannot say "like this poster I bought" by image, and a generated design cannot be edited into a variant.
+
+**Why it persists**: D-07 tier 3 allowed reference-image conditioning only if a provider exposed it as a simple flag. Neither does: OpenAI's image-to-image path is the separate multipart `images/edits` endpoint with different parameters, and flux-schnell on Replicate takes no image input at all. Building it would have meant a second request shape per provider for a feature the mentor's brief lists as optional.
+
+**Real-world impact**: none for the demo — the "memory" the brief asks for is delivered through history, saved prompts and the summarised style profile. Purchases still influence generations through the summary's purchase names.
+
+**Fix shape**: a `reference_image_key` on `generations`, an `edit(prompt, image_bytes)` method on `ImageProvider` implemented for OpenAI (`images/edits`) and a Replicate model that accepts an `image` input; the fake provider can composite the reference into its placeholder. Listed under Deferred Ideas in the Phase 9 context.
+
+## 20. Catalog `POST /seed?force=true` deletes every custom AI product
+
+**Symptom**: `services/catalog/main.py` `seed_catalog` with `force=true` runs `TRUNCATE catalog_schema.products, catalog_schema.sizes, catalog_schema.frame_options RESTART IDENTITY CASCADE` before re-inserting the sample data. The unlisted `AI-{id}` families created by "Print this" go with it: `GET /products/AI-{id}` answers 404, the studio's "View product" link and any cart holding `AI-{id}-{size}` break, and `generations.catalog_product_sku` dangles. Inventory's virtual stock rows are not touched (different schema), so they outlive their product.
+
+**Why it persists**: `force` exists so a local stack can be reseeded from scratch; it predates the studio and is owner-only. `POST /seed` without `force` is a no-op when the catalog is already seeded (`"Catalog already seeded"`), which is what the integration tests and `make dev-seed` use.
+
+**Real-world impact**: dev-only. Nothing in the deploy scripts or CI calls `force=true`; on EKS the catalog is seeded once.
+
+**Fix shape**: exclude `listed = false` rows from the truncate (delete the seed families by SKU prefix instead), or have designs re-print on a 404 from `GET /products/{sku}` (the print orchestration is already idempotent, so `POST /generations/{id}/print` after clearing `catalog_product_sku` would rebuild the family).
+
+## 21. The daily generation quota is per UTC day and counted by query
+
+**Symptom**: `AI_DAILY_QUOTA` (default 10) resets at **00:00 UTC**, not at local midnight — the `Retry-After` on the 429 and `resets_at` in `GET /me/quota` count to UTC midnight (`services/designs/quota.py`). A customer in Belgrade sees the quota reset at 02:00 in summer.
+
+**Why it persists**: D-14 chose a UTC day because the service has no notion of the customer's time zone, and a rolling 24 h window would need per-request arithmetic over the history instead of one `COUNT(*) WHERE created_at >= utc_day_start`. The count is a live query over `generations` (indexed by `ix_generations_customer_created`) rather than a counter, so it is correct across replicas without shared state — the same shape as the reservation TTL, not the per-process breaker of limitation 9. Failed rows are excluded on purpose (a refusal or an outage is not the customer's fault), and the owner role is exempt so demos and the integration test never hit it.
+
+**Real-world impact**: cosmetic — the reset time is not the one a customer would guess. Two concurrent requests from the same customer at exactly the limit can both pass the check (read-then-insert, no lock), so the quota is "about 10", which is adequate for cost control against a paid provider.
+
+**Fix shape**: a `quota_tz` per customer (or `AI_QUOTA_TZ` platform-wide) fed into `utc_day_start`, and `SELECT ... FOR UPDATE` on a per-customer row if the limit ever needs to be exact.

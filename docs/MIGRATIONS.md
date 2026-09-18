@@ -35,6 +35,8 @@ Each service has its own PostgreSQL schema:
 | users | `users_schema` |
 | catalog | `catalog_schema` |
 | logistics | `logistics_schema` |
+| notifications | `notifications_schema` |
+| designs | `designs_schema` |
 
 Alembic only manages tables within its service's schema via the `include_object` filter.
 
@@ -61,6 +63,15 @@ alembic current
 # Show migration history
 alembic history
 ```
+
+Under docker-compose you do not run these by hand: every DB-backed service has a
+`<service>-migrate` sidecar (`users-migrate` … `notifications-migrate`, `designs-migrate`)
+that runs `alembic upgrade head` against the service's own user and `search_path`, and the
+service `depends_on` it with `condition: service_completed_successfully`. The sidecar is a
+**separate image** from the service (same `build:` context, no shared `image:` key), so
+after adding a migration rebuild both — `docker compose build <service>-migrate`, then
+`docker compose build <service>` — or the stale sidecar runs the old tree, applies nothing
+and exits 0.
 
 ### Creating New Migrations
 
@@ -102,9 +113,10 @@ Migrations run automatically as a Helm pre-install/pre-upgrade hook.
 
 ### Migration Job
 
-Each **database-backed** service has a Helm hook that runs migrations. The stateless
-services (`payments`, `infra`, `notifications`) own no schema, have no Alembic setup, and
-their charts contain no `migration-job.yaml` at all:
+Each **database-backed** service has a Helm hook that runs migrations (eight charts:
+users, catalog, inventory, orders, production, logistics, notifications, designs). The
+stateless services (`payments`, `infra`) own no schema, have no Alembic setup, and their
+charts contain no `migration-job.yaml` at all:
 
 ```yaml
 # deploy/charts/orders/templates/migration-job.yaml
@@ -187,7 +199,7 @@ SELECT * FROM orders_schema.alembic_version;
 
 ### Current revisions
 
-Every revision file in the repository, in upgrade order (14 files across 7 services).
+Every revision file in the repository, in upgrade order (16 files across 8 services).
 Revision ids are what `alembic_version` stores; users names its revisions after the file.
 
 | Service | Files (revision id) |
@@ -195,10 +207,11 @@ Revision ids are what `alembic_version` stores; users names its revisions after 
 | orders | `001_initial_schema.py` (`001`) → `002_shipping_address.py` (`002`) → `003_escrow.py` (`003`) — escrow columns + `ix_orders_escrow_status` |
 | users | `001_initial_schema.py` (`001`) → `002_add_refresh_tokens.py` (`002_add_refresh_tokens`) → `003_wallet_address.py` (`003_wallet_address`) — `users.wallet_address` |
 | logistics | `001_initial_schema.py` (`001`) → `002_delivery_address.py` (`002`) → `003_courier_binding.py` (`003`) — `courier_id`, `courier_wallet`, `courier_bound_at` |
-| catalog | `001_initial_schema.py` (`001`) → `002_product_variants.py` (`002`) |
+| catalog | `001_initial_schema.py` (`001`) → `002_product_variants.py` (`002`) → `003_product_listed.py` (`003`) — `products.listed` (boolean, NOT NULL, default true; custom AI motifs are `false`) |
 | inventory | `001_initial_schema.py` (`001`) |
 | production | `001_initial_schema.py` (`001`) |
 | notifications | `001_initial_schema.py` (`001`) |
+| designs | `001_initial_schema.py` (`001`) — `generations`, `saved_prompts`, `style_profiles`, `purchases`, `processed_events` |
 
 ## Troubleshooting
 
@@ -248,14 +261,20 @@ alembic merge -m "merge heads" head1 head2
 
 ## Adding New Services
 
-**First decide whether the service needs a database at all.** Three of the nine backend
+**First decide whether the service needs a database at all.** Two of the ten backend
 services are stateless and deliberately have no migrations:
 
 | Service | State |
 |---------|-------|
-| payments | None — checkout sessions live at Stripe |
+| payments | None — checkout sessions live at Stripe, escrow state on chain and on the orders row |
 | infra | None — reads live Kubernetes state |
 | ~~notifications~~ | No longer applies — now DB-backed (`notifications_schema`, `processed_events`); has a migration job (quick-260815-m0m) |
+
+The newest DB-backed service, `designs` (Phase 9), is the reference for the full checklist:
+`services/designs/alembic/` (env.py with `version_table_schema=designs_schema`, one
+revision), `designs_schema` / `designs_svc` in `db/init.sql` and in `full-deploy.sh`'s RDS
+SQL, the `designs-migrate` compose sidecar, `DATABASE_URL_DESIGNS` in the `postershop-db`
+ExternalSecret, and `templates/migration-job.yaml` in `deploy/charts/designs`.
 
 For these, skip this entire section and **delete `templates/migration-job.yaml` from the
 chart** if it was copied from a database-backed service. A migration hook on a service

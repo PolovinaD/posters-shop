@@ -14,6 +14,9 @@ This document defines the APIs used for service-to-service communication.
 | Logistics | Orders | Courier wallet binding on pick-up (CONTRACT B) | Sync HTTP (fire-and-forget) |
 | Orders (Outbox) | Production | Order events (ORDER_PAID, ORDER_CANCELLED) | Async HTTP |
 | Orders (Outbox) | Notifications | Order events (all four types) — transactional email | Async HTTP |
+| Orders (Outbox) | Designs | ORDER_PAID — `purchased_at` on bought designs, style-profile input | Async HTTP |
+| Designs | Catalog | Print-this: create the unlisted `AI-{id}` family (`/internal/products`) | Sync HTTP |
+| Designs | Inventory | Print-this: create the virtual stock rows (`/internal/stock`) | Sync HTTP |
 | Production | Orders | Status updates | Sync HTTP |
 | Production | Logistics | Create shipment | Sync HTTP |
 | Logistics | Orders | Delivery notification | Sync HTTP |
@@ -143,6 +146,94 @@ Content-Type: application/json
   ]
 }
 ```
+
+### Create Virtual Stock (Internal)
+
+**Called by:** Designs Service (`inventory_client.py`)  
+**When:** "Print this" — after the catalog family exists, before the generation row is updated  
+**Auth:** service token or owner bearer (`require_service_or_owner`)
+
+```http
+POST /internal/stock
+Authorization: Bearer <service token>
+Content-Type: application/json
+
+{
+  "items": [
+    {"sku": "AI-28-A4", "name": "Custom: geometric lighthouse at dusk (A4)", "available": 1000},
+    {"sku": "AI-28-A3", "name": "Custom: geometric lighthouse at dusk (A3)", "available": 1000},
+    {"sku": "AI-28-A2", "name": "Custom: geometric lighthouse at dusk (A2)", "available": 1000},
+    {"sku": "AI-28-A1", "name": "Custom: geometric lighthouse at dusk (A1)", "available": 1000}
+  ]
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "created": ["AI-28-A4", "AI-28-A3", "AI-28-A2", "AI-28-A1"],
+  "skipped": []
+}
+```
+
+1..50 items per call. SKUs that already exist are **skipped, never 400**, so a caller can
+retry after a partial failure and only the missing rows are added. The owner-only
+`POST /stock` and the reservation logic are untouched — the AI SKUs are ordinary stock
+rows with a large quantity (`AI_POSTER_STOCK`, "virtual stock" for print-on-demand).
+
+---
+
+## Catalog Service APIs (Internal)
+
+### Create Product Family (Internal)
+
+**Called by:** Designs Service (`catalog_client.py`)  
+**When:** "Print this" on a ready design — the first of the two downstream writes  
+**Auth:** service token or owner bearer (`require_service_or_owner`)
+
+```http
+POST /internal/products
+Authorization: Bearer <service token>
+Content-Type: application/json
+
+{
+  "sku": "AI-28",
+  "name": "Custom: geometric lighthouse at dusk",
+  "description": "integration test poster: geometric lighthouse at dusk",
+  "category": "Custom",
+  "image_url": "/api/designs/images/335b26e4a53f45ac8f40c1a6f6de9868.png",
+  "listed": false,
+  "active": true,
+  "variants": [
+    {"size": "A4", "price": "24.99"},
+    {"size": "A3", "price": "29.99"},
+    {"size": "A2", "price": "39.99"},
+    {"size": "A1", "price": "54.99"}
+  ]
+}
+```
+
+**Response:** the family as `GET /products/{sku}` returns it (`ProductOut` with `listed`
+and the four variants `AI-28-A4` … `AI-28-A1`).
+
+| Status | Meaning |
+|--------|---------|
+| `201` | Family and every variant written in **one transaction** |
+| `200` | `sku` already exists — answered with the family as it is, nothing written (idempotent retry) |
+| `400` | Unknown size (not in `sizes`) or a duplicate size in `variants` — rejected before any write |
+
+Variant SKUs are `{sku}-{size}`. `products.price` is set to the cheapest variant as the
+motif's reference price and is never charged — orders prices through
+`POST /internal/resolve-prices`, which is unchanged.
+
+### Listing and the `listed` flag
+
+`GET /products` takes `?listed_only=true|false` (default `true`) and hides unlisted
+families — the custom AI motifs — from the shop grid; `GET /categories` never lists a
+category whose only products are unlisted (so no empty "Custom" tab). `GET /products/{sku}`
+and `POST /internal/resolve-prices` ignore the flag, so the studio's direct product link,
+the cart and checkout work for an unlisted family exactly as for a listed one. The admin
+table passes `listed_only=false`.
 
 ---
 
@@ -607,6 +698,178 @@ GET /metrics    # Prometheus
 
 ---
 
+## Designs Service APIs
+
+The AI poster studio. Customer routes are called by the shop through the `/api/designs`
+proxy (nginx / ALB); one route is an outbox consumer. Full route table in
+[services/designs/README.md](../services/designs/README.md).
+
+### Queue a Generation
+
+**Called by:** Frontend (`/shop/studio`)  
+**Auth:** customer bearer
+
+```http
+POST /generations
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "prompt": "a minimalist travel poster of Belgrade at dawn",
+  "personalise": true
+}
+```
+
+**Response (202 Accepted):**
+```json
+{
+  "id": 28,
+  "prompt": "a minimalist travel poster of Belgrade at dawn",
+  "effective_prompt": "a minimalist travel poster of Belgrade at dawn",
+  "personalise": true,
+  "provider": "fake",
+  "status": "queued",
+  "failure_reason": null,
+  "image_url": null,
+  "created_at": "2026-09-18T06:30:31Z",
+  "started_at": null,
+  "finished_at": null,
+  "purchased_at": null,
+  "catalog_product_sku": null,
+  "product_url": null
+}
+```
+
+`prompt` is 3..2000 characters. Over the daily quota (`AI_DAILY_QUOTA`, per UTC day, owner
+exempt) the answer is `429 {"detail": "Daily limit of 10 generations reached"}` with a
+`Retry-After` header counting down to UTC midnight.
+
+### Poll a Generation
+
+```http
+GET /generations/{id}
+Authorization: Bearer <token>
+```
+
+**Response (200 OK)** — the same shape, filled in as the worker progresses:
+
+| `status` | What is set |
+|----------|-------------|
+| `queued` | nothing yet (`retry_after` in the DB when a transport failure is backing off) |
+| `generating` | `started_at`, `attempts` consumed |
+| `ready` | `image_url` = `/api/designs/images/{32 hex}.png`, `finished_at`; `effective_prompt` carries the `Style notes:` suffix when personalised |
+| `failed` | `failure_reason` — the provider's refusal text, or a generic outage / configuration message |
+
+Someone else's `id` is a `404`, indistinguishable from a missing one. `GET /generations`
+lists the caller's rows newest first (`?limit=` 1..200).
+
+### Image
+
+```http
+GET /images/{key}          # key = 32 hex + .png, no bearer (the key is the capability)
+HEAD /images/{key}
+```
+
+`200 image/png` with `Cache-Control: public, max-age=31536000, immutable` and an `ETag`;
+`422` for a malformed key, `404` for an unknown one.
+
+### Print This
+
+```http
+POST /generations/{id}/print
+Authorization: Bearer <token>
+```
+
+**Response (201 Created / 200 OK):**
+```json
+{
+  "sku": "AI-28",
+  "product_url": "/shop/product/AI-28",
+  "created": true
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `201` | Catalog family `AI-28` (variants `AI-28-A4` … `AI-28-A1`) and four stock rows created now |
+| `200` | Already printed — same payload with `created: false` |
+| `409` | The generation is not `ready` |
+| `502` | Catalog or inventory refused (4xx) — the detail is passed through |
+| `503` | Catalog or inventory unavailable, or their circuit breaker is open — retry later |
+
+Orchestration is catalog → inventory → own row; each downstream write is idempotent, so a
+`503` half-way leaves `catalog_product_sku` NULL and the retry completes the missing half.
+
+### Style Profile
+
+```http
+GET /me/style-profile
+POST /me/style-profile/refresh
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "summary": "You lean towards: dusk, travel, belgrade, lighthouse, harbour, smoke.",
+  "prompt_count": 13,
+  "purchase_count": 1,
+  "stale": false,
+  "updated_at": "2026-09-18T06:09:14Z"
+}
+```
+
+A customer without a profile row gets the defaults (`summary: null`, counts 0,
+`stale: true`) — not a 404. `refresh` rebuilds the summary from the last 20 prompts and 20
+purchase names through the summariser (`gpt-4o-mini` with a key, deterministic keywords
+otherwise); a summariser outage keeps the old summary and answers 200 with `stale: true`.
+
+### Event Handler (Outbox Consumer)
+
+**Called by:** Orders Service (outbox worker) — the third `ORDER_PAID` subscriber  
+**Auth:** service token or owner bearer (`require_service_or_owner`)
+
+```http
+POST /events/order-paid
+Authorization: Bearer <service token>
+Content-Type: application/json
+
+{
+  "event_id": 197,
+  "event_type": "ORDER_PAID",
+  "aggregate_type": "order",
+  "aggregate_id": "832",
+  "payload": {
+    "order_id": 832,
+    "customer_email": "customer@example.com",
+    "total_amount": "29.99",
+    "items": [{"sku": "AI-23-A3", "name": "Custom: … (A3)", "quantity": 1}]
+  },
+  "created_at": "2026-09-18T06:08:58Z"
+}
+```
+
+| Response | Meaning |
+|----------|---------|
+| `200 {"status": "processed", "event_id": 197, "own_designs": 1, "purchases": 1}` | Own `AI-{id}-{size}` SKUs got `purchased_at` (once), every item became a `purchases` row, the profile is marked stale, the event id recorded |
+| `200 {"status": "already_processed", "event_id": 197}` | Duplicate `event_id` — nothing touched |
+| `200 {"status": "skipped", "reason": "no_customer_email", "event_id": 197}` | Nothing to attribute — deliberately 200, retrying cannot help |
+
+The handler is DB-only (never calls a provider) and answers well inside the outbox's 10 s
+budget; a non-2xx would make the outbox re-deliver the event to production and
+notifications as well, so business cases never 5xx. Dedup is durable in
+`designs_schema.processed_events` (`INSERT … ON CONFLICT DO NOTHING`).
+
+### Health & Metrics
+
+```http
+GET /healthz    # liveness
+GET /readyz     # readiness — opens a DB connection, 503 when unreachable
+GET /metrics    # Prometheus: designs_generations_total, designs_provider_latency_seconds, designs_queue_depth, circuit_breaker_state_transitions_total
+```
+
+---
+
 ## Logistics Service APIs
 
 ### Create Shipment
@@ -706,7 +969,9 @@ All services use consistent error format:
 | Stock reservation | 5s connect, 10s total | No retry (fail order) |
 | Stock commit | 5s connect, 10s total | Retry 3x with backoff |
 | Payment create | 5s connect, 10s total | No retry |
-| Event delivery | 5s connect, 10s total | 5x with exponential backoff |
+| Event delivery | 5s connect, 10s total | 5x with exponential backoff (per event — designs' `/events/order-paid` must answer inside the 10 s, so it is DB-only) |
+| Print-this: catalog `/internal/products`, inventory `/internal/stock` | 5s connect, 10s total | No retry inside the request (circuit breaker per destination); the customer retries the idempotent `POST /generations/{id}/print` |
+| Image provider (designs worker) | 180s per call (OpenAI / Replicate) | 3 attempts (`DESIGNS_MAX_ATTEMPTS`), waiting 5 s / 30 s / 120 s; an open breaker re-queues without consuming an attempt |
 | Status updates | 5s connect, 10s total | Best effort (logged) |
 
 ---

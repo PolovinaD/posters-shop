@@ -26,7 +26,9 @@ Complete deployment solution for the PosterShop microservices platform on AWS EK
 │  │  │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐            │   │  │ │
 │  │  │  │  │ Users  │ │Catalog │ │ Orders │ │  ...   │            │   │  │ │
 │  │  │  │  └────────┘ └────────┘ └────────┘ └────────┘            │   │  │ │
-│  │  │  │                                                          │   │  │ │
+│  │  │  │  ┌────────┐  ten backend services + frontend + ganache  │   │  │ │
+│  │  │  │  │Designs │──▶ S3 bucket (IRSA) for generated posters   │   │  │ │
+│  │  │  │  └────────┘                                             │   │  │ │
 │  │  │  │  ┌──────────────────────────────────────────────────┐   │   │  │ │
 │  │  │  │  │              Prometheus + Grafana                 │   │   │  │ │
 │  │  │  │  └──────────────────────────────────────────────────┘   │   │  │ │
@@ -86,6 +88,9 @@ deploy/
 ├── README.md                    # This file
 ├── full-deploy.sh               # Master deployment script
 ├── deploy.sh                    # Service deployment script
+├── teardown.sh                  # Tear-down (--delete-secrets, --delete-ecr, --delete-bucket)
+├── ses-setup.sh                 # One-time SES identity + IRSA for notifications
+├── designs-setup.sh             # One-time S3 bucket + IRSA for designs (generated posters)
 ├── secrets-template.yaml        # K8s secrets template
 │
 ├── infrastructure/              # AWS infrastructure
@@ -101,6 +106,7 @@ deploy/
 │   ├── inventory/
 │   ├── payments/
 │   ├── notifications/
+│   ├── designs/            # AI poster studio (provider/storage scalars, optional IRSA SA)
 │   ├── infra/
 │   ├── ganache/            # Ethereum simulator (upstream image, helm-only, PVC)
 │   └── frontend/
@@ -296,7 +302,7 @@ The build workflow cannot create repositories, so create one per service up fron
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION=eu-north-1
 
-for service in users catalog orders production logistics inventory payments notifications frontend infra; do
+for service in users catalog orders production logistics inventory payments notifications designs frontend infra; do
   aws ecr create-repository \
     --repository-name $service \
     --region $AWS_REGION \
@@ -348,6 +354,10 @@ aws ecr get-login-password --region $AWS_REGION \
 | `EMAIL_PROVIDER` | `logging` (code default) | Notifications email transport: `ses` for real delivery, anything else uses the credential-free logging provider |
 | `EMAIL_FROM` | `no-reply@postershop.example` | Sender address. Must be a **verified SES identity** in `SES_REGION` when `EMAIL_PROVIDER=ses` |
 | `SES_REGION` | `eu-central-1` | Region whose SES holds the verified sender identity. Deliberately independent of `AWS_REGION` (see below) |
+| `OPENAI_API_KEY` | (none) | If set (environment or `.env`), stored in `postershop/designs` and designs deploys with `IMAGE_PROVIDER=openai`; otherwise the fake provider |
+| `REPLICATE_API_TOKEN` | (none) | Same rule for the Replicate provider (unit-tested only — no token in this project) |
+| `DESIGNS_S3_BUCKET` | `postershop-designs-<ACCOUNT_ID>` | Bucket for generated posters; detected, not created, by `full-deploy.sh` |
+| `DESIGNS_S3_REGION` | `AWS_REGION` | Bucket region |
 
 ## Email Delivery Setup (SES via IRSA)
 
@@ -537,6 +547,81 @@ With the logging provider, a successful send appears as an `Email (logging provi
 log line carrying the rendered subject and body. With SES, a failure raises `503` so the
 orders outbox retries; check `notifications_email_send_failures_total` in Prometheus.
 
+## Design Image Storage (S3 via IRSA)
+
+The `designs` service (AI poster studio) stores every generated poster as a PNG and
+serves it itself at `GET /images/{key}`; the catalog rows of printed designs point at
+those URLs. Where the bytes live is pluggable:
+
+| `STORAGE_BACKEND` | Backend | AWS needed? | Intended environment |
+|-------------------|---------|-------------|----------------------|
+| `local` (chart default) | Directory `/data/images` — a named volume in docker-compose, an **`emptyDir` in Kubernetes** | No | Local dev, docker-compose, an un-configured `helm install` |
+| `s3` | Private S3 bucket, credentials from IRSA | Yes (bucket + IRSA role) | Production |
+
+The chart ships `storage.backend: local` so that a plain `helm install` works with no
+AWS setup — but on EKS that means **images are lost on every pod restart**: earlier
+designs answer 404 and every printed product's `image_url` dangles (rows, prompts and
+the style profile survive; only the bytes go). Production must opt in to S3.
+
+### Shortcut: `./deploy/designs-setup.sh`
+
+Idempotent, safe to re-run, `[--bucket <name>] [--region <aws-region>]`. It creates:
+
+- a **private** bucket `postershop-designs-<ACCOUNT_ID>` (`DESIGNS_S3_BUCKET` to
+  override) in `DESIGNS_S3_REGION` > `AWS_REGION` > `eu-north-1`, with
+  `put-public-access-block` on all four flags — the service proxies every image, so the
+  bucket is never readable directly;
+- an IAM policy `postershop-designs-s3` allowing exactly `s3:PutObject` and
+  `s3:GetObject` on `arn:aws:s3:::<bucket>/*`;
+- an IRSA ServiceAccount `designs` in the `postershop` namespace
+  (`eksctl create iamserviceaccount … --attach-policy-arn … --override-existing-serviceaccounts --approve`).
+
+The bucket half works without a cluster; the ServiceAccount half needs one, and the
+script says so and stops there if the cluster is down — re-run it after `full-deploy.sh`.
+
+Once both halves exist, `full-deploy.sh` **detects** them in Step 9 (`aws s3api
+head-bucket` succeeds and the `designs` ServiceAccount carries an
+`eks.amazonaws.com/role-arn` annotation) and deploys the chart with
+`--set storage.backend=s3 --set storage.bucket=… --set storage.region=… --set serviceAccount.name=designs`.
+With either half missing it logs `Designs storage: LOCAL emptyDir — generated images do
+not survive a pod restart`, prints which half is absent, and continues on local storage.
+The summary line at the end of the run repeats the choice.
+
+Deliberately **not** part of `full-deploy.sh`: the bucket and the policy are one-time
+account setup that outlives cluster teardowns (`teardown.sh` keeps the bucket unless
+asked with `--delete-bucket`).
+
+### Manual alternative
+
+The script's final hint is the equivalent `helm upgrade`:
+
+```bash
+helm upgrade --install designs deploy/charts/designs \
+  --namespace postershop \
+  --set image.repository=<ecr>/designs \
+  --set serviceAccount.name=designs \
+  --set storage.backend=s3 \
+  --set storage.bucket=postershop-designs-<ACCOUNT_ID> \
+  --set storage.region=eu-north-1
+```
+
+`provider.*` and `storage.*` are chart **scalars** rendered by the Deployment template
+(not entries of the `env` list), so these `--set` flags are index-safe. Images already on
+a pod's `emptyDir` are not migrated; only new generations land in S3.
+`deploy/lib/live-config.sh` reads the five designs values (`IMAGE_PROVIDER`,
+`STORAGE_BACKEND`, bucket, region, ServiceAccount) back from the running Deployment on
+every CI deploy, so a `helm upgrade` from the pipeline never resets them to `fake` / `local`.
+
+### Verifying
+
+```bash
+kubectl exec -n postershop deploy/designs -- env | grep -E 'AWS_ROLE_ARN|STORAGE_BACKEND|DESIGNS_S3'
+kubectl logs -n postershop deploy/designs | grep '"storage_backend"'   # the startup log names it
+```
+
+Generate one poster in the studio, then `aws s3 ls s3://postershop-designs-<ACCOUNT_ID>/`
+shows one `<32 hex>.png` object with `Cache-Control: public, max-age=31536000, immutable`.
+
 ## Useful Commands
 
 ### Local Development
@@ -572,6 +657,8 @@ Minimal production setup (~$200-250/month):
 | RDS (db.t3.micro) | Single-AZ | ~$15 |
 | NAT Gateway | Single | ~$32 |
 | ALB | - | ~$20 |
+| S3 (designs images) | Standard | pennies — a fake render is ~32 KB, an OpenAI poster ~2.3 MB; 1,000 posters ≈ 2.3 GB ≈ $0.05 |
+| OpenAI (designs, optional) | per image | measured: one `gpt-image-1.5` poster at quality `low` = 715 output tokens ≈ $0.02; `medium` ≈ $0.06; a `gpt-4o-mini` style summary ≈ $0.00004. Capped by `AI_DAILY_QUOTA` (10 per customer per day) |
 
 For development/testing, you can reduce costs by:
 - Using spot instances for nodes
@@ -587,6 +674,10 @@ kubectl delete namespace postershop
 # Delete everything (cluster + RDS)
 make rds-delete
 make cluster-delete
+
+# Or the scripted tear-down (make cloud-down). The designs S3 bucket is KEPT by default
+# like ECR and the secrets; --delete-bucket empties it (aws s3 rm --recursive) and deletes it
+./deploy/teardown.sh --delete-bucket
 ```
 
 ## Troubleshooting
@@ -613,8 +704,9 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 ## Secrets Management
 
 The platform uses **AWS Secrets Manager** as the single source of truth for every *stored*
-secret — database passwords, the JWT signing key, the Stripe keys and the escrow owner key — with
-**External Secrets Operator** automatically syncing them to Kubernetes.
+secret — database passwords, the JWT signing key, the Stripe keys, the escrow owner key and the
+designs image-provider keys — with **External Secrets Operator** automatically syncing them to
+Kubernetes.
 
 > **Carve-out: IRSA-based AWS auth is deliberately outside this flow.**
 > The `notifications` service reaches AWS SES through IRSA (*IAM Roles for Service
@@ -622,8 +714,10 @@ secret — database passwords, the JWT signing key, the Stripe keys and the escr
 > runtime. There is no access key to store, so nothing about SES authentication lives in
 > Secrets Manager. The same applies to any other workload that assumes an IAM role rather
 > than holding a key. Secrets Manager remains the single source of truth for stored
-> secrets; credentials that are never stored simply do not enter it.
-> See [Email Delivery Setup (SES via IRSA)](#email-delivery-setup-ses-via-irsa).
+> secrets; credentials that are never stored simply do not enter it. The `designs`
+> service reaches its S3 bucket the same way.
+> See [Email Delivery Setup (SES via IRSA)](#email-delivery-setup-ses-via-irsa) and
+> [Design Image Storage (S3 via IRSA)](#design-image-storage-s3-via-irsa).
 
 ### How it works
 
@@ -636,8 +730,9 @@ secret — database passwords, the JWT signing key, the Stripe keys and the escr
 │  ├── passwords      │     │  ExternalSecret     │     │  postershop-jwt     │
 │  ├── database       │     │                     │     │  postershop-stripe  │
 │  ├── jwt            │     │                     │     │  postershop-escrow  │
-│  ├── stripe         │     │                     │     │                     │
-│  └── escrow         │     │                     │     │                     │
+│  ├── stripe         │     │                     │     │  postershop-designs │
+│  ├── escrow         │     │                     │     │                     │
+│  └── designs        │     │                     │     │                     │
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
 ```
 
@@ -657,6 +752,24 @@ so the node is Ready when payments funds the owner key at startup (the `SERVICES
 service. CI never builds it: `build-and-push.yaml`'s `buildable()` guard drops any chart without
 `services/<name>/Dockerfile` from the image matrix, and `ganache` appears only as a
 `workflow_dispatch` option of `deploy.yaml`, so the chart can be helm-deployed on its own.
+
+### Designs provider keys (`postershop/designs`)
+
+`postershop/designs` holds `OPENAI_API_KEY` and `REPLICATE_API_TOKEN`, mirrored into the
+`postershop-designs` Kubernetes Secret (`deploy/secrets/external-secrets.yaml`); the designs
+chart references both with `optional: true`, so an un-configured install still schedules
+and runs the fake provider. `full-deploy.sh` writes it **read-before-write**: a key in the
+environment or `.env` wins, a real value already in AWS is kept, and whichever property is
+still unknown gets the self-describing placeholder `MISSING-set-postershop/designs` (ESO
+refuses to sync a Secret with a missing property, and a placeholder read back counts as
+absent, so the "no OpenAI key — designs will run the fake provider" notice repeats on every
+run instead of decaying into a fake success). The presence of a real OpenAI key is what
+selects `IMAGE_PROVIDER=openai` at deploy time (`DESIGNS_IMAGE_PROVIDER`, read by
+`deploy/lib/live-config.sh`).
+
+`postershop/database` gains `DESIGNS_DATABASE_URL` (`designs_svc`, `search_path=designs_schema`),
+mapped to `DATABASE_URL_DESIGNS` in `postershop-db`; the RDS user and schema are created by
+`full-deploy.sh` alongside the other seven. No secret is involved in S3 access — that is IRSA.
 
 ### Benefits
 
@@ -684,7 +797,8 @@ kubectl get externalsecrets -n postershop
 By default, `make cloud-down` preserves secrets for reuse. To delete everything:
 
 ```bash
-make cloud-clean-all  # Deletes secrets, ECR images, and infrastructure
+make cloud-clean-all  # Deletes secrets (incl. postershop/designs), ECR images, and infrastructure
+./deploy/teardown.sh --delete-secrets --delete-ecr --delete-bucket   # ...plus the designs S3 bucket
 ```
 
 ## Security Checklist

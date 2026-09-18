@@ -92,6 +92,13 @@ uvicorn main:app --reload --port 8008
 cd services/notifications
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8009
+
+# Designs Service (DB-backed: designs_schema; IMAGE_PROVIDER=fake needs no key,
+# images go to DESIGNS_STORAGE_DIR — default /data/images, so point it somewhere writable)
+cd services/designs
+pip install -r requirements.txt
+alembic upgrade head
+DESIGNS_STORAGE_DIR=/tmp/designs uvicorn main:app --reload --port 8010
 ```
 
 Port assignments follow `docker-compose.yaml`, which is authoritative. Note the ordering:
@@ -136,23 +143,66 @@ alembic downgrade -1
 alembic history
 ```
 
+Under docker-compose every DB-backed service (users, catalog, inventory, orders, production,
+logistics, notifications, designs) has a `<service>-migrate` sidecar that runs
+`alembic upgrade head` before the service starts. The sidecar is a **separate image** from
+`<service>` (same build context, no shared `image:`), so after adding a migration rebuild
+both — `docker compose build designs-migrate` and then `docker compose build designs` — or a
+stale sidecar runs the old alembic tree, applies nothing and exits 0. Phase 9 added
+`services/catalog/alembic/versions/003_product_listed.py` and
+`services/designs/alembic/versions/001_initial_schema.py` this way.
+
 ### Running Tests
 
-The suite lives in `tests/` at the repo root, not per service: 13 unit files in
-`tests/unit` and 3 integration files in `tests/integration` (162 tests: 158 unit + 4
+The suite lives in `tests/` at the repo root, not per service: 24 unit files in
+`tests/unit` and 4 integration files in `tests/integration` (283 tests: 276 unit + 7
 integration; see `tests/README.md`).
 
 ```bash
 pip install -r tests/requirements.txt
 
-# Unit tests — 158 tests, no services needed
+# Unit tests — 276 tests, no services needed (the designs tests load services/designs
+# through tests/unit/designs_testkit.py with the database and metrics stubbed)
 pytest tests/unit -q
 
-# Integration tests — 4 tests; need the compose stack up, including a healthy `ganache`
-# (test_escrow_contract_chain skips without it, test_escrow_flow fails on purpose)
-docker compose ps ganache
+# Integration tests — 7 tests; need the compose stack up, including a healthy `ganache`
+# (test_escrow_contract_chain skips without it, test_escrow_flow fails on purpose) and
+# `designs` on 8010 with IMAGE_PROVIDER=fake (test_design_flow generates, prints, orders,
+# pays and waits for the ORDER_PAID delivery — a real provider would cost money per run)
+docker compose ps ganache designs
 pytest tests/integration -q
 ```
+
+### AI studio locally
+
+The studio needs no key: `IMAGE_PROVIDER` defaults to `fake`, which paints a placeholder
+poster with Pillow in ~60 ms, and the style summariser falls back to deterministic keywords.
+Open http://localhost:3000/shop/studio (log in first — the owner account is exempt from the
+daily quota of 10), or drive it with curl (`docs/QUICK_REFERENCE.md`).
+
+Three prompt hooks exist on the fake provider only, so every path is demoable offline:
+
+- `[reject] anything` → the card ends **Failed** with "The provider's safety filter rejected this prompt"
+- `[fail] anything` → a simulated transport failure on every attempt: re-queued after 5 s and
+  30 s, `failed` after the third attempt (`DESIGNS_MAX_ATTEMPTS`)
+- `[slow] anything` → the render takes 3 s, long enough to watch **Generating**
+
+To generate real posters, add `IMAGE_PROVIDER=openai` to the gitignored `.env` next to your
+`OPENAI_API_KEY` (optionally `OPENAI_IMAGE_QUALITY=low`), then recreate only the designs
+container:
+
+```bash
+docker compose up -d --no-deps designs
+docker compose logs designs | grep '"image_provider"'   # "openai", "provider_params": {"model": "gpt-image-1.5", ...}
+```
+
+Measured in this repo: one `gpt-image-1.5` / `low` poster cost 715 output tokens (≈ $0.02)
+and took 12.1 s; `medium` (the default) is estimated at ≈ $0.06 per poster (`env.example`).
+The `gpt-4o-mini` style summary was 93 tokens. Remove the line and recreate the container to return to `fake` — the
+integration test assumes `fake`.
+
+`docker compose build designs` alone does not rebuild `designs-migrate`; rebuild both after
+changing `services/designs`, one at a time.
 
 ### Viewing Logs
 
@@ -201,11 +251,16 @@ JWT_SECRET=your-secret-key
 INVENTORY_SERVICE_URL=http://localhost:8006
 PRODUCTION_SERVICE_URL=http://localhost:8004
 NOTIFICATIONS_SERVICE_URL=http://localhost:8009
+DESIGNS_SERVICE_URL=http://localhost:8010
+
+# Designs (see ENV_VARS.md "Designs Service")
+IMAGE_PROVIDER=fake
+STORAGE_BACKEND=local
 ```
 
 > Host ports follow `docker-compose.yaml`, which is authoritative:
 > users 8001, catalog 8002, orders 8003, production 8004, logistics 8005,
-> inventory 8006, payments 8007, infra 8008, notifications 8009.
+> inventory 8006, payments 8007, infra 8008, notifications 8009, designs 8010.
 > Inside Docker Compose every service listens on container port 8000, so
 > service-to-service URLs there use `http://<service>:8000` instead.
 
@@ -326,14 +381,15 @@ docker system prune -a
 1. Check outbox stats: `curl -H "Authorization: Bearer $TOKEN" http://localhost:8003/outbox/stats`
    (requires the **owner** role — the endpoint returns 401 without a token and
    403 for a non-owner. Get `$TOKEN` from `POST http://localhost:8001/login`.)
-2. Verify `PRODUCTION_SERVICE_URL` and `NOTIFICATIONS_SERVICE_URL` are correct
-3. Check that both subscriber services are running and healthy
+2. Verify `PRODUCTION_SERVICE_URL`, `NOTIFICATIONS_SERVICE_URL` and `DESIGNS_SERVICE_URL` are correct
+3. Check that every subscriber service is running and healthy
 4. Look for errors in outbox `last_error` field
 
-Remember that `ORDER_PAID` and `ORDER_CANCELLED` fan out to **both** production and
-notifications. If either subscriber is down, the whole event is retried and re-delivered
-to the one that already succeeded — so a stuck event does not necessarily implicate the
-service you first suspect.
+Remember that `ORDER_PAID` fans out to **three** subscribers (production, notifications,
+designs) and `ORDER_CANCELLED` to two. If any subscriber is down, the whole event is retried
+and re-delivered to the ones that already succeeded — so a stuck event does not necessarily
+implicate the service you first suspect. A design that never shows "Bought" after a paid
+order means the designs delivery failed: `docker compose logs designs | grep ORDER_PAID`.
 
 ### Emails not being sent
 
@@ -358,6 +414,22 @@ The compose healthcheck probes `http://127.0.0.1/health` on purpose: nginx in th
 image does not listen on ::1, and `localhost` may resolve there first, so a `localhost`
 probe fails against a perfectly healthy container (commit `ee5c25d`). Keep the literal
 IPv4 address if you edit the check.
+
+### Generation stuck in "Queued" or ends "Failed"
+
+1. `docker compose logs designs | grep -E "Generation worker started|Generation finished"` —
+   the worker starts once per container; no "finished" lines means it is not claiming rows
+2. `curl localhost:8010/metrics | grep -E "designs_queue_depth|circuit_breaker"` — an open
+   `image_provider` breaker keeps rows `queued` (re-queued every `CB_RECOVERY_TIMEOUT` s
+   without consuming an attempt) rather than failing them
+3. A `failure_reason` of "not configured correctly" is a 4xx from the provider (wrong key or
+   model — the detail is in the log, never shown to the customer); "unavailable right now"
+   is three transport failures (`DESIGNS_MAX_ATTEMPTS`); a refusal text is the provider's
+   content filter (`[reject]` on the fake provider)
+4. A 429 on `POST /generations` is the per-UTC-day quota (`AI_DAILY_QUOTA`, failed rows do
+   not count, owner exempt); `GET /me/quota` shows `used` / `resets_at`
+5. "Print this" answering 503 means catalog or inventory is down or its breaker is open;
+   the row stays unprinted and the button can simply be pressed again
 
 ### Ether payment option missing or "Escrow unavailable"
 
