@@ -31,14 +31,17 @@ SCHEMA_NAME = "orders_schema"
 
 # Notifications service base URL (transactional email fan-out via the outbox).
 NOTIFICATIONS_SERVICE_URL = os.getenv("NOTIFICATIONS_SERVICE_URL", "http://notifications:8000")
+# Designs service: purchases feed the customer's style profile and mark printed designs as bought (phase 9).
+DESIGNS_SERVICE_URL = os.getenv("DESIGNS_SERVICE_URL", "http://designs:8000")
 
 # Event subscriber URLs - which services listen to which events.
-# ORDER_PAID / ORDER_CANCELLED fan out to BOTH production and notifications;
-# ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
+# ORDER_PAID fans out to production, notifications AND designs; ORDER_CANCELLED to
+# production and notifications; ORDER_SHIPPED / ORDER_DELIVERED go to notifications only.
 EVENT_SUBSCRIBERS = {
     "ORDER_PAID": [
         os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-paid",
         NOTIFICATIONS_SERVICE_URL + "/events/order-paid",
+        DESIGNS_SERVICE_URL + "/events/order-paid",
     ],
     "ORDER_CANCELLED": [
         os.getenv("PRODUCTION_SERVICE_URL", "http://production:8000") + "/events/order-cancelled",

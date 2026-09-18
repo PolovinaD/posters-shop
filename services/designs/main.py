@@ -12,10 +12,11 @@ generation worker:
                                  A4..A1 variants + virtual stock; 201 created / 200 already printed
   GET  /images/{key}             the PNG bytes, immutable cache headers, NO bearer required
                                  (an <img> cannot send one; the 32-hex key is the capability)
+  POST /events/order-paid        the orders outbox's third ORDER_PAID subscriber (D-07):
+                                 service or owner token; DB-only and idempotent (events.py)
 
 The worker (worker.py) is started in lifespan with asyncio.create_task and cancelled
-on shutdown (production's job_worker shape). Later plans add the memory tiers and
-the ORDER_PAID subscription.
+on shutdown (production's job_worker shape).
 
 The image provider (providers.py, IMAGE_PROVIDER env) and the storage backend
 (storage.py, STORAGE_BACKEND env) are built lazily through provider()/storage(),
@@ -37,6 +38,7 @@ import inventory_client
 from auth import get_current_user_claims
 from circuit_breaker import CircuitOpenError
 from database import engine, get_db
+from events import process_order_paid
 from logger import get_logger, LoggingMiddleware
 from metrics import metrics_endpoint, track_metrics, SERVICE_NAME
 from models import Generation, SavedPrompt
@@ -44,8 +46,10 @@ from printing import print_generation
 from providers import get_image_provider
 from quota import check_quota, quota_status
 from schemas import (
-    GenerationCreate, GenerationOut, PrintOut, QuotaOut, SavedPromptCreate, SavedPromptOut,
+    GenerationCreate, GenerationOut, OutboxEventPayload, PrintOut, QuotaOut, SavedPromptCreate,
+    SavedPromptOut,
 )
+from service_auth import require_service_or_owner
 from storage import get_storage
 from summarizer import get_summarizer
 from worker import worker_loop
@@ -303,6 +307,22 @@ def delete_saved_prompt(
     db.delete(saved)
     db.commit()
     return Response(status_code=204)
+
+
+# ============== Event Listeners (Outbox Pattern) ==============
+
+@app.post("/events/order-paid")
+def handle_order_paid(
+    event: OutboxEventPayload,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_service_or_owner),
+):
+    """ORDER_PAID from the orders outbox (D-07): stamp purchased_at on own designs, record
+    every item as a purchase, mark the style profile stale, dedup by event id. Answers 200
+    for unknown SKUs and re-deliveries — a non-2xx would make the outbox re-deliver the
+    whole event to production and notifications as well."""
+    logger.info("Received ORDER_PAID event", event_id=event.event_id, aggregate_id=event.aggregate_id)
+    return process_order_paid(db, event)
 
 
 # ============== Images ==============
