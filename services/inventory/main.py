@@ -7,8 +7,10 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 from sqlalchemy import select, update, delete, and_, text
 from sqlalchemy.orm import Session
 
@@ -70,55 +72,63 @@ async def notify_order_reservation_expired(order_id: int) -> None:
         )
 
 
+def _expire_pass() -> set[int]:
+    """One synchronous expiry sweep on a threadpool thread (SQL never runs on the
+    event loop). Returns the order ids whose reservations expired."""
+    with SessionLocal() as db:
+        now = datetime.now(timezone.utc)
+
+        # Find and process expired reservations atomically
+        expired = db.execute(
+            select(Reservation).where(
+                and_(
+                    Reservation.status == "active",
+                    Reservation.expires_at < now
+                )
+            ).with_for_update(skip_locked=True)
+        ).scalars().all()
+
+        expired_count = 0
+        order_ids_to_notify: set[int] = set()
+        for reservation in expired:
+            # Return quantity to available stock
+            db.execute(
+                update(Stock)
+                .where(Stock.sku == reservation.sku)
+                .values(
+                    available=Stock.available + reservation.quantity,
+                    reserved=Stock.reserved - reservation.quantity
+                )
+            )
+
+            # Mark reservation as expired
+            reservation.status = "expired"
+            reservation.released_at = now
+            order_ids_to_notify.add(reservation.order_id)
+            expired_count += 1
+
+        if expired_count > 0:
+            db.commit()
+            RESERVATIONS_EXPIRED.inc(expired_count)
+            logger.info("Released expired reservations", count=expired_count)
+
+            # Update metrics
+            _update_metrics(db)
+
+        return order_ids_to_notify
+
+
 async def expire_reservations_worker():
     """Background worker that releases expired reservations every 30 seconds."""
     while True:
         try:
-            with SessionLocal() as db:
-                now = datetime.now(timezone.utc)
-                
-                # Find and process expired reservations atomically
-                expired = db.execute(
-                    select(Reservation).where(
-                        and_(
-                            Reservation.status == "active",
-                            Reservation.expires_at < now
-                        )
-                    ).with_for_update(skip_locked=True)
-                ).scalars().all()
-                
-                expired_count = 0
-                order_ids_to_notify: set[int] = set()
-                for reservation in expired:
-                    # Return quantity to available stock
-                    db.execute(
-                        update(Stock)
-                        .where(Stock.sku == reservation.sku)
-                        .values(
-                            available=Stock.available + reservation.quantity,
-                            reserved=Stock.reserved - reservation.quantity
-                        )
-                    )
+            order_ids = await run_in_threadpool(_expire_pass)
 
-                    # Mark reservation as expired
-                    reservation.status = "expired"
-                    reservation.released_at = now
-                    order_ids_to_notify.add(reservation.order_id)
-                    expired_count += 1
-
-                if expired_count > 0:
-                    db.commit()
-                    RESERVATIONS_EXPIRED.inc(expired_count)
-                    logger.info("Released expired reservations", count=expired_count)
-
-                    # Update metrics
-                    _update_metrics(db)
-
-                    # Fire-and-forget notify orders service per unique order_id.
-                    # Tasks run on the running event loop; they do not block the
-                    # 30-second sleep below. notify_* swallows all exceptions.
-                    for order_id in order_ids_to_notify:
-                        asyncio.create_task(notify_order_reservation_expired(order_id))
+            # Fire-and-forget notify orders service per unique order_id.
+            # Tasks run on the running event loop; they do not block the
+            # 30-second sleep below. notify_* swallows all exceptions.
+            for order_id in order_ids:
+                asyncio.create_task(notify_order_reservation_expired(order_id))
 
         except Exception as e:
             logger.error("Error in expire_reservations_worker", error=str(e))
@@ -179,16 +189,24 @@ app.add_middleware(
 
 # ============== Health & Metrics ==============
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
