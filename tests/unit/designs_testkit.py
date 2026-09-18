@@ -24,7 +24,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 DESIGNS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../services/designs"))
 # Load order matters: leaves first. Later plans append names here (quota, schemas, worker, main, summarizer, ...).
-MODULES = ["logger", "service_auth", "auth", "models", "circuit_breaker", "providers", "storage"]
+MODULES = ["logger", "service_auth", "auth", "models", "circuit_breaker", "providers", "storage", "quota", "schemas"]
 _cache = None
 
 
