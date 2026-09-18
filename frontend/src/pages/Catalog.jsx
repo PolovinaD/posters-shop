@@ -605,10 +605,15 @@ export default function Catalog() {
   const [variantsModal, setVariantsModal] = useState({ open: false, product: null });
   const [framesModalOpen, setFramesModalOpen] = useState(false);
   const [sizesModalOpen, setSizesModalOpen] = useState(false);
+  // Unlisted AI-* print-on-demand families are hidden by default (listed_only=true on
+  // the server); the toggle re-queries with listed_only=false. It lives in the query key
+  // so the two lists are cached separately; invalidateQueries(['catalog-products']) still
+  // prefix-matches both.
+  const [showCustom, setShowCustom] = useState(false);
   
   const { data: products, isLoading, error, refetch } = useQuery({
-    queryKey: ['catalog-products'],
-    queryFn: () => catalogApi.getProducts({ active_only: false }),
+    queryKey: ['catalog-products', showCustom],
+    queryFn: () => catalogApi.getProducts(showCustom ? { active_only: false, listed_only: false } : { active_only: false }),
   });
   
   const { data: categories } = useQuery({
@@ -653,7 +658,6 @@ export default function Catalog() {
   if (error) return <ErrorMessage message={error.message} retry={refetch} />;
   
   const activeProducts = products?.filter(p => p.active) || [];
-  const inactiveProducts = products?.filter(p => !p.active) || [];
   const inStockCount = products?.filter(p => p.in_stock).length || 0;
   
   return (
@@ -664,6 +668,15 @@ export default function Catalog() {
           <p className="text-slate-400">Manage products, sizes, and frames</p>
         </div>
         <div className="flex gap-3">
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="accent-blue-500"
+              checked={showCustom}
+              onChange={(e) => setShowCustom(e.target.checked)}
+            />
+            Show custom (AI) products
+          </label>
           <Button variant="secondary" onClick={() => refetch()}>
             <RefreshCw className="w-4 h-4" />
             Refresh
@@ -778,15 +791,25 @@ export default function Catalog() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      {product.active ? (
-                        <span className="flex items-center gap-1 text-green-400">
-                          <Eye className="w-3 h-3" /> Active
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-slate-500">
-                          <EyeOff className="w-3 h-3" /> Inactive
-                        </span>
-                      )}
+                      <div className="flex items-center">
+                        {product.active ? (
+                          <span className="flex items-center gap-1 text-green-400">
+                            <Eye className="w-3 h-3" /> Active
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-slate-500">
+                            <EyeOff className="w-3 h-3" /> Inactive
+                          </span>
+                        )}
+                        {product.listed === false && (
+                          <span
+                            className="ml-2 px-2 py-0.5 rounded text-xs bg-purple-500/20 text-purple-300"
+                            title="Not shown in the shop catalogue (print-on-demand family)"
+                          >
+                            Unlisted
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
