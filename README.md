@@ -28,6 +28,11 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
               │ payments  │     │  infra  │     │  notifications  │     │
               │ (Stripe)  │     │ (k8s)   │     │  (email/SES)    │     │
               └───────────┘     └─────────┘     └─────────────────┘     │
+                    │                                                    │
+              ┌─────┴─────┐                                              │
+              │  designs  │  (AI poster studio: image provider, S3)      │
+              │ (studio)  │                                              │
+              └───────────┘                                              │
     └───────────────────────────────────────────────────────────────────┘
                                       │
                     ┌─────────────────┴───────────────────┐
@@ -49,14 +54,16 @@ A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
 | **payments** | 8000 | Real Stripe Hosted Checkout sessions and Ethereum escrow (`OrderEscrow` on Ganache via web3) |
 | **infra** | 8000 | Kubernetes cluster introspection API |
 | **notifications** | 8000 | Transactional email on order events (pluggable: logging / AWS SES) |
+| **designs** | 8000 | AI poster studio: async image generation (fake / OpenAI / Replicate), print-this into the catalog, per-user memory |
 | **frontend** | 80 | React SPA (shop + admin panel) |
 | **ganache** | 8545 | Ethereum simulator (`trufflesuite/ganache:v7.9.2`, deterministic wallet, chainId 1337) — compose service and helm-only chart, no image of our own |
 
 ## Key Features
 
-- **Outbox Pattern**: Reliable event delivery between services (orders → production, notifications)
+- **Outbox Pattern**: Reliable event delivery between services (orders → production, notifications, designs)
 - **Transactional Email**: Order confirmation, shipping, delivery and cancellation email via a pluggable provider (AWS SES in production, log-only locally)
 - **Escrow Payment**: pay with Ether into a per-order smart contract; released 80/20 to owner and courier on confirmed delivery, refunded on cancel
+- **AI Poster Studio**: prompt → generated poster → print-on-demand catalog product, with a per-user style profile fed by the ORDER_PAID outbox event (`/shop/studio`; fake provider by default, OpenAI or Replicate with a key)
 - **Schema Isolation**: Each service owns its PostgreSQL schema
 - **JWT Auth**: Stateless authentication with role-based access
 - **Admin Panel**: Full management UI for all services
@@ -109,12 +116,13 @@ helm upgrade --install ganache    deploy/charts/ganache    -n postershop   # bef
 helm upgrade --install payments   deploy/charts/payments   -n postershop
 helm upgrade --install infra      deploy/charts/infra      -n postershop
 helm upgrade --install notifications deploy/charts/notifications -n postershop
+helm upgrade --install designs    deploy/charts/designs    -n postershop
 helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 ```
 
 ## Database Configuration
 
-The seven database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe; escrow state on chain and on the orders row) and `infra` (reads live Kubernetes state) are stateless and own no schema:
+The eight database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe; escrow state on chain and on the orders row) and `infra` (reads live Kubernetes state) are stateless and own no schema:
 
 ```
 postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3D<schema>
@@ -129,6 +137,7 @@ postgresql+psycopg2://<USER>:<PASS>@<RDS_HOST>:5432/<DB>?options=-csearch_path%3
 | production | `production_schema` | `production_svc` |
 | logistics | `logistics_schema` | `logistics_svc` |
 | notifications | `notifications_schema` | `notifications_svc` |
+| designs | `designs_schema` | `designs_svc` |
 
 ## Project Structure
 
@@ -144,6 +153,7 @@ shop-platform/
 │   ├── payments/
 │   │   └── contracts/      # OrderEscrow.sol + compiled artifact
 │   ├── notifications/
+│   ├── designs/
 │   └── infra/
 ├── frontend/               # React SPA
 ├── deploy/                 # Deployment resources
@@ -182,7 +192,7 @@ Each service has its own README with API endpoints, schemas, and usage:
 - [Users](services/users/README.md) | [Catalog](services/catalog/README.md) | [Inventory](services/inventory/README.md)
 - [Orders](services/orders/README.md) | [Production](services/production/README.md) | [Logistics](services/logistics/README.md)
 - [Payments](services/payments/README.md) | [Infra](services/infra/README.md) | [Notifications](services/notifications/README.md)
-- [Shared](services/shared/README.md)
+- [Designs](services/designs/README.md) | [Shared](services/shared/README.md)
 
 ## Technology Stack
 
@@ -208,8 +218,10 @@ Access via ALB:
 http://<ALB_HOST>/api/users/...
 http://<ALB_HOST>/api/catalog/...
 http://<ALB_HOST>/api/orders/...
+http://<ALB_HOST>/api/designs/...
 ...
 http://<ALB_HOST>/shop          # Customer shop
+http://<ALB_HOST>/shop/studio   # AI poster studio
 http://<ALB_HOST>/              # Admin panel
 ```
 

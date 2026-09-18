@@ -20,7 +20,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Technology Stack
 
 ## Languages
-- Python 3.11 - All backend microservices (9 services), runtime specified in `services/payments/Dockerfile` as `python:3.11-slim`
+- Python 3.11 - All backend microservices (10 services), runtime specified in `services/payments/Dockerfile` as `python:3.11-slim`
 - TypeScript/JavaScript (ES Modules) - Frontend application in `frontend/`
 - SQL - Database migrations via Alembic, init scripts in `db/init.sql`
 - YAML - Kubernetes manifests, Helm charts, GitHub Actions workflows
@@ -33,14 +33,14 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - npm - Frontend dependencies via `package.json` with `npm ci` in Docker builds
 - Lockfile: `package-lock.json` present for frontend; no `pip` lockfiles (pinned versions vary by service)
 ## Frameworks
-- FastAPI - All 9 backend microservices, REST API framework
-- Uvicorn 0.38.0 - ASGI server for all Python services (uniform since 86c329c; notifications and payments keep the `[standard]` extra, the other seven do not)
+- FastAPI - All 10 backend microservices, REST API framework
+- Uvicorn 0.38.0 - ASGI server for all Python services (uniform since 86c329c; notifications, payments and designs keep the `[standard]` extra, the other seven do not)
 - React 19.2 - Frontend SPA (`frontend/package.json`)
 - Vite 5.4 - Frontend build tool and dev server
-- SQLAlchemy 2.0+ - ORM for all database-backed services (users, catalog, orders, production, logistics, inventory)
+- SQLAlchemy 2.0+ - ORM for all database-backed services (users, catalog, orders, production, logistics, inventory, notifications, designs)
 - Alembic >= 1.13.0 - Database migrations for all database-backed services
 - psycopg2-binary - PostgreSQL driver
-- pytest 8.3.4 - Test framework; the suite lives in `tests/` (13 unit files + 3 integration, 162 tests: 158 unit + 4 integration), not per-service (`tests/requirements.txt`)
+- pytest 8.3.4 - Test framework; the suite lives in `tests/` (24 unit files + 4 integration, 283 tests: 276 unit + 7 integration), not per-service (`tests/requirements.txt`)
 - Docker / Docker Compose - Local development and container builds (`docker-compose.yaml`)
 - Make - Build automation (`Makefile`)
 - Helm 3.19.0 - Kubernetes package management (`deploy/charts/`); nothing in the repo pins it — CI uses `azure/setup-helm@v3` with no `version:`
@@ -48,9 +48,9 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Key Dependencies
 | Dependency | Version | Purpose | Risk Level |
 |-----------|---------|---------|------------|
-| FastAPI | 0.119.1 | REST API framework for all services | Low - uniform across all nine since 86c329c |
+| FastAPI | 0.119.1 | REST API framework for all services | Low - uniform across all ten (designs pins the same) |
 | SQLAlchemy | >=2.0 | ORM and database access | Low |
-| Pydantic | 2.12.3 | Request/response validation | Low - uniform across all nine since 86c329c |
+| Pydantic | 2.12.3 | Request/response validation | Low - uniform across all ten (designs pins the same) |
 | React | ^19.2.0 | Frontend UI library | Low |
 | react-router-dom | ^7.11.0 | Client-side routing | Low |
 | @tanstack/react-query | ^5.90.12 | Server state management, data fetching | Low |
@@ -59,10 +59,11 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | psycopg2-binary | >=2.9 | PostgreSQL driver | Low |
 | Alembic | >=1.13.0 | Database schema migrations | Low |
 | prometheus-client | >=0.15.0, newest pin 0.23.1 | Metrics exposition for Prometheus scraping | Low |
-| httpx | >=0.25.0 | Async HTTP client for inter-service calls | Low |
-| PyJWT | 2.10.1 (catalog, orders, inventory), 2.12.1 (users, logistics, infra) | JWT token creation/validation | Low |
+| httpx | >=0.25.0 | Async HTTP client for inter-service calls and the OpenAI/Replicate calls (designs) | Low |
+| PyJWT | 2.10.1 (catalog, orders, inventory), 2.12.1 (users, logistics, infra, notifications, designs) | JWT token creation/validation | Low |
 | passlib | 1.7.4 | Password hashing (users service) | Medium - unmaintained |
-| boto3 | 1.38.0 | AWS SDK — SES email in notifications; pinned but never imported in catalog and logistics | Low - pinned |
+| boto3 | 1.38.0 | AWS SDK — SES email in notifications, S3 image storage in designs; pinned but never imported in catalog and logistics | Low - pinned |
+| Pillow | 12.3.0 | Fake image provider placeholder renders (designs) | Low |
 | kubernetes | unpinned | K8s Python client (infra service) | Low |
 | websockets | unpinned | WebSocket support (infra service) | Low |
 | web3 | >=7.13,<8 | Ethereum JSON-RPC client — the escrow provider in payments (`services/payments/escrow.py`) | Low - pinned major |
@@ -115,6 +116,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 | payments | 8007 | None — sessions live at Stripe; escrow state on chain + the orders row | stripe, web3 |
 | infra | 8008 | None | kubernetes, websockets |
 | notifications | 8009 | PostgreSQL (notifications schema) | boto3 (SES) |
+| designs | 8010 | PostgreSQL (designs schema) | httpx, Pillow, boto3 (S3), PyJWT |
 | frontend | 3000 | None | React, Vite, Nginx |
 | ganache | 8545 | LevelDB on the `ganache-data` volume (not a Python service) | trufflesuite/ganache:v7.9.2 |
 <!-- GSD:stack-end -->
@@ -184,12 +186,12 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 ## Architecture
 
 ## Pattern Overview
-- 9 independent Python/FastAPI backend services; the seven database-backed ones each own their own PostgreSQL schema, while payments and infra are stateless; payments additionally drives one `OrderEscrow` contract per order on a Ganache node (compose service / helm-only chart) through web3
+- 10 independent Python/FastAPI backend services; the eight database-backed ones each own their own PostgreSQL schema, while payments and infra are stateless; payments additionally drives one `OrderEscrow` contract per order on a Ganache node (compose service / helm-only chart) through web3
 - Single React SPA frontend acting as both admin dashboard and customer-facing shop
 - Synchronous HTTP inter-service communication via `httpx` async clients
-- Asynchronous event delivery via the Outbox Pattern, fanning out to multiple subscribers (orders -> production, notifications)
+- Asynchronous event delivery via the Outbox Pattern, fanning out to multiple subscribers (orders -> production, notifications, designs)
 - Nginx reverse proxy (in production Docker) routing `/api/{service}/` to backend services and `/rpc` to `ganache:8545`
-- Each service runs on port 8000 internally, exposed on unique host ports (8001-8009)
+- Each service runs on port 8000 internally, exposed on unique host ports (8001-8010)
 ## Layers
 - Purpose: Admin dashboard and customer-facing poster shop
 - Location: `frontend/src/`
@@ -208,7 +210,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Used by: Frontend via Nginx proxy, other services via direct HTTP
 - Purpose: Persistent storage with schema-per-service isolation
 - Location: `db/init.sql` (schema/user setup), `services/{service}/alembic/` (migrations)
-- Contains: PostgreSQL schemas: `users`, `catalog`, `orders`, `production`, `logistics`, `inventory`, `notifications`
+- Contains: PostgreSQL schemas: `users`, `catalog`, `orders`, `production`, `logistics`, `inventory`, `notifications`, `designs`
 - Depends on: Single PostgreSQL 16 instance
 - Used by: All services with database needs (all except payments and infra)
 - Purpose: Kubernetes (EKS) deployment with Helm charts
@@ -229,10 +231,13 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Pattern: Each client module defines a base URL from env vars, custom exception classes, and async functions using `httpx.AsyncClient`
 - Purpose: Reliable at-least-once event delivery between services
 - Examples: `services/orders/outbox.py`
-- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry: 5 delivery attempts separated by 4 waits (5s, 15s, 1m, 5m). `RETRY_DELAYS` carries a fifth value of 15m that is never reached, because `retry_count` is incremented before it is compared against `MAX_RETRIES`. Multi-subscriber fan-out: `EVENT_SUBSCRIBERS` maps 4 event types to 6 URLs — `ORDER_PAID` and `ORDER_CANCELLED` go to both production and notifications, `ORDER_SHIPPED` and `ORDER_DELIVERED` to notifications only. Retry is per-event, not per-subscriber, so a failure at one subscriber re-delivers to those that already succeeded.
+- Pattern: Events written to `outbox_events` table in same transaction as business logic. Background worker polls and delivers via HTTP POST to subscriber URLs. Exponential backoff retry: 5 delivery attempts separated by 4 waits (5s, 15s, 1m, 5m). `RETRY_DELAYS` carries a fifth value of 15m that is never reached, because `retry_count` is incremented before it is compared against `MAX_RETRIES`. Multi-subscriber fan-out: `EVENT_SUBSCRIBERS` maps 4 event types to 7 URLs — `ORDER_PAID` goes to production, notifications AND designs, `ORDER_CANCELLED` to production and notifications, `ORDER_SHIPPED` and `ORDER_DELIVERED` to notifications only. Retry is per-event, not per-subscriber, so a failure at one subscriber re-delivers to those that already succeeded.
 - Purpose: Swappable email transport so local development needs no AWS credentials
 - Examples: `services/notifications/providers.py` (`EmailProvider` ABC, `LoggingProvider`, `SesProvider`)
 - Pattern: Abstract base class with a single `send(to, subject, body)` method, selected at startup by the `EMAIL_PROVIDER` env var (`get_provider()`). LoggingProvider renders into the structured log for docker-compose and demos; SesProvider calls AWS SES via boto3 with credentials from IRSA rather than any stored key.
+- Purpose: Swappable image generation so compose needs no key
+- Examples: `services/designs/providers.py` (`ImageProvider` ABC, `FakeProvider`, `OpenAIImagesProvider`, `ReplicateProvider`), `services/designs/storage.py` (`Storage` ABC, `LocalStorage`, `S3Storage`), `services/designs/worker.py` (the async generation worker)
+- Pattern: the ImageProvider ABC is selected by env exactly like EmailProvider (`IMAGE_PROVIDER`, `get_image_provider()`; a real provider without its key falls back to fake with a warning); `PromptRejected` / `ProviderConfigError` / `ProviderError` taxonomy — only `ProviderError` trips the copied circuit breaker, a refusal becomes a `failed` generation with a user-visible reason; the worker claims rows with `FOR UPDATE SKIP LOCKED` and holds no session across the provider call; "Print this" turns a ready design into an unlisted catalog family `AI-{id}` with virtual stock so the existing checkout pipeline stays untouched
 - Purpose: Ethereum escrow beside the Stripe adapter, so payments stays stateless
 - Examples: `services/payments/escrow.py` (`EscrowProvider`, `init_provider`/`get_provider`, `EscrowUnavailable` -> 503), `services/orders/order_paid.py` (`mark_order_paid`, shared by the Stripe webhook, escrow verify and the reconciler), `services/orders/escrow_reconciler.py`
 - Pattern: one `OrderEscrow` contract per order; the customer signs exactly one transaction (`pay()`), the owner key sends everything else; orders is the source of truth for escrow state (`EscrowStatus` mirrors the contract enum plus a local `failed`)
@@ -251,7 +256,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Responsibilities: Renders admin dashboard (/) and customer shop (/shop) routes
 - Location: `services/{service}/main.py`
 - Triggers: HTTP requests (FastAPI/Uvicorn on port 8000)
-- Responsibilities: REST API endpoints, background workers (outbox, job processing, reservation expiry, escrow reconciler)
+- Responsibilities: REST API endpoints, background workers (outbox, job processing, reservation expiry, escrow reconciler, image generation)
 - Location: `docker-compose.yaml`
 - Triggers: `make dev` / `docker compose up`
 - Responsibilities: Orchestrates all services + PostgreSQL locally
