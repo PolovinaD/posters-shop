@@ -34,6 +34,7 @@ pytest tests/unit/ -v
 | `test_catalog_listed.py` | catalog `products.listed`: `GET /products` hides unlisted families, `GET /products/{sku}` and `/internal/resolve-prices` unchanged (compiled SQL), `POST /internal/products` 201 / 200 / 400 |
 | `test_inventory_internal_stock.py` | inventory `POST /internal/stock`: bulk create, existing SKUs skipped, `{created, skipped}` result, service-or-owner guard |
 | `test_no_sql_on_event_loop.py` | no sync SQLAlchemy call inside an `async def` in the six services with async DB paths (orders, catalog, designs, logistics, production, inventory) — the static half of the event-loop tripwire (`services/*/database.py` logs the runtime half); one parametrised case per service |
+| `test_bulkhead.py` | the per-process bulkhead middleware: admission up to the pool size, queueing, 503 + `Retry-After` after `BULKHEAD_QUEUE_TIMEOUT`, `/healthz`/`/readyz`/`/metrics`/OPTIONS bypass, slot release on exceptions, the limit/timeout env resolution, metrics present at 0, copy drift and innermost registration in the eight DB-backed services |
 
 `designs_testkit.py` is not a test: it is the shared loader that imports the
 `services/designs` modules once per pytest process with `database` and `metrics`
