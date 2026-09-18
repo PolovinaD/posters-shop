@@ -1,9 +1,12 @@
 """Unit tests for services/designs/providers.py: the fake provider, the placeholder
 painter, the error taxonomy and the env-driven provider selection. No network, no key."""
 import asyncio
+import base64
 import hashlib
 import io
+import json
 
+import httpx
 import pytest
 from PIL import Image
 
@@ -70,3 +73,121 @@ def test_get_image_provider_defaults_to_fake(providers, monkeypatch):
 
 def test_user_ref_is_stable_hash(providers):
     assert providers.user_ref("a@b.c") == hashlib.sha256(b"a@b.c").hexdigest()[:32]
+
+
+# ============== OpenAIImagesProvider (09-03, httpx.MockTransport only) ==============
+
+def _png_b64(providers):
+    # 128x192: the smallest canvas the footer rectangle (x0=48, x1=w-48) fits on
+    return base64.b64encode(providers.paint_placeholder("x", 128, 192)).decode()
+
+
+def _openai(providers, handler):
+    return providers.OpenAIImagesProvider(
+        api_key="sk-test", model="gpt-image-1.5", quality="medium",
+        base_url="https://api.openai.test/v1", transport=httpx.MockTransport(handler),
+    )
+
+
+def _openai_error(status, error, headers=None):
+    def handler(request):
+        return httpx.Response(status, json={"error": error}, headers=headers)
+    return handler
+
+
+def test_openai_request_shape_and_decode(providers):
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers["authorization"]
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "created": 1, "data": [{"b64_json": _png_b64(providers)}], "usage": {"output_tokens": 1584},
+        })
+
+    provider = _openai(providers, handler)
+    png = asyncio.run(provider.generate("a poster", "u1"))
+    assert png[:8] == PNG_SIGNATURE
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v1/images/generations"
+    assert seen["auth"] == "Bearer sk-test"
+    assert seen["body"] == {
+        "model": "gpt-image-1.5", "prompt": "a poster", "n": 1, "size": "1024x1536",
+        "quality": "medium", "output_format": "png", "moderation": "auto", "user": "u1",
+    }
+    assert provider.name == "openai"
+    assert provider.params() == {
+        "size": "1024x1536", "model": "gpt-image-1.5", "quality": "medium", "output_format": "png",
+    }
+
+
+def test_openai_moderation_blocked_is_prompt_rejected(providers):
+    handler = _openai_error(400, {
+        "type": "image_generation_user_error", "code": "moderation_blocked", "message": "Your request was rejected",
+    })
+    with pytest.raises(providers.PromptRejected) as exc:
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+    assert str(exc.value) == "The provider's safety system rejected this prompt"
+
+
+def test_openai_legacy_content_policy_is_prompt_rejected(providers):
+    handler = _openai_error(400, {
+        "type": "invalid_request_error", "code": "content_policy_violation", "message": "rejected",
+    })
+    with pytest.raises(providers.PromptRejected):
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+
+
+def test_openai_other_400_is_config_error(providers):
+    handler = _openai_error(400, {"type": "invalid_request_error", "code": None, "message": "Invalid model"})
+    with pytest.raises(providers.ProviderConfigError) as exc:
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+    assert "400" in str(exc.value)
+    assert "Invalid model" in str(exc.value)
+
+    handler = _openai_error(401, {"type": "invalid_request_error", "code": "invalid_api_key"})
+    with pytest.raises(providers.ProviderConfigError):
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+
+
+def test_openai_429_and_5xx_are_provider_errors(providers):
+    handler = _openai_error(429, {"type": "rate_limit_error", "code": None})
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+
+    handler = _openai_error(429, {"code": "insufficient_quota"})
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+
+    def html_502(request):
+        return httpx.Response(502, text="<html><body>Bad gateway</body></html>",
+                              headers={"content-type": "text/html"})
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_openai(providers, html_502).generate("a poster", "u1"))
+
+
+def test_openai_network_error_is_provider_error(providers):
+    def handler(request):
+        raise httpx.ConnectError("boom", request=request)
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_openai(providers, handler).generate("a poster", "u1"))
+
+
+def test_classify_openai_error_direct(providers):
+    req = httpx.Request("POST", "https://x/y")
+    refusal = providers.classify_openai_error(
+        httpx.Response(400, json={"error": {"code": "moderation_blocked"}}, request=req)
+    )
+    assert isinstance(refusal, providers.PromptRejected)
+    outage = providers.classify_openai_error(
+        httpx.Response(503, text="upstream down", headers={"content-type": "text/plain"}, request=req)
+    )
+    assert isinstance(outage, providers.ProviderError)
+    config = providers.classify_openai_error(
+        httpx.Response(404, json={"error": {"type": "invalid_request_error", "code": "model_not_found"}}, request=req)
+    )
+    assert isinstance(config, providers.ProviderConfigError)

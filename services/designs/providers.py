@@ -18,6 +18,7 @@ FakeProvider test hooks (D-15): a prompt containing '[reject]' raises PromptReje
 '[fail]' raises ProviderError, '[slow]' sleeps 3 s so the UI's generating state is demoable.
 """
 import asyncio
+import base64
 import colorsys
 import hashlib
 import io
@@ -25,6 +26,7 @@ import os
 import textwrap
 from abc import ABC, abstractmethod
 
+import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 from logger import get_logger
@@ -33,6 +35,8 @@ logger = get_logger(__name__)
 
 IMAGE_SIZE = "1024x1536"  # D-17: portrait 2:3, PNG
 IMAGE_W, IMAGE_H = 1024, 1536
+
+OPENAI_REFUSAL_REASON = "The provider's safety system rejected this prompt"
 
 
 class ProviderError(Exception):
@@ -105,6 +109,89 @@ class FakeProvider(ImageProvider):
         if "[slow]" in prompt:
             await asyncio.sleep(3)
         return paint_placeholder(prompt)
+
+
+def classify_openai_error(r: httpx.Response) -> Exception:
+    """Map an OpenAI error response to the taxonomy.
+
+    Code/type FIRST, then status class (research pitfall 8): a wrong model is a 400
+    too, and must never read as "your prompt was rejected" nor trip the breaker.
+    """
+    err = {}
+    if r.headers.get("content-type", "").startswith("application/json"):
+        try:
+            err = (r.json() or {}).get("error") or {}
+        except ValueError:
+            err = {}
+    code, typ = err.get("code"), err.get("type")
+    msg = err.get("message") or r.text[:200]
+    if code in ("moderation_blocked", "content_policy_violation") or typ == "image_generation_user_error":
+        return PromptRejected(OPENAI_REFUSAL_REASON)
+    if r.status_code == 429 or r.status_code >= 500:
+        return ProviderError(f"openai {r.status_code}: {code or typ}: {msg}")
+    return ProviderConfigError(f"openai {r.status_code}: {code or typ}: {msg}")
+
+
+class OpenAIImagesProvider(ImageProvider):
+    """OpenAI Images API (gpt-image models): one portrait PNG, returned as base64.
+
+    The dall-e-only output-format selector is deliberately not sent (gpt-image rejects it).
+    Timeouts raise httpx.TimeoutException (an HTTPError) -> ProviderError, so the
+    worker retries and the breaker counts them.
+    """
+
+    name = "openai"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        quality: str,
+        base_url: str = "https://api.openai.com/v1",
+        transport=None,
+    ):
+        self.model = model
+        self.quality = quality
+        self._client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            transport=transport,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+
+    def params(self) -> dict:
+        return {"size": IMAGE_SIZE, "model": self.model, "quality": self.quality, "output_format": "png"}
+
+    async def generate(self, prompt: str, user_ref: str) -> bytes:
+        body = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": 1,
+            "size": IMAGE_SIZE,
+            "quality": self.quality,
+            "output_format": "png",
+            "moderation": "auto",
+            "user": user_ref,
+        }
+        try:
+            r = await self._client.post("/images/generations", json=body)
+        except httpx.HTTPError as e:
+            raise ProviderError(f"openai transport: {e}") from e
+        if r.status_code >= 400:
+            raise classify_openai_error(r)
+        data = r.json()
+        usage = data.get("usage") or {}
+        logger.info(
+            "OpenAI image generated",
+            model=self.model,
+            quality=self.quality,
+            output_tokens=usage.get("output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+        try:
+            return base64.b64decode(data["data"][0]["b64_json"])
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise ProviderError(f"openai: unexpected response shape: {e}") from e
 
 
 def get_image_provider() -> ImageProvider:
