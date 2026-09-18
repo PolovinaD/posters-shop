@@ -49,6 +49,7 @@ on:
         options:
           - all
           - catalog
+          - designs
           - frontend
           - ganache
           - infra

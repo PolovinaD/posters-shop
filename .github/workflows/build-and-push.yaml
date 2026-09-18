@@ -32,6 +32,7 @@ on:
         options:
           - all
           - catalog
+          - designs
           - frontend
           - infra
           - inventory

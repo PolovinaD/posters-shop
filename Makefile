@@ -165,7 +165,7 @@ dev-seed: ## [local] Seed all services with sample data and the demo courier's w
 .PHONY: dev-test
 dev-test: ## [local] Run health checks on all services
 	@echo "Testing services..."
-	@for port in 8001 8002 8003 8004 8005 8006 8007; do \
+	@for port in 8001 8002 8003 8004 8005 8006 8007 8009 8010; do \
 		status=$$(curl -s -o /dev/null -w "%{http_code}" localhost:$$port/healthz); \
 		if [ "$$status" = "200" ]; then \
 			echo "  ✅ Port $$port: OK"; \
@@ -307,7 +307,7 @@ ecr-login: check-account ## Login to ECR
 
 .PHONY: build-all
 build-all: ## Build all Docker images
-	@for svc in users catalog orders production logistics inventory payments notifications; do \
+	@for svc in users catalog orders production logistics inventory payments notifications designs; do \
 		echo "Building $$svc..."; \
 		docker build -t $(ECR_REGISTRY)/$$svc:latest services/$$svc; \
 	done
@@ -315,7 +315,7 @@ build-all: ## Build all Docker images
 
 .PHONY: push-all
 push-all: ecr-login ## Push all images to ECR
-	@for svc in users catalog orders production logistics inventory payments notifications frontend; do \
+	@for svc in users catalog orders production logistics inventory payments notifications designs frontend; do \
 		echo "Pushing $$svc..."; \
 		docker push $(ECR_REGISTRY)/$$svc:latest; \
 	done
