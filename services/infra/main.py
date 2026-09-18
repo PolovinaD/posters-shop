@@ -168,12 +168,14 @@ def prometheus_metrics():
 # ============== Health ==============
 
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": "infra", "in_cluster": IN_CLUSTER}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: no database here, so ready whenever the process answers."""
     return {"status": "ready"}
 
 
