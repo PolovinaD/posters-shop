@@ -151,6 +151,11 @@ def test_images_route_serves_png(client, main, d):
     assert resp.headers["content-type"] == "image/png"
     assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert resp.content == png
+    head = client.head(f"/images/{key}")  # curl -I / browser probes
+    assert head.status_code == 200
+    assert head.headers["content-type"] == "image/png"
+    assert head.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert head.content == b""
 
 
 def test_images_route_404_and_bad_key(client, d):

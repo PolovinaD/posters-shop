@@ -260,6 +260,7 @@ def delete_saved_prompt(
 # ============== Images ==============
 
 @app.get("/images/{key}")
+@app.head("/images/{key}")  # browsers, proxies and CDNs probe images with HEAD; uvicorn drops the body
 def get_image(key: str = Path(pattern=r"^[0-9a-f]{32}\.png$")):  # == storage.KEY_RE
     """Serve a generated PNG. Deliberately unauthenticated: <img> tags cannot send a
     bearer, and the unguessable 32-hex key is the capability. Keys never change, so
