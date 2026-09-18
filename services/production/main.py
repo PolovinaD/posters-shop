@@ -8,8 +8,10 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 from pydantic import BaseModel
 from sqlalchemy import select, update, text
 from sqlalchemy.orm import Session
@@ -69,24 +71,29 @@ def simulate_production_work(items_json: str) -> int:
 
 
 async def process_job(job: Job, db: Session) -> bool:
-    """Process a single job. Returns True on success."""
+    """Process a single job. Returns True on success.
+
+    Every commit and the CPU burn run via run_in_threadpool: sync work on the
+    event loop blocks every request and /healthz. The burn is unchanged (the HPA
+    demo signal stays); the GIL now hands the loop 5 ms slices instead of
+    blocking it for 100 ms x quantity."""
     try:
         # Mark as processing
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
-        db.commit()
+        await run_in_threadpool(db.commit)
         
         # Notify orders service that production started
         await orders_client.notify_order_producing(job.order_id)
         
         # Do the actual work (CPU-intensive)
-        processing_time = simulate_production_work(job.items_json)
+        processing_time = await run_in_threadpool(simulate_production_work, job.items_json)
         
         # Mark as completed
         job.status = JobStatus.COMPLETED
         job.completed_at = datetime.now(timezone.utc)
         job.processing_time_ms = processing_time
-        db.commit()
+        await run_in_threadpool(db.commit)
         
         # Update metrics
         JOBS_COMPLETED.labels(status="completed").inc()
@@ -103,7 +110,7 @@ async def process_job(job: Job, db: Session) -> bool:
         job.status = JobStatus.FAILED
         job.error_message = str(e)
         job.completed_at = datetime.now(timezone.utc)
-        db.commit()
+        await run_in_threadpool(db.commit)
         
         JOBS_COMPLETED.labels(status="failed").inc()
         logger.error("Job failed", job_id=job.id, order_id=job.order_id, error=str(e), exc_info=True)
@@ -117,23 +124,34 @@ async def job_worker():
     
     while True:
         try:
-            with SessionLocal() as db:
-                # Find next queued job (FIFO)
-                job = db.execute(
-                    select(Job)
-                    .where(Job.status == JobStatus.QUEUED)
-                    .order_by(Job.created_at)
-                    .limit(1)
-                    .with_for_update(skip_locked=True)
-                ).scalar_one_or_none()
+            # expire_on_commit=False: process_job reads job.items_json / job.id /
+            # job.order_id after its own commits and reads no server-generated column.
+            db = SessionLocal(expire_on_commit=False)
+            try:
+                # Find next queued job (FIFO) -- SQL off the event loop
+                def _claim():
+                    return db.execute(
+                        select(Job)
+                        .where(Job.status == JobStatus.QUEUED)
+                        .order_by(Job.created_at)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
+                    ).scalar_one_or_none()
+
+                def _queue_depth() -> list:
+                    return db.execute(
+                        select(Job).where(Job.status == JobStatus.QUEUED)
+                    ).scalars().all()
+
+                job = await run_in_threadpool(_claim)
                 
                 if job:
                     await process_job(job, db)
                     # Update queue metric
-                    queue_count = db.execute(
-                        select(Job).where(Job.status == JobStatus.QUEUED)
-                    ).scalars().all()
+                    queue_count = await run_in_threadpool(_queue_depth)
                     JOBS_IN_QUEUE.set(len(queue_count))
+            finally:
+                await run_in_threadpool(db.close)
                     
         except Exception as e:
             logger.error("Worker error", error=str(e), exc_info=True)
@@ -195,16 +213,24 @@ app.add_middleware(
 
 # ============== Health & Metrics ==============
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
