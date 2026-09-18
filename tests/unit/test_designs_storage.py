@@ -15,7 +15,7 @@ def storage():
 
 
 def test_key_regex(storage):
-    assert storage.KEY_RE.fullmatch("a" * 32 + ".png") is None  # not hex
+    assert storage.KEY_RE.fullmatch("g" * 32 + ".png") is None  # right length, not hex
     assert storage.KEY_RE.fullmatch("0123456789abcdef0123456789abcdef.png")
     assert storage.KEY_RE.fullmatch("../etc/passwd") is None
     assert storage.KEY_RE.fullmatch("0123456789ABCDEF0123456789ABCDEF.png") is None  # uppercase
