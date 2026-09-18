@@ -33,6 +33,7 @@ pytest tests/unit/ -v
 | `test_designs_style_profile.py` | `gather_inputs` (last 20 prompts + deduplicated purchase names), `refresh_profile` keeping the old summary on failure, `ensure_summary` never raising, `compose_effective_prompt` |
 | `test_catalog_listed.py` | catalog `products.listed`: `GET /products` hides unlisted families, `GET /products/{sku}` and `/internal/resolve-prices` unchanged (compiled SQL), `POST /internal/products` 201 / 200 / 400 |
 | `test_inventory_internal_stock.py` | inventory `POST /internal/stock`: bulk create, existing SKUs skipped, `{created, skipped}` result, service-or-owner guard |
+| `test_no_sql_on_event_loop.py` | no sync SQLAlchemy call inside an `async def` in the six services with async DB paths (orders, catalog, designs, logistics, production, inventory) — the static half of the event-loop tripwire (`services/*/database.py` logs the runtime half); one parametrised case per service |
 
 `designs_testkit.py` is not a test: it is the shared loader that imports the
 `services/designs` modules once per pytest process with `database` and `metrics`
