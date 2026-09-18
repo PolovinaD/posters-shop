@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { ShoppingCart, Package, Menu, X, User, LogOut, ChevronDown } from 'lucide-react';
+import { ShoppingCart, Package, Menu, X, User, LogOut, ChevronDown, Sparkles } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useCart } from '../../context/CartContext';
 import { useAuth } from '../../context/AuthContext';
@@ -29,6 +29,7 @@ export default function ShopLayout() {
       '/shop': 'PosterShop - Art Prints for Your Walls',
       '/shop/checkout': 'Checkout - PosterShop',
       '/shop/orders': 'Track Order - PosterShop',
+      '/shop/studio': 'AI Studio - PosterShop',
     };
     
     if (location.pathname.startsWith('/shop/product/')) {
@@ -66,9 +67,21 @@ export default function ShopLayout() {
               >
                 Shop
               </Link>
+              {/* Shown to everyone: the page itself sends anonymous visitors to login and back. */}
+              <Link
+                to="/shop/studio"
+                className={`text-sm font-medium transition-colors ${
+                  location.pathname.startsWith('/shop/studio')
+                    ? 'text-orange-600'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+              >
+                <Sparkles className="w-4 h-4 inline mr-1" />
+                Studio
+              </Link>
               {isAuthenticated ? (
-                <Link 
-                  to="/shop/my-orders" 
+                <Link
+                  to="/shop/my-orders"
                   className={`text-sm font-medium transition-colors ${
                     location.pathname === '/shop/my-orders'
                       ? 'text-orange-600' 
@@ -119,6 +132,14 @@ export default function ShopLayout() {
                         <p className="text-sm font-medium text-stone-900">{user?.name}</p>
                         <p className="text-xs text-stone-500 truncate">{user?.email}</p>
                       </div>
+                      <Link
+                        to="/shop/studio"
+                        onClick={() => setUserMenuOpen(false)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm text-stone-600 hover:bg-stone-50"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        Studio
+                      </Link>
                       <Link
                         to="/shop/my-orders"
                         onClick={() => setUserMenuOpen(false)}
@@ -190,8 +211,15 @@ export default function ShopLayout() {
               >
                 Shop
               </Link>
+              <Link
+                to="/shop/studio"
+                onClick={() => setMobileMenuOpen(false)}
+                className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"
+              >
+                Studio
+              </Link>
               {isAuthenticated ? (
-                <Link 
+                <Link
                   to="/shop/my-orders"
                   onClick={() => setMobileMenuOpen(false)}
                   className="block px-4 py-2 rounded-lg text-stone-600 hover:bg-stone-100"

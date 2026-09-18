@@ -37,6 +37,7 @@ import OrderTracking from './pages/shop/OrderTracking';
 import Login from './pages/shop/Login';
 import Register from './pages/shop/Register';
 import MyOrders from './pages/shop/MyOrders';
+import Studio from './pages/shop/Studio';
 
 // Courier Pages
 import CourierLogin from './pages/courier/CourierLogin';
@@ -197,6 +198,7 @@ export default function App() {
                 <Route path="login" element={<Login />} />
                 <Route path="register" element={<Register />} />
                 <Route path="my-orders" element={<MyOrders />} />
+                <Route path="studio" element={<Studio />} />
               </Route>
               
               {/* Admin Routes (dark theme) */}
