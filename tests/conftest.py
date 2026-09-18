@@ -40,6 +40,12 @@ def payments_url():
 
 
 @pytest.fixture(scope="session")
+def designs_url():
+    """The designs (AI poster studio) service published by compose on 8010."""
+    return "http://localhost:8010"
+
+
+@pytest.fixture(scope="session")
 def ganache_url():
     """The Ganache JSON-RPC endpoint published by the `ganache` compose service."""
     return "http://localhost:8545"
