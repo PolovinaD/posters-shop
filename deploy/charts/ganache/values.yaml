@@ -22,7 +22,7 @@ service:
 persistence:
   enabled: true
   size: 1Gi
-  storageClassName: ""   # empty => cluster default (gp2 via the EBS CSI driver installed by eksctl-cluster.yaml)
+  storageClassName: gp2  # named explicitly, like loki/prometheus values: EKS ships gp2 but marks no StorageClass as default, so "" leaves the PVC Pending
 
 resources:
   requests:
