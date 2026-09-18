@@ -47,14 +47,15 @@ Every order leaves a 15-min inventory reservation that the expiry worker cancels
 | bulkhead (2026-09-19, 50 clients, 60 s) | 28.9 | 105.0 | 431.7 | 0 of 299 | 26.4 | 26.4 | 0.0 (1587 x 201, 0 x 503 shed (Retry-After), order p50 1668 ms / p95 3201 ms) |
 | bulkhead, 20 clients, 30 s | 13.9 | 94.2 | 385.4 | 0 of 149 | 18.5 | 18.5 | 0.0 (556 x 201, 0 x 503 shed (Retry-After), order p50 1042 ms / p95 1618 ms) |
 | bulkhead, orders `BULKHEAD_LIMIT=16` (experiment, not the default; 50 clients, 60 s) | 45.1 | 208.4 | 375.2 | 0 of 299 | 22.4 | 22.4 | 0.0 (1341 x 201, 0 x 503 shed (Retry-After), order p50 2137 ms / p95 3870 ms) |
+| bulkhead, 50 clients, 60 s, after the active reservations and the outbox had drained | 27.5 | 125.2 | 602.2 | 0 of 299 | 24.7 | 24.7 | 0.0 (1481 x 201, 0 x 503 shed (Retry-After), order p50 1832 ms / p95 3511 ms) |
 
 `burst.py`: 2 x 50 concurrent `/internal/resolve-prices` against catalog -> 100 x 200,
 0 shed, p50 660 ms (round 1) / 148 ms (round 2), max 740 ms; was 10 x 200 at 30.5 s +
 40 x 500. `bulkhead_rejected_total` stayed 0.0 on catalog, inventory and orders through
-all three healthz runs, and the event-loop tripwire stayed silent.
+all four healthz runs, and the event-loop tripwire stayed silent.
 
 The `orders/s` column counts every answered request (an open circuit fast-fails at a
-high rate); `created/s` counts only 201s. The three bulkhead rows were measured
+high rate); `created/s` counts only 201s. The first three bulkhead rows were measured
 back-to-back on one compose stack and are not a clean throughput comparison: inventory
 `POST /reserve` hydrates every active reservation on every call (`_update_metrics` in
 `services/inventory/main.py`), and the active set grew from 0 to 3484 across the three
@@ -64,7 +65,13 @@ the same (<= 8) inventory concurrency. That, not the bulkhead, is why the 20-cli
 reads 18.5 instead of 39.1 (the 2026-09-18 run started from ~200 active reservations,
 today's from 2928) and why the limit-16 experiment could not be judged on throughput
 alone; its healthz p95 (208 ms vs 105 ms at the default 8) is the reason the committed
-default stays engine-derived.
+default stays engine-derived. The last row is the clean number: after the 3484
+reservations had expired (the expiry sweep fanned ~1500 notifications at once into
+orders' 8-slot bulkhead — `bulkhead_queued` peaked at 175, `bulkhead_rejected_total`
+stayed 0) and the 2500 ORDER_CANCELLED outbox events had been delivered, the same
+50-client run gave 24.7 created/s with reserve back at p50 39 ms. At 8 admitted
+requests the pipeline does ~25 orders/s on this compose VM; the 30/s target was not
+reached, and whether 16 would help needs the limit-16 run repeated on a drained stack.
 
 Before the fix the orders container did not recover on its own: with no liveness probe
 in compose it stayed parked in `pool_timeout=30` (5 s since the bulkhead) waits on the event loop at 0 % CPU and
