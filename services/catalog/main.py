@@ -2,12 +2,12 @@ import os
 import httpx
 from decimal import Decimal
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import (Column, Integer, String, Numeric, Boolean, Text, ForeignKey,
                         UniqueConstraint, select, text)
 from sqlalchemy.orm import Session, relationship
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from logger import get_logger, LoggingMiddleware
 from service_auth import internal_headers, require_service_or_owner
@@ -76,6 +76,9 @@ class Product(Base):
     category = Column(String, nullable=False, default="General")
     image_url = Column(String, nullable=True)
     active = Column(Boolean, default=True)
+    # listed=False hides a family from GET /products and /categories (custom AI
+    # motifs) while direct reads and pricing keep working.
+    listed = Column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     variants = relationship("ProductVariant", back_populates="product",
                             cascade="all, delete-orphan",
@@ -160,6 +163,7 @@ class ProductCreate(BaseModel):
     category: str = "General"
     image_url: Optional[str] = None
     active: bool = True
+    listed: bool = True
 
 
 class ProductUpdate(BaseModel):
@@ -169,6 +173,7 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     image_url: Optional[str] = None
     active: Optional[bool] = None
+    listed: Optional[bool] = None
 
 
 class ProductOut(BaseModel):
@@ -182,6 +187,7 @@ class ProductOut(BaseModel):
     category: str
     image_url: Optional[str]
     active: bool
+    listed: bool = True
     # Cheapest sellable variant, for the "from X" price on a catalogue card.
     price_from: Optional[Decimal] = None
     variants: list["VariantOut"] = []
@@ -267,6 +273,24 @@ class VariantUpdate(BaseModel):
     active: Optional[bool] = None
 
 
+class InternalVariantCreate(BaseModel):
+    size: str
+    price: Decimal
+
+
+class InternalProductCreate(BaseModel):
+    """One-shot family creation for another service (designs' Print-this):
+    family + variants in one transaction."""
+    sku: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    category: str = "Custom"
+    image_url: Optional[str] = None
+    listed: bool = False
+    active: bool = True
+    variants: list[InternalVariantCreate] = Field(min_length=1)
+
+
 class SizeCreate(BaseModel):
     name: str
     sort_order: int = 0
@@ -347,15 +371,21 @@ async def list_products(
     category: Optional[str] = None,
     active_only: bool = True,
     include_stock: bool = True,
+    listed_only: bool = True,
     db: Session = Depends(get_db)
 ):
-    """List all products, optionally filtered by category."""
+    """List all products, optionally filtered by category.
+
+    listed_only=false is for the admin table (shows custom AI motifs).
+    """
     query = select(Product)
     
     if category:
         query = query.where(Product.category == category)
     if active_only:
         query = query.where(Product.active == True)
+    if listed_only:
+        query = query.where(Product.listed == True)
     
     products = db.execute(query.order_by(Product.id)).scalars().all()
 
@@ -446,9 +476,10 @@ def delete_product(sku: str, db: Session = Depends(get_db), _: dict = Depends(re
 
 @app.get("/categories")
 def list_categories(db: Session = Depends(get_db)):
-    """List all unique categories."""
+    """List all unique categories (of listed families — otherwise "Custom"
+    would show up as an empty tab)."""
     products = db.execute(
-        select(Product.category).distinct().where(Product.active == True)
+        select(Product.category).distinct().where(Product.active == True, Product.listed == True)
     ).scalars().all()
     
     return ["All"] + sorted(set(products))
@@ -541,6 +572,51 @@ def resolve_prices(
         items=[found[sku] for sku in wanted if sku in found],
         unknown=[sku for sku in wanted if sku not in found],
     )
+
+
+@app.post("/internal/products", response_model=ProductOut, status_code=201)
+def create_internal_product(
+    payload: InternalProductCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_service_or_owner),
+):
+    """Idempotent family create for services (designs' Print-this).
+
+    An existing sku answers 200 with the family as it is; otherwise the family
+    and every variant are written in ONE transaction so a crash cannot leave a
+    motif without formats. `products.price` is the motif's reference price and
+    is never charged; the cheapest variant is a sensible reference.
+    """
+    existing = db.execute(select(Product).where(Product.sku == payload.sku)).scalar_one_or_none()
+    if existing:
+        response.status_code = 200
+        return _family_payload(existing, {})
+
+    if len({v.size for v in payload.variants}) != len(payload.variants):
+        raise HTTPException(status_code=400, detail="Duplicate format in variants")
+    sizes = [_known_size(db, v.size) for v in payload.variants]  # 400 before anything is written
+
+    product = Product(
+        sku=payload.sku,
+        name=payload.name,
+        description=payload.description,
+        price=min(v.price for v in payload.variants),
+        category=payload.category,
+        image_url=payload.image_url,
+        active=payload.active,
+        listed=payload.listed,
+    )
+    for v, size in zip(payload.variants, sizes):
+        product.variants.append(
+            ProductVariant(sku=f"{product.sku}-{size.name}", size=size.name, price=v.price, active=True)
+        )
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    logger.info("Internal product family created", sku=product.sku,
+                variants=len(payload.variants), listed=product.listed)
+    return _family_payload(product, {})
 
 
 # ============== Owner: variants, formats and frames ==============
