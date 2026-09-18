@@ -23,6 +23,7 @@ async function fetchJSON(url, options = {}) {
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
 
+  if (response.status === 204) return null;
   return response.json();
 }
 
@@ -95,6 +96,7 @@ export async function authFetchJSON(url, options = {}) {
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
 
+  if (response.status === 204) return null;
   return response.json();
 }
 
@@ -269,6 +271,35 @@ export const paymentsApi = {
   getEscrowDemoAccounts: () => fetchJSON(`${API_BASE}/payments/v1/escrow/demo-accounts`),
 };
 
+// ============== Designs API (AI poster studio) ==============
+// Every call carries the customer bearer; the service scopes rows by the JWT subject.
+// Images are NOT fetched here: <img src={image_url}> loads /api/designs/images/<key>.png
+// directly (public, immutable).
+export const designsApi = {
+  createGeneration: ({ prompt, personalise = false }) =>
+    authFetchJSON(`${API_BASE}/designs/generations`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt, personalise }),
+    }),
+  getGeneration: (id) => authFetchJSON(`${API_BASE}/designs/generations/${id}`),
+  listGenerations: (limit = 50) => authFetchJSON(`${API_BASE}/designs/generations?limit=${limit}`),
+  printGeneration: (id) =>
+    authFetchJSON(`${API_BASE}/designs/generations/${id}/print`, { method: 'POST' }),
+  listSavedPrompts: () => authFetchJSON(`${API_BASE}/designs/saved-prompts`),
+  createSavedPrompt: ({ title, prompt }) =>
+    authFetchJSON(`${API_BASE}/designs/saved-prompts`, {
+      method: 'POST',
+      body: JSON.stringify({ title, prompt }),
+    }),
+  // DELETE answers 204 with no body; fetchJSON/authFetchJSON return null for 204.
+  deleteSavedPrompt: (id) =>
+    authFetchJSON(`${API_BASE}/designs/saved-prompts/${id}`, { method: 'DELETE' }),
+  getQuota: () => authFetchJSON(`${API_BASE}/designs/me/quota`),
+  getStyleProfile: () => authFetchJSON(`${API_BASE}/designs/me/style-profile`),
+  refreshStyleProfile: () =>
+    authFetchJSON(`${API_BASE}/designs/me/style-profile/refresh`, { method: 'POST' }),
+};
+
 // ============== Infrastructure API ==============
 export const infraApi = {
   getCluster: () => authFetchJSON(`${API_BASE}/infra/cluster`),
@@ -369,6 +400,7 @@ export const healthApi = {
       { name: 'Logistics', url: `${API_BASE}/logistics/healthz` },
       { name: 'Inventory', url: `${API_BASE}/inventory/healthz` },
       { name: 'Payments', url: `${API_BASE}/payments/healthz` },
+      { name: 'Designs', url: `${API_BASE}/designs/healthz` },
     ];
     
     const results = await Promise.all(

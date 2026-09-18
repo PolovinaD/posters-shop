@@ -42,6 +42,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/payments/, '')
       },
+      '/api/designs': {
+        target: 'http://localhost:8010',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/designs/, '')
+      },
       '/rpc': {
         target: 'http://localhost:8545',
         changeOrigin: true,
