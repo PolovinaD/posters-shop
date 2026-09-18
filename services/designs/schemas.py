@@ -50,6 +50,14 @@ class SavedPromptOut(BaseModel):
     created_at: datetime
 
 
+class PrintOut(BaseModel):
+    """Answer of POST /generations/{id}/print: 201 when the family was created now,
+    200 (created=false) when the design had already been printed."""
+    sku: str
+    product_url: str
+    created: bool
+
+
 class QuotaOut(BaseModel):
     limit: int
     used: int

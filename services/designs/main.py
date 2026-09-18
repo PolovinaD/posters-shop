@@ -8,12 +8,14 @@ generation worker:
   GET  /generations[/{id}]       the caller's own rows, newest first / one row or 404
   GET  /me/quota                 D-14 daily allowance (limit / used / remaining / resets_at)
   GET|POST|DELETE /saved-prompts the caller's saved prompts
+  POST /generations/{id}/print   Print-this (D-06): an unlisted catalog family AI-{id} with
+                                 A4..A1 variants + virtual stock; 201 created / 200 already printed
   GET  /images/{key}             the PNG bytes, immutable cache headers, NO bearer required
                                  (an <img> cannot send one; the 32-hex key is the capability)
 
 The worker (worker.py) is started in lifespan with asyncio.create_task and cancelled
-on shutdown (production's job_worker shape). Later plans add print-this, the memory
-tiers and the ORDER_PAID subscription.
+on shutdown (production's job_worker shape). Later plans add the memory tiers and
+the ORDER_PAID subscription.
 
 The image provider (providers.py, IMAGE_PROVIDER env) and the storage backend
 (storage.py, STORAGE_BACKEND env) are built lazily through provider()/storage(),
@@ -23,21 +25,26 @@ import it without running the lifespan.
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 
+import catalog_client
+import inventory_client
 from auth import get_current_user_claims
+from circuit_breaker import CircuitOpenError
 from database import engine, get_db
 from logger import get_logger, LoggingMiddleware
 from metrics import metrics_endpoint, track_metrics, SERVICE_NAME
 from models import Generation, SavedPrompt
+from printing import print_generation
 from providers import get_image_provider
 from quota import check_quota, quota_status
 from schemas import (
-    GenerationCreate, GenerationOut, QuotaOut, SavedPromptCreate, SavedPromptOut,
+    GenerationCreate, GenerationOut, PrintOut, QuotaOut, SavedPromptCreate, SavedPromptOut,
 )
 from storage import get_storage
 from summarizer import get_summarizer
@@ -49,6 +56,10 @@ AI_DAILY_QUOTA = int(os.getenv("AI_DAILY_QUOTA", "10"))  # D-14; 0 = unlimited
 # on EKS (LocalStorage); a CDN/bucket URL when S3 serves the files directly.
 PUBLIC_URL_PREFIX = os.getenv("DESIGNS_PUBLIC_URL_PREFIX", "/api/designs/images").rstrip("/")
 PRODUCT_URL_PREFIX = "/shop/product"
+# Print-this (D-11/D-12): the A3 price; A4/A2/A1 follow the catalog seed ladder (-5/+10/+25).
+AI_POSTER_BASE_PRICE = Decimal(os.getenv("AI_POSTER_BASE_PRICE", "29.99"))
+# "Virtual stock" per variant: print-on-demand never runs out, but orders reserves unconditionally.
+AI_POSTER_STOCK = int(os.getenv("AI_POSTER_STOCK", "1000"))
 
 logger = get_logger(__name__)
 
@@ -210,6 +221,40 @@ def get_generation(
     claims: dict = Depends(get_current_user_claims),
 ):
     return to_out(_own_generation(db, generation_id, claims["sub"]))
+
+
+@app.post("/generations/{generation_id}/print", response_model=PrintOut, status_code=201)
+async def print_design(
+    generation_id: int,
+    response: Response,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_user_claims),
+):
+    """Print-this (D-06): turn the caller's ready design into an unlisted catalog family
+    (AI-{id}, variants AI-{id}-A4..A1 on the seed ladder) plus virtual stock, through
+    service-token calls to catalog and inventory. Idempotent: a design already printed
+    answers 200 with the same payload. A downstream refusal is 502, an outage or open
+    breaker 503 — and in both cases catalog_product_sku stays NULL so a retry completes
+    whatever half is missing."""
+    gen = _own_generation(db, generation_id, claims["sub"])
+    if gen.status != "ready" or not gen.image_key:
+        raise HTTPException(status_code=409, detail="Generation is not ready")
+    image_url = f"{PUBLIC_URL_PREFIX}/{gen.image_key}"
+    try:
+        sku, created = await print_generation(
+            db, gen, catalog=catalog_client, inventory=inventory_client, image_url=image_url,
+            base_price=AI_POSTER_BASE_PRICE, stock=AI_POSTER_STOCK,
+        )
+    except (catalog_client.CatalogRejectedError, inventory_client.InventoryRejectedError) as e:
+        logger.error("Print rejected downstream", generation_id=generation_id, error=str(e))
+        raise HTTPException(status_code=502, detail=f"Could not create the product: {e}")
+    except (catalog_client.CatalogServiceError, inventory_client.InventoryServiceError, CircuitOpenError) as e:
+        logger.error("Print failed downstream", generation_id=generation_id, error=str(e))
+        raise HTTPException(status_code=503, detail="Catalog or inventory is unavailable; please try again")
+    if not created:
+        response.status_code = 200
+    logger.info("Design printed", generation_id=generation_id, sku=sku, created=created)
+    return PrintOut(sku=sku, product_url=f"{PRODUCT_URL_PREFIX}/{sku}", created=created)
 
 
 # ============== Quota ==============
