@@ -9,6 +9,7 @@ CREATE SCHEMA IF NOT EXISTS production_schema;
 CREATE SCHEMA IF NOT EXISTS logistics_schema;
 CREATE SCHEMA IF NOT EXISTS inventory_schema;
 CREATE SCHEMA IF NOT EXISTS notifications_schema;
+CREATE SCHEMA IF NOT EXISTS designs_schema;
 
 -- Drop existing users if they exist (for idempotency)
 DROP USER IF EXISTS users_svc;
@@ -18,6 +19,7 @@ DROP USER IF EXISTS production_svc;
 DROP USER IF EXISTS logistics_svc;
 DROP USER IF EXISTS inventory_svc;
 DROP USER IF EXISTS notifications_svc;
+DROP USER IF EXISTS designs_svc;
 
 -- Create service users (hardcoded dev passwords -- local only)
 CREATE USER users_svc WITH PASSWORD 'users_pass';
@@ -27,6 +29,7 @@ CREATE USER production_svc WITH PASSWORD 'production_pass';
 CREATE USER logistics_svc WITH PASSWORD 'logistics_pass';
 CREATE USER inventory_svc WITH PASSWORD 'inventory_pass';
 CREATE USER notifications_svc WITH PASSWORD 'notifications_pass';
+CREATE USER designs_svc WITH PASSWORD 'designs_pass';
 
 -- Grant permissions - each service only accesses its own schema
 GRANT USAGE ON SCHEMA users_schema TO users_svc;
@@ -71,12 +74,18 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA notifications_schema TO notificatio
 ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON TABLES TO notifications_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA notifications_schema GRANT ALL ON SEQUENCES TO notifications_svc;
 
+GRANT USAGE ON SCHEMA designs_schema TO designs_svc;
+GRANT ALL PRIVILEGES ON SCHEMA designs_schema TO designs_svc;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA designs_schema TO designs_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA designs_schema GRANT ALL ON TABLES TO designs_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA designs_schema GRANT ALL ON SEQUENCES TO designs_svc;
+
 -- Grant CREATE on database so Alembic env.py can run CREATE SCHEMA IF NOT EXISTS.
 -- Resolved at runtime via current_database() so this works for any POSTGRES_DB value
 -- (default `postershop` or .env override like `posters_shop`).
 DO $$
 BEGIN
-  EXECUTE format('GRANT CREATE ON DATABASE %I TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc, notifications_svc', current_database());
+  EXECUTE format('GRANT CREATE ON DATABASE %I TO users_svc, catalog_svc, orders_svc, production_svc, logistics_svc, inventory_svc, notifications_svc, designs_svc', current_database());
 END $$;
 
 -- Done

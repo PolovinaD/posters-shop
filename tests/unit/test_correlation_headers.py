@@ -8,7 +8,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHARED_LOGGER = REPO_ROOT / "services" / "shared" / "logger.py"
 SERVICES = [
-    "catalog", "infra", "inventory", "logistics", "notifications",
+    "catalog", "designs", "infra", "inventory", "logistics", "notifications",
     "orders", "payments", "production", "users",
 ]
 
