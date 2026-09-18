@@ -191,3 +191,133 @@ def test_classify_openai_error_direct(providers):
         httpx.Response(404, json={"error": {"type": "invalid_request_error", "code": "model_not_found"}}, request=req)
     )
     assert isinstance(config, providers.ProviderConfigError)
+
+
+# ============== ReplicateProvider (09-03, httpx.MockTransport only, no token — D-10) ==============
+
+CREATE_PATH = "/v1/models/black-forest-labs/flux-schnell/predictions"
+OUTPUT_URL = "https://replicate.delivery.test/out.png"
+
+
+def _replicate(providers, handler, deadline=5.0):
+    return providers.ReplicateProvider(
+        token="r8_test", model="black-forest-labs/flux-schnell",
+        base_url="https://api.replicate.test/v1", transport=httpx.MockTransport(handler),
+        poll_interval=0.0, deadline=deadline,
+    )
+
+
+def _png(providers):
+    return providers.paint_placeholder("x", 128, 192)
+
+
+def test_replicate_create_wait_succeeded_downloads_output(providers):
+    seen = {}
+    png = _png(providers)
+
+    def handler(request):
+        if request.url.path == CREATE_PATH:
+            seen["prefer"] = request.headers["prefer"]
+            seen["auth"] = request.headers["authorization"]
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"id": "p1", "status": "succeeded", "output": [OUTPUT_URL]})
+        if request.url.host == "replicate.delivery.test" and request.url.path == "/out.png":
+            return httpx.Response(200, content=png, headers={"content-type": "image/png"})
+        return httpx.Response(500, text="unexpected " + str(request.url))
+
+    provider = _replicate(providers, handler)
+    assert asyncio.run(provider.generate("a poster", "u1")) == png
+    assert seen["prefer"] == "wait=60"
+    assert seen["auth"] == "Bearer r8_test"
+    assert seen["body"] == {"input": {
+        "prompt": "a poster", "aspect_ratio": "2:3", "output_format": "png",
+        "output_quality": 90, "num_outputs": 1, "megapixels": "1",
+    }}
+    assert provider.name == "replicate"
+    assert provider.params() == {
+        "size": "2:3@1MP", "model": "black-forest-labs/flux-schnell", "aspect_ratio": "2:3", "megapixels": "1",
+    }
+
+
+def test_replicate_polls_until_succeeded(providers):
+    polls = {"n": 0}
+    png = _png(providers)
+
+    def handler(request):
+        if request.url.path == CREATE_PATH:
+            return httpx.Response(201, json={"id": "p1", "status": "starting", "output": None})
+        if request.url.path == "/v1/predictions/p1":
+            polls["n"] += 1
+            if polls["n"] == 1:
+                return httpx.Response(200, json={"id": "p1", "status": "processing", "output": None})
+            return httpx.Response(200, json={"id": "p1", "status": "succeeded", "output": [OUTPUT_URL]})
+        if request.url.path == "/out.png":
+            return httpx.Response(200, content=png)
+        return httpx.Response(500, text="unexpected " + str(request.url))
+
+    assert asyncio.run(_replicate(providers, handler).generate("a poster", "u1")) == png
+    assert polls["n"] == 2
+
+
+def test_replicate_nsfw_is_prompt_rejected(providers):
+    def handler(request):
+        return httpx.Response(201, json={"id": "p1", "status": "failed", "error": "NSFW content detected"})
+
+    with pytest.raises(providers.PromptRejected) as exc:
+        asyncio.run(_replicate(providers, handler).generate("a poster", "u1"))
+    assert str(exc.value) == "The provider's safety checker rejected this prompt"
+
+
+def test_replicate_failed_other_is_provider_error(providers):
+    def oom(request):
+        return httpx.Response(201, json={"id": "p1", "status": "failed", "error": "CUDA out of memory"})
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_replicate(providers, oom).generate("a poster", "u1"))
+
+    def canceled(request):
+        return httpx.Response(201, json={"id": "p1", "status": "canceled", "error": None})
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_replicate(providers, canceled).generate("a poster", "u1"))
+
+
+def test_replicate_deadline_is_provider_error(providers):
+    def handler(request):
+        if request.url.path == CREATE_PATH:
+            return httpx.Response(201, json={"id": "p1", "status": "starting"})
+        return httpx.Response(200, json={"id": "p1", "status": "processing"})
+
+    with pytest.raises(providers.ProviderError) as exc:
+        asyncio.run(_replicate(providers, handler, deadline=0.0).generate("a poster", "u1"))
+    assert "deadline" in str(exc.value)
+
+
+def test_replicate_http_errors(providers):
+    def create_status(status, body):
+        def handler(request):
+            if request.url.path == CREATE_PATH:
+                return httpx.Response(status, json=body)
+            return httpx.Response(500, text="unexpected")
+        return handler
+
+    throttled = create_status(429, {"detail": "Request was throttled. Expected available in 3 seconds."})
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_replicate(providers, throttled).generate("a poster", "u1"))
+
+    with pytest.raises(providers.ProviderConfigError):
+        asyncio.run(_replicate(providers, create_status(401, {"detail": "Unauthenticated"})).generate("a poster", "u1"))
+
+    with pytest.raises(providers.ProviderConfigError):
+        asyncio.run(_replicate(providers, create_status(422, {"detail": "bad input"})).generate("a poster", "u1"))
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_replicate(providers, create_status(500, {"detail": "boom"})).generate("a poster", "u1"))
+
+    def download_404(request):
+        if request.url.path == CREATE_PATH:
+            return httpx.Response(201, json={"id": "p1", "status": "succeeded", "output": [OUTPUT_URL]})
+        return httpx.Response(404, text="gone")
+
+    with pytest.raises(providers.ProviderError):
+        asyncio.run(_replicate(providers, download_404).generate("a poster", "u1"))

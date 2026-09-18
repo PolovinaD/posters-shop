@@ -24,6 +24,7 @@ import hashlib
 import io
 import os
 import textwrap
+import time
 from abc import ABC, abstractmethod
 
 import httpx
@@ -37,6 +38,7 @@ IMAGE_SIZE = "1024x1536"  # D-17: portrait 2:3, PNG
 IMAGE_W, IMAGE_H = 1024, 1536
 
 OPENAI_REFUSAL_REASON = "The provider's safety system rejected this prompt"
+REPLICATE_REFUSAL_REASON = "The provider's safety checker rejected this prompt"
 
 
 class ProviderError(Exception):
@@ -192,6 +194,90 @@ class OpenAIImagesProvider(ImageProvider):
             return base64.b64decode(data["data"][0]["b64_json"])
         except (KeyError, IndexError, TypeError, ValueError) as e:
             raise ProviderError(f"openai: unexpected response shape: {e}") from e
+
+
+class ReplicateProvider(ImageProvider):
+    """Serverless GPU provider (create prediction -> poll -> download).
+
+    Built and mocked only (no token yet, D-10); shares the seam with OpenAI so the
+    thesis comparison is honest. `Prefer: wait=60` holds the create call until the
+    prediction finishes (flux-schnell usually does within seconds), otherwise the
+    loop polls every `poll_interval` s up to `deadline` s. Outputs on
+    replicate.delivery vanish after ~1 h (research pitfall 9), so the bytes are
+    downloaded inside the same attempt and never the URL stored.
+    """
+
+    name = "replicate"
+
+    def __init__(
+        self,
+        token: str,
+        model: str = "black-forest-labs/flux-schnell",
+        base_url: str = "https://api.replicate.com/v1",
+        transport=None,
+        poll_interval: float = 2.0,
+        deadline: float = 180.0,
+    ):
+        self.model = model
+        self.poll_interval = poll_interval
+        self.deadline = deadline
+        self._client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            transport=transport,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(90.0, connect=10.0),
+        )
+
+    def params(self) -> dict:
+        return {"size": "2:3@1MP", "model": self.model, "aspect_ratio": "2:3", "megapixels": "1"}
+
+    async def generate(self, prompt: str, user_ref: str) -> bytes:
+        body = {"input": {
+            "prompt": prompt,
+            "aspect_ratio": "2:3",
+            "output_format": "png",
+            "output_quality": 90,
+            "num_outputs": 1,
+            "megapixels": "1",
+        }}
+        try:
+            r = await self._client.post(
+                f"/models/{self.model}/predictions", headers={"Prefer": "wait=60"}, json=body,
+            )
+            if r.status_code == 429 or r.status_code >= 500:
+                raise ProviderError(f"replicate {r.status_code}: {r.text[:200]}")
+            if r.status_code >= 400:
+                raise ProviderConfigError(f"replicate {r.status_code}: {r.text[:200]}")
+            pred = r.json()
+            started = time.monotonic()
+            while pred.get("status") in ("starting", "processing"):
+                if time.monotonic() - started > self.deadline:
+                    raise ProviderError("replicate: poll deadline exceeded")
+                await asyncio.sleep(self.poll_interval)
+                pr = await self._client.get(f"/predictions/{pred['id']}")
+                if pr.status_code >= 400:
+                    raise ProviderError(f"replicate poll {pr.status_code}")
+                pred = pr.json()
+            if pred.get("status") != "succeeded":
+                err = str(pred.get("error") or pred.get("status"))
+                if "nsfw" in err.lower():
+                    raise PromptRejected(REPLICATE_REFUSAL_REASON)
+                raise ProviderError(f"replicate: {err}")
+            url = (pred.get("output") or [None])[0]
+            if not url:
+                raise ProviderError("replicate: no output URL")
+            # An absolute URL overrides base_url; download NOW (replicate.delivery expires in ~1 h).
+            img = await self._client.get(url)
+            if img.status_code >= 400:
+                raise ProviderError(f"replicate download {img.status_code}")
+            logger.info(
+                "Replicate image generated",
+                model=self.model,
+                predict_time=(pred.get("metrics") or {}).get("predict_time"),
+            )
+            return img.content
+        except httpx.HTTPError as e:
+            raise ProviderError(f"replicate transport: {e}") from e
 
 
 def get_image_provider() -> ImageProvider:
