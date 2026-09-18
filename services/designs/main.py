@@ -7,6 +7,8 @@ generation worker:
   POST /generations              202 + the queued row; the shop polls GET /generations/{id}
   GET  /generations[/{id}]       the caller's own rows, newest first / one row or 404
   GET  /me/quota                 D-14 daily allowance (limit / used / remaining / resets_at)
+  GET  /me/style-profile         D-07 tier 2: the caller's style summary, counts and `stale`
+  POST /me/style-profile/refresh rebuild it now through the summariser (D-16)
   GET|POST|DELETE /saved-prompts the caller's saved prompts
   POST /generations/{id}/print   Print-this (D-06): an unlisted catalog family AI-{id} with
                                  A4..A1 variants + virtual stock; 201 created / 200 already printed
@@ -41,16 +43,17 @@ from database import engine, get_db
 from events import process_order_paid
 from logger import get_logger, LoggingMiddleware
 from metrics import metrics_endpoint, track_metrics, SERVICE_NAME
-from models import Generation, SavedPrompt
+from models import Generation, SavedPrompt, StyleProfile
 from printing import print_generation
 from providers import get_image_provider
 from quota import check_quota, quota_status
 from schemas import (
     GenerationCreate, GenerationOut, OutboxEventPayload, PrintOut, QuotaOut, SavedPromptCreate,
-    SavedPromptOut,
+    SavedPromptOut, StyleProfileOut,
 )
 from service_auth import require_service_or_owner
 from storage import get_storage
+from style_profile import refresh_profile
 from summarizer import get_summarizer
 from worker import worker_loop
 
@@ -266,6 +269,23 @@ async def print_design(
 @app.get("/me/quota", response_model=QuotaOut)
 def me_quota(db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
     return quota_status(db, claims["sub"], claims.get("role"), AI_DAILY_QUOTA)
+
+
+# ============== Style profile ==============
+
+@app.get("/me/style-profile", response_model=StyleProfileOut)
+def get_style_profile(db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """The caller's style summary as stored — `stale` tells the shop a refresh is pending
+    (after a purchase, or before any summary exists)."""
+    prof = db.get(StyleProfile, claims["sub"])
+    return StyleProfileOut.model_validate(prof) if prof else StyleProfileOut()
+
+
+@app.post("/me/style-profile/refresh", response_model=StyleProfileOut)
+async def refresh_style_profile(db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
+    """Rebuild the summary now from the caller's prompts and purchases (D-16). A summariser
+    outage keeps the previous summary and answers 200 with `stale: true`."""
+    return StyleProfileOut.model_validate(await refresh_profile(db, claims["sub"]))
 
 
 # ============== Saved prompts ==============

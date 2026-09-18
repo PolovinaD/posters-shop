@@ -58,6 +58,18 @@ class PrintOut(BaseModel):
     created: bool
 
 
+class StyleProfileOut(BaseModel):
+    """GET /me/style-profile and the answer of POST /me/style-profile/refresh. A customer
+    without a profile row gets the defaults (no summary, stale)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    summary: Optional[str] = None
+    prompt_count: int = 0
+    purchase_count: int = 0
+    stale: bool = True
+    updated_at: Optional[datetime] = None
+
+
 class QuotaOut(BaseModel):
     limit: int
     used: int

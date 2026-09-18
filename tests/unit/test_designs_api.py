@@ -208,6 +208,7 @@ def test_routes_registered(main):
         ("POST", "/generations"), ("GET", "/generations"), ("GET", "/generations/{generation_id}"),
         ("GET", "/images/{key}"), ("GET", "/saved-prompts"), ("POST", "/saved-prompts"),
         ("DELETE", "/saved-prompts/{saved_prompt_id}"), ("GET", "/me/quota"),
+        ("GET", "/me/style-profile"), ("POST", "/me/style-profile/refresh"), ("POST", "/events/order-paid"),
         ("GET", "/healthz"), ("GET", "/readyz"), ("GET", "/metrics"),
     ]:
         assert expected in routes, expected
@@ -215,6 +216,39 @@ def test_routes_registered(main):
 
 def test_unauthenticated_requests_are_401(client, main):
     main.app.dependency_overrides.clear()
-    for method, path in [("GET", "/generations"), ("POST", "/generations"), ("GET", "/me/quota"), ("GET", "/saved-prompts")]:
+    for method, path in [
+        ("GET", "/generations"), ("POST", "/generations"), ("GET", "/me/quota"), ("GET", "/saved-prompts"),
+        ("GET", "/me/style-profile"), ("POST", "/me/style-profile/refresh"),
+    ]:
         resp = client.request(method, path, json={"prompt": "a poster"} if method == "POST" else None)
         assert resp.status_code == 401, (method, path, resp.status_code)
+
+
+def test_me_style_profile_get_and_refresh(client, session, main, d, monkeypatch):
+    # no row yet: the defaults (no summary, stale) rather than a 404
+    session.get.return_value = None
+    assert client.get("/me/style-profile").json() == {
+        "summary": None, "prompt_count": 0, "purchase_count": 0, "stale": True, "updated_at": None,
+    }
+
+    prof = SimpleNamespace(
+        customer_email="c@x.io", summary="You lean towards: vintage.", prompt_count=4, purchase_count=1,
+        stale=False, updated_at=NOW,
+    )
+    session.get.return_value = prof
+    body = client.get("/me/style-profile").json()
+    assert body["summary"] == "You lean towards: vintage." and body["stale"] is False
+    assert (body["prompt_count"], body["purchase_count"]) == (4, 1)
+    session.get.assert_called_with(d.models.StyleProfile, "c@x.io")
+
+    # refresh delegates to style_profile.refresh_profile for the caller and answers its row
+    calls = []
+
+    async def fake_refresh(db, email, *a, **k):
+        calls.append((db, email))
+        return SimpleNamespace(summary="fresh", prompt_count=5, purchase_count=2, stale=False, updated_at=NOW)
+
+    monkeypatch.setattr(main, "refresh_profile", fake_refresh)
+    body = client.post("/me/style-profile/refresh").json()
+    assert body["summary"] == "fresh" and body["stale"] is False and body["purchase_count"] == 2
+    assert calls == [(session, "c@x.io")]

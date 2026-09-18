@@ -19,6 +19,12 @@ Error taxonomy -> outcome (outcome_for_error):
   ProviderError / *   queued with backoff RETRY_BACKOFF[attempt - 1] (5 s, 30 s, ...)
                       until attempts >= DESIGNS_MAX_ATTEMPTS, then failed
 
+Personalise (D-07/D-16): before the provider call, a row with `personalise` asks
+style_profile.ensure_summary for the customer's style summary (cached when fresh,
+refreshed when stale or missing, never raising) and sends
+prompt + "Style notes: " + summary; what was actually sent is written back as
+`effective_prompt`.
+
 Several replicas can run the loop: SKIP LOCKED makes the claim safe, and one job at
 a time per replica is deliberate (the provider is the bottleneck, not the loop).
 """
@@ -38,6 +44,7 @@ from metrics import GENERATIONS_TOTAL, PROVIDER_LATENCY, QUEUE_DEPTH
 from models import Generation
 from providers import PromptRejected, ProviderConfigError, ProviderError, user_ref
 from storage import new_image_key
+from style_profile import ensure_summary, compose_effective_prompt
 
 logger = get_logger(__name__)
 
@@ -109,14 +116,21 @@ def outcome_for_error(exc: Exception, attempts: int, now: datetime) -> Outcome:
     return Outcome(status="queued", retry_after=now + timedelta(seconds=delay))
 
 
-def apply_outcome(db, generation_id: int, outcome: Outcome, provider_name: str, params: dict, now: datetime) -> None:
-    """Write one attempt's outcome onto the row and commit. A vanished row is a no-op."""
+def apply_outcome(
+    db, generation_id: int, outcome: Outcome, provider_name: str, params: dict, now: datetime,
+    effective_prompt: str | None = None,
+) -> None:
+    """Write one attempt's outcome onto the row and commit. A vanished row is a no-op.
+    `effective_prompt` is what was actually sent to the provider (the prompt plus the
+    style notes when personalised); None leaves the column untouched."""
     gen = db.get(Generation, generation_id)
     if gen is None:
         return
     gen.status = outcome.status
     gen.provider = provider_name
     gen.params = params
+    if effective_prompt is not None:
+        gen.effective_prompt = effective_prompt
     if outcome.status == "ready":
         gen.image_key = outcome.image_key
         gen.finished_at = now
@@ -141,6 +155,10 @@ async def run_generation(
     one. Storage writes are sync (filesystem or boto3) and run in a thread (pitfall 7)."""
     gid, email, attempts = row["id"], row["customer_email"], int(row.get("attempts") or 1)
     prompt = row.get("effective_prompt") or row["prompt"]
+    if row.get("personalise"):
+        # Outside the breaker: the summariser has its own failure handling and never raises here.
+        summary = await ensure_summary(email, session_factory=session_factory)
+        prompt = compose_effective_prompt(row["prompt"], summary)
     started = time.monotonic()
     error = None
     try:
@@ -164,7 +182,7 @@ async def run_generation(
             retry_after=outcome.retry_after.isoformat() if outcome.retry_after else None,
         )
     with session_factory() as db:
-        apply_outcome(db, gid, outcome, provider.name, provider.params(), now)
+        apply_outcome(db, gid, outcome, provider.name, provider.params(), now, effective_prompt=prompt)
     if outcome.status in ("ready", "failed"):
         GENERATIONS_TOTAL.labels(provider=provider.name, status=outcome.status).inc()
     logger.info("Generation finished", generation_id=gid, status=outcome.status, provider=provider.name)

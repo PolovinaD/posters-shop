@@ -4,7 +4,7 @@ and run_generation end to end on the real FakeProvider + LocalStorage + CircuitB
 with the session factory mocked (no database)."""
 import asyncio
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -220,3 +220,70 @@ def test_run_generation_fail_then_breaker_opens(d, worker, tmp_path):
     assert row.attempts == 2
     assert row.retry_after == NOW + timedelta(seconds=worker.CB_RECOVERY_TIMEOUT)
     assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Personalise (09-05): the style profile hook before the provider call
+# ---------------------------------------------------------------------------
+
+class _RecordingProvider:
+    """Stores the prompt it was asked for; renders through the fake provider."""
+    name = "fake"
+
+    def __init__(self, d):
+        self.inner = d.providers.FakeProvider()
+        self.prompts = []
+
+    def params(self):
+        return self.inner.params()
+
+    async def generate(self, prompt, user_ref):
+        self.prompts.append(prompt)
+        return await self.inner.generate(prompt, user_ref)
+
+
+def _personalised_row(personalise=True):
+    return {
+        "id": 9, "customer_email": "c@x.io", "prompt": "a poster", "effective_prompt": "a poster",
+        "personalise": personalise, "attempts": 1,
+    }
+
+
+def _run_personalised(d, worker, tmp_path, monkeypatch, summary, personalise=True):
+    ensure = AsyncMock(return_value=summary)
+    monkeypatch.setattr(worker, "ensure_summary", ensure)
+    factory, session = _session_factory()
+    provider = _RecordingProvider(d)
+    status = asyncio.run(worker.run_generation(
+        _personalised_row(personalise), provider=provider, storage=d.storage.LocalStorage(tmp_path),
+        breaker=_breaker(d), session_factory=factory, now=NOW,
+    ))
+    return status, provider, session, ensure, factory
+
+
+def test_run_generation_personalise_prepends_style_notes(d, worker, tmp_path, monkeypatch):
+    status, provider, session, ensure, factory = _run_personalised(
+        d, worker, tmp_path, monkeypatch, "You lean towards: vintage.",
+    )
+    expected = "a poster\n\nStyle notes: You lean towards: vintage."
+    assert status == "ready"
+    assert provider.prompts == [expected]
+    assert session.get.return_value.effective_prompt == expected
+    ensure.assert_awaited_once_with("c@x.io", session_factory=factory)
+
+
+def test_run_generation_personalise_without_summary_uses_prompt(d, worker, tmp_path, monkeypatch):
+    status, provider, session, ensure, _ = _run_personalised(d, worker, tmp_path, monkeypatch, None)
+    assert status == "ready"
+    assert provider.prompts == ["a poster"]
+    assert session.get.return_value.effective_prompt == "a poster"
+    ensure.assert_awaited_once()
+
+
+def test_run_generation_not_personalised_skips_profile(d, worker, tmp_path, monkeypatch):
+    status, provider, session, ensure, _ = _run_personalised(
+        d, worker, tmp_path, monkeypatch, "You lean towards: vintage.", personalise=False,
+    )
+    assert status == "ready"
+    assert provider.prompts == ["a poster"]
+    ensure.assert_not_awaited()
