@@ -181,8 +181,11 @@ async def run_generation(
             outcome=outcome.status,
             retry_after=outcome.retry_after.isoformat() if outcome.retry_after else None,
         )
-    with session_factory() as db:
-        apply_outcome(db, gid, outcome, provider.name, provider.params(), now, effective_prompt=prompt)
+    def _persist() -> None:
+        with session_factory() as db:
+            apply_outcome(db, gid, outcome, provider.name, provider.params(), now, effective_prompt=prompt)
+
+    await asyncio.to_thread(_persist)
     if outcome.status in ("ready", "failed"):
         GENERATIONS_TOTAL.labels(provider=provider.name, status=outcome.status).inc()
     logger.info("Generation finished", generation_id=gid, status=outcome.status, provider=provider.name)
@@ -201,10 +204,13 @@ async def worker_loop(get_provider, get_storage, session_factory=SessionLocal, s
             if row:
                 await run_generation(row, provider=get_provider(), storage=get_storage(), session_factory=session_factory)
                 continue  # drain the queue without sleeping between jobs
-            with session_factory() as db:
-                queued = db.execute(
-                    select(func.count()).select_from(Generation).where(Generation.status == "queued")
-                ).scalar()
+            def _queue_depth():
+                with session_factory() as db:
+                    return db.execute(
+                        select(func.count()).select_from(Generation).where(Generation.status == "queued")
+                    ).scalar()
+
+            queued = await asyncio.to_thread(_queue_depth)
             QUEUE_DEPTH.set(int(queued or 0))
         except Exception as e:
             logger.error("Worker error", error=str(e), exc_info=True)

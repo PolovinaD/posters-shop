@@ -34,6 +34,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 
@@ -60,6 +61,7 @@ from summarizer import get_summarizer
 from worker import worker_loop
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 AI_DAILY_QUOTA = int(os.getenv("AI_DAILY_QUOTA", "10"))  # D-14; 0 = unlimited
 # Where the shop reaches GET /images/{key}: through the nginx/vite proxy in compose and
 # on EKS (LocalStorage); a CDN/bucket URL when S3 serves the files directly.
@@ -136,16 +138,24 @@ app.add_middleware(
 
 # ============== Health & Metrics ==============
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -246,7 +256,7 @@ async def print_design(
     answers 200 with the same payload. A downstream refusal is 502, an outage or open
     breaker 503 — and in both cases catalog_product_sku stays NULL so a retry completes
     whatever half is missing."""
-    gen = _own_generation(db, generation_id, claims["sub"])
+    gen = await run_in_threadpool(_own_generation, db, generation_id, claims["sub"])
     if gen.status != "ready" or not gen.image_key:
         raise HTTPException(status_code=409, detail="Generation is not ready")
     image_url = f"{PUBLIC_URL_PREFIX}/{gen.image_key}"

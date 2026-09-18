@@ -27,3 +27,23 @@ def get_db() -> Generator:
         yield db
     finally:
         db.close()
+
+
+# ---- runtime tripwire -------------------------------------------------------
+import asyncio
+from sqlalchemy import event
+from logger import get_logger
+
+_log = get_logger("database")
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _warn_if_on_event_loop(conn, cursor, statement, parameters, context, executemany):
+    """Tripwire for the 2026-09-18 defect: SQL issued from the uvicorn event loop
+    thread blocks every other request and /healthz. Every statement must come from a
+    threadpool thread (a `def` route, run_in_threadpool, asyncio.to_thread)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # worker thread: the normal case
+    _log.warning("SQL executed on the event loop", statement=statement[:120])

@@ -13,6 +13,8 @@ SKU scheme (recognisable from an ORDER_PAID item SKU alone, D-07):
 import re
 from decimal import Decimal
 
+from starlette.concurrency import run_in_threadpool
+
 SIZES = ["A4", "A3", "A2", "A1"]
 # == the catalog seed ladder (services/catalog/main.py seed_catalog): -5 / 0 / +10 / +25 from the base price
 SIZE_UPLIFT = {"A4": Decimal("-5.00"), "A3": Decimal("0.00"), "A2": Decimal("10.00"), "A1": Decimal("25.00")}
@@ -80,6 +82,10 @@ async def print_generation(db, gen, *, catalog, inventory, image_url: str, base_
     payload = build_product_payload(gen, image_url, base_price)
     await catalog.create_product_family(payload)
     await inventory.create_stock(build_stock_items(gen, payload["name"], stock))
-    gen.catalog_product_sku = payload["sku"]
-    db.commit()
+
+    def _record() -> None:  # SQL off the event loop (see database.py)
+        gen.catalog_product_sku = payload["sku"]
+        db.commit()
+
+    await run_in_threadpool(_record)
     return payload["sku"], True

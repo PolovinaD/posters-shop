@@ -20,6 +20,7 @@ because a profile problem must never fail a generation.
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
 
 from database import SessionLocal
 from logger import get_logger
@@ -84,11 +85,17 @@ async def refresh_profile(db, email: str, summarizer=None, now: datetime | None 
     kept, nothing is committed and the profile stays stale for the next attempt."""
     now = now or datetime.now(timezone.utc)
     summarizer = summarizer or default_summarizer()
-    prof = db.get(StyleProfile, email)
-    if prof is None:
-        prof = StyleProfile(customer_email=email, stale=True)
-        db.add(prof)
-    prompts, purchases = gather_inputs(db, email)
+
+    # Every SQL statement runs in the threadpool, never on the event loop.
+    def _load() -> tuple:
+        prof = db.get(StyleProfile, email)
+        if prof is None:
+            prof = StyleProfile(customer_email=email, stale=True)
+            db.add(prof)
+        prompts, purchases = gather_inputs(db, email)
+        return prof, prompts, purchases
+
+    prof, prompts, purchases = await run_in_threadpool(_load)
     if not prompts and not purchases:
         summary = ""
     else:
@@ -100,12 +107,16 @@ async def refresh_profile(db, email: str, summarizer=None, now: datetime | None 
                 customer=email, summarizer=getattr(summarizer, "name", "?"), error=str(e),
             )
             return prof
-    prof.summary = summary
-    prof.prompt_count = len(prompts)
-    prof.purchase_count = len(purchases)
-    prof.stale = False
-    prof.updated_at = now
-    db.commit()
+    def _store() -> None:
+        prof.summary = summary
+        prof.prompt_count = len(prompts)
+        prof.purchase_count = len(purchases)
+        prof.stale = False
+        prof.updated_at = now
+        db.commit()
+        db.refresh(prof)  # the callers read prof.* after the commit
+
+    await run_in_threadpool(_store)
     logger.info(
         "Style profile refreshed",
         customer=email, summarizer=getattr(summarizer, "name", "?"),
@@ -119,14 +130,17 @@ async def ensure_summary(email: str, summarizer=None, session_factory=SessionLoc
     NEVER raises: on any failure the summary read before the failure (or None) is returned."""
     old = None
     try:
-        with session_factory() as db:
-            prof = db.get(StyleProfile, email)
+        db = session_factory()  # no I/O until the first statement
+        try:
+            prof = await run_in_threadpool(db.get, StyleProfile, email)
             if prof is not None:
                 old = prof.summary or None
                 if not prof.stale:
                     return old
             prof = await refresh_profile(db, email, summarizer)
             return prof.summary or None
+        finally:
+            await run_in_threadpool(db.close)  # may ROLLBACK an open read: off the loop
     except Exception as e:
         logger.warning("ensure_summary failed; generating without style notes", customer=email, error=str(e))
         return old
