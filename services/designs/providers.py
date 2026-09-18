@@ -281,12 +281,31 @@ class ReplicateProvider(ImageProvider):
 
 
 def get_image_provider() -> ImageProvider:
-    """Select by IMAGE_PROVIDER (fake | openai | replicate).
+    """IMAGE_PROVIDER = fake | openai | replicate (D-03).
 
-    09-03 adds the real providers; until then anything but fake falls back to fake
-    with a warning — never crash at startup (payments' init_provider philosophy).
+    A real provider without its key falls back to fake with a warning so the service
+    always starts (payments' init_provider philosophy); the API keeps accepting jobs.
     """
-    wanted = os.getenv("IMAGE_PROVIDER", "fake").lower()
-    if wanted != "fake":
-        logger.warning("IMAGE_PROVIDER not available yet, falling back to fake", wanted=wanted)
+    wanted = os.getenv("IMAGE_PROVIDER", "fake").strip().lower()
+    if wanted == "openai":
+        key = os.getenv("OPENAI_API_KEY", "").strip()
+        if key:
+            return OpenAIImagesProvider(
+                key,
+                os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5"),
+                os.getenv("OPENAI_IMAGE_QUALITY", "medium"),
+                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            )
+        logger.warning("IMAGE_PROVIDER=openai but OPENAI_API_KEY is empty; falling back to the fake provider")
+    elif wanted == "replicate":
+        token = os.getenv("REPLICATE_API_TOKEN", "").strip()
+        if token:
+            return ReplicateProvider(
+                token,
+                os.getenv("REPLICATE_MODEL", "black-forest-labs/flux-schnell"),
+                base_url=os.getenv("REPLICATE_BASE_URL", "https://api.replicate.com/v1"),
+            )
+        logger.warning("IMAGE_PROVIDER=replicate but REPLICATE_API_TOKEN is empty; falling back to the fake provider")
+    elif wanted != "fake":
+        logger.warning("Unknown IMAGE_PROVIDER; falling back to the fake provider", wanted=wanted)
     return FakeProvider()

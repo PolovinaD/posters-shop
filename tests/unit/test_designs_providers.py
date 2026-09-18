@@ -321,3 +321,57 @@ def test_replicate_http_errors(providers):
 
     with pytest.raises(providers.ProviderError):
         asyncio.run(_replicate(providers, download_404).generate("a poster", "u1"))
+
+
+# ============== get_image_provider env switch (09-03) ==============
+
+def _clear_provider_env(monkeypatch):
+    for var in (
+        "IMAGE_PROVIDER", "OPENAI_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_QUALITY", "OPENAI_BASE_URL",
+        "REPLICATE_API_TOKEN", "REPLICATE_MODEL", "REPLICATE_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_get_image_provider_openai_with_key(providers, monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("IMAGE_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-flare")
+    monkeypatch.setenv("OPENAI_IMAGE_QUALITY", "low")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.test/v1")
+    p = providers.get_image_provider()
+    assert isinstance(p, providers.OpenAIImagesProvider)
+    assert p.model == "gpt-image-2.5-flare"
+    assert p.quality == "low"
+    assert str(p._client.base_url).startswith("https://proxy.test/v1")
+
+
+def test_get_image_provider_openai_without_key_falls_back(providers, monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("IMAGE_PROVIDER", "openai")
+    assert isinstance(providers.get_image_provider(), providers.FakeProvider)
+
+
+def test_get_image_provider_replicate(providers, monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("IMAGE_PROVIDER", "replicate")
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "r8_x")
+    monkeypatch.setenv("REPLICATE_MODEL", "owner/name")
+    p = providers.get_image_provider()
+    assert isinstance(p, providers.ReplicateProvider)
+    assert p.model == "owner/name"
+
+    monkeypatch.delenv("REPLICATE_API_TOKEN")
+    assert isinstance(providers.get_image_provider(), providers.FakeProvider)
+
+
+def test_get_image_provider_defaults(providers, monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("IMAGE_PROVIDER", "OpenAI")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    p = providers.get_image_provider()
+    assert isinstance(p, providers.OpenAIImagesProvider)
+    assert p.model == "gpt-image-1.5"
+    assert p.quality == "medium"
+    assert str(p._client.base_url).startswith("https://api.openai.com/v1")

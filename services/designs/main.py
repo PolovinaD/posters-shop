@@ -40,6 +40,7 @@ from schemas import (
     GenerationCreate, GenerationOut, QuotaOut, SavedPromptCreate, SavedPromptOut,
 )
 from storage import get_storage
+from summarizer import get_summarizer
 from worker import worker_loop
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
@@ -78,6 +79,8 @@ async def lifespan(app: FastAPI):
     logger.info(
         "Designs service starting",
         image_provider=provider().name,
+        provider_params=provider().params(),
+        summarizer=get_summarizer().name,
         storage_backend=os.getenv("STORAGE_BACKEND", "local"),
         daily_quota=AI_DAILY_QUOTA,
     )
