@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
 from tests.unit.designs_testkit import load_designs
 
@@ -58,6 +59,13 @@ def _refresh_as(session, **attrs):
         for k, v in attrs.items():
             setattr(obj, k, v)
     session.refresh.side_effect = side_effect
+
+
+def _last_sql(session):
+    """The last statement handed to session.execute, rendered as literal PostgreSQL."""
+    return str(session.execute.call_args[0][0].compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
 
 
 def test_post_generation_202_queued(client, session, d):
@@ -142,6 +150,47 @@ def test_list_generations_newest_first_query(client, session):
     assert client.get("/generations?limit=201").status_code == 422
 
 
+def test_admin_generations_owner_sees_every_customer(client, session, main):
+    main.app.dependency_overrides[main.get_current_user_claims] = lambda: OWNER
+    session.execute.return_value.scalars.return_value.all.return_value = [
+        _gen(id=9, customer_email="b@x.io", status="ready", image_key=KEY, attempts=2),
+        _gen(id=3, customer_email="c@x.io", status="failed", failure_reason="nope", attempts=3),
+    ]
+    resp = client.get("/admin/generations")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [g["id"] for g in body] == [9, 3]
+    assert [g["customer_email"] for g in body] == ["b@x.io", "c@x.io"]
+    assert [g["attempts"] for g in body] == [2, 3]
+    assert body[0]["image_url"] == "/api/designs/images/" + KEY  # derived through the shared to_out
+    assert "image_key" not in body[0]
+    sql = _last_sql(session)
+    assert "customer_email =" not in sql  # NOT scoped to the caller
+    assert "created_at DESC" in sql
+    assert "LIMIT 100" in sql  # the default
+
+
+def test_admin_generations_filters_and_limits(client, session, main):
+    main.app.dependency_overrides[main.get_current_user_claims] = lambda: OWNER
+    session.execute.return_value.scalars.return_value.all.return_value = []
+    resp = client.get("/admin/generations?customer=c@x.io&status=failed&limit=7")
+    assert resp.status_code == 200, resp.text
+    sql = _last_sql(session)
+    assert "customer_email = 'c@x.io'" in sql
+    assert "status = 'failed'" in sql
+    assert "LIMIT 7" in sql
+    assert client.get("/admin/generations?limit=0").status_code == 422
+    assert client.get("/admin/generations?limit=201").status_code == 422
+    assert client.get("/admin/generations?status=bogus").status_code == 422
+
+
+def test_admin_generations_customer_403(client, session):
+    resp = client.get("/admin/generations")  # default session fixture: CLAIMS = customer
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Owner role required"
+    session.execute.assert_not_called()
+
+
 def test_images_route_serves_png(client, main, d):
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     key = d.storage.new_image_key()
@@ -209,7 +258,7 @@ def test_routes_registered(main):
         ("GET", "/images/{key}"), ("GET", "/saved-prompts"), ("POST", "/saved-prompts"),
         ("DELETE", "/saved-prompts/{saved_prompt_id}"), ("GET", "/me/quota"),
         ("GET", "/me/style-profile"), ("POST", "/me/style-profile/refresh"), ("POST", "/events/order-paid"),
-        ("GET", "/healthz"), ("GET", "/readyz"), ("GET", "/metrics"),
+        ("GET", "/admin/generations"), ("GET", "/healthz"), ("GET", "/readyz"), ("GET", "/metrics"),
     ]:
         assert expected in routes, expected
 
@@ -218,7 +267,7 @@ def test_unauthenticated_requests_are_401(client, main):
     main.app.dependency_overrides.clear()
     for method, path in [
         ("GET", "/generations"), ("POST", "/generations"), ("GET", "/me/quota"), ("GET", "/saved-prompts"),
-        ("GET", "/me/style-profile"), ("POST", "/me/style-profile/refresh"),
+        ("GET", "/me/style-profile"), ("POST", "/me/style-profile/refresh"), ("GET", "/admin/generations"),
     ]:
         resp = client.request(method, path, json={"prompt": "a poster"} if method == "POST" else None)
         assert resp.status_code == 401, (method, path, resp.status_code)
