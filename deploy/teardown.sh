@@ -14,6 +14,7 @@
 # What it preserves:
 #   - ECR repositories and images (cheap storage)
 #   - AWS Secrets Manager secrets (for reuse on next deploy)
+#   - The designs S3 bucket (generated poster images; cheap storage)
 #   - Local secrets file backup
 #
 # Usage:
@@ -24,6 +25,7 @@
 #   --keep-ecr          Keep ECR images (default: keep)
 #   --delete-ecr        Delete ECR images too
 #   --delete-secrets    Delete AWS Secrets Manager secrets
+#   --delete-bucket     Empty and delete the designs S3 bucket (postershop-designs-<account>)
 #   --skip-snapshot     Don't create RDS snapshot
 #   --dry-run           Show what would be deleted
 #   --force             Skip confirmation prompts
@@ -74,6 +76,7 @@ EXPECTED_ACCOUNT_ID=${EXPECTED_ACCOUNT_ID:-553967852170}
 KEEP_RDS=false
 DELETE_ECR=false
 DELETE_SECRETS=false
+DELETE_BUCKET=false
 SKIP_SNAPSHOT=false
 DRY_RUN=false
 FORCE=false
@@ -84,6 +87,7 @@ while [[ $# -gt 0 ]]; do
         --keep-ecr) DELETE_ECR=false; shift ;;
         --delete-ecr) DELETE_ECR=true; shift ;;
         --delete-secrets) DELETE_SECRETS=true; shift ;;
+        --delete-bucket) DELETE_BUCKET=true; shift ;;
         --skip-snapshot) SKIP_SNAPSHOT=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --force) FORCE=true; shift ;;
@@ -114,6 +118,10 @@ if [ "$CURRENT_ACCOUNT" != "$EXPECTED_ACCOUNT_ID" ]; then
 fi
 
 log_success "AWS Account verified: $CURRENT_ACCOUNT (private)"
+
+# Same default as full-deploy.sh / designs-setup.sh, derived from the verified
+# account rather than a possibly stale AWS_ACCOUNT_ID inherited from .env.
+DESIGNS_S3_BUCKET="${DESIGNS_S3_BUCKET:-postershop-designs-${CURRENT_ACCOUNT}}"
 
 # Banner
 echo ""
@@ -167,10 +175,20 @@ else
     echo "  ✗ AWS Secrets Manager: no postershop secrets found"
 fi
 
+# Check for the designs S3 bucket (created by ./deploy/designs-setup.sh)
+BUCKET_EXISTS=false
+if AWS_PROFILE=$AWS_PROFILE aws s3api head-bucket --bucket "$DESIGNS_S3_BUCKET" --region "$AWS_REGION" &> /dev/null; then
+    BUCKET_EXISTS=true
+    echo "  ✓ S3 bucket: $DESIGNS_S3_BUCKET (designs images)"
+else
+    echo "  ✗ S3 bucket: $DESIGNS_S3_BUCKET not found"
+fi
+
 echo ""
 
-# Nothing to delete?
-if [ "$CLUSTER_EXISTS" = false ] && [ "$RDS_EXISTS" = false ] && [ "$SECRETS_EXIST" = false ]; then
+# Nothing to delete? (the bucket alone only counts when --delete-bucket asks for it)
+if [ "$CLUSTER_EXISTS" = false ] && [ "$RDS_EXISTS" = false ] && [ "$SECRETS_EXIST" = false ] \
+   && { [ "$BUCKET_EXISTS" = false ] || [ "$DELETE_BUCKET" = false ]; }; then
     log_success "No infrastructure found. Nothing to tear down."
     exit 0
 fi
@@ -182,12 +200,14 @@ if [ "$FORCE" = false ] && [ "$DRY_RUN" = false ]; then
     [ "$RDS_EXISTS" = true ] && [ "$KEEP_RDS" = false ] && echo "    - RDS Database: $RDS_STACK_NAME"
     [ "$DELETE_ECR" = true ] && echo "    - ECR Repositories and images"
     [ "$DELETE_SECRETS" = true ] && [ "$SECRETS_EXIST" = true ] && echo "    - AWS Secrets Manager: postershop/* secrets"
+    [ "$DELETE_BUCKET" = true ] && [ "$BUCKET_EXISTS" = true ] && echo "    - S3 bucket: $DESIGNS_S3_BUCKET (designs images, emptied first)"
     echo ""
     
     echo "📦 Will be PRESERVED:"
     [ "$KEEP_RDS" = true ] && echo "    - RDS Database (--keep-rds)"
     [ "$DELETE_ECR" = false ] && echo "    - ECR images"
     [ "$DELETE_SECRETS" = false ] && [ "$SECRETS_EXIST" = true ] && echo "    - AWS Secrets Manager secrets (use --delete-secrets to remove)"
+    [ "$DELETE_BUCKET" = false ] && [ "$BUCKET_EXISTS" = true ] && echo "    - Designs S3 bucket $DESIGNS_S3_BUCKET (use --delete-bucket to remove)"
     
     echo ""
     read -p "Are you sure you want to proceed? (yes/no): " CONFIRM
@@ -356,7 +376,7 @@ echo ""
 if [ "$DELETE_ECR" = true ]; then
     log_info "Step 4: Deleting ECR repositories..."
     
-    SERVICES="users catalog orders production logistics inventory payments frontend infra"
+    SERVICES="users catalog orders production logistics inventory payments notifications designs frontend infra"
     
     if [ "$DRY_RUN" = false ]; then
         for svc in $SERVICES; do
@@ -385,7 +405,7 @@ echo ""
 if [ "$DELETE_SECRETS" = true ] && [ "$SECRETS_EXIST" = true ]; then
     log_info "Step 5: Deleting AWS Secrets Manager secrets..."
     
-    POSTERSHOP_SECRETS="postershop/passwords postershop/database postershop/jwt postershop/stripe postershop/escrow"
+    POSTERSHOP_SECRETS="postershop/passwords postershop/database postershop/jwt postershop/stripe postershop/escrow postershop/designs"
     
     if [ "$DRY_RUN" = false ]; then
         for secret in $POSTERSHOP_SECRETS; do
@@ -418,6 +438,31 @@ fi
 echo ""
 
 # ============================================================
+# Step 6: Delete the designs S3 bucket (if --delete-bucket)
+# ============================================================
+# A bucket must be emptied before it can be deleted. The IAM policy
+# (postershop-designs-s3) is left in place like the SES one: it costs nothing
+# and designs-setup.sh reuses it on the next run.
+if [ "$DELETE_BUCKET" = true ]; then
+    log_info "Step 6: Deleting designs S3 bucket..."
+    if [ "$BUCKET_EXISTS" = true ]; then
+        if [ "$DRY_RUN" = false ]; then
+            AWS_PROFILE=$AWS_PROFILE AWS_PAGER="" aws s3 rm "s3://$DESIGNS_S3_BUCKET" --recursive --region "$AWS_REGION"
+            AWS_PROFILE=$AWS_PROFILE AWS_PAGER="" aws s3api delete-bucket --bucket "$DESIGNS_S3_BUCKET" --region "$AWS_REGION"
+            echo "  ✓ Deleted bucket: $DESIGNS_S3_BUCKET"
+            log_success "Designs S3 bucket deleted"
+        else
+            echo "  Would empty and delete bucket: $DESIGNS_S3_BUCKET"
+        fi
+    else
+        log_info "  no bucket $DESIGNS_S3_BUCKET — nothing to delete"
+    fi
+else
+    log_info "Step 6: Keeping designs S3 bucket, if any (use --delete-bucket to remove)"
+fi
+echo ""
+
+# ============================================================
 # Summary
 # ============================================================
 END_TIME=$(date +%s)
@@ -439,6 +484,7 @@ echo ""
 echo "📦 Preserved:"
 [ "$DELETE_ECR" = false ] && echo "   - ECR images (ready for next deploy)"
 [ "$DELETE_SECRETS" = false ] && echo "   - AWS Secrets Manager secrets (postershop/*)"
+[ "$DELETE_BUCKET" = false ] && [ "$BUCKET_EXISTS" = true ] && echo "   - Designs S3 bucket $DESIGNS_S3_BUCKET (generated images)"
 echo "   - Local secrets backup: $SCRIPT_DIR/.secrets"
 echo ""
 echo "🚀 To redeploy later:"

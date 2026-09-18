@@ -109,7 +109,7 @@ chmod +x "$STUB_DIR/aws"
 
 # ------------------------------------------------------------
 # STUB: kubectl
-# Models exactly the three reads live-config.sh performs. Canned answers arrive
+# Models exactly the four reads live-config.sh performs. Canned answers arrive
 # through the environment; STUB_KUBECTL_MISSING lists "<kind>/<name>" pairs that
 # should answer NotFound, and STUB_KUBECTL_FAIL=1 simulates a cluster that
 # cannot be reached at all.
@@ -151,6 +151,15 @@ case "$kind/$name" in
             *EMAIL_FROM*)         printf '%s' "${STUB_NOTIF_FROM:-}" ;;
             *SES_REGION*)         printf '%s' "${STUB_NOTIF_REGION:-}" ;;
             *serviceAccountName*) printf '%s' "${STUB_NOTIF_SA:-}" ;;
+        esac
+        ;;
+    deployment/designs)
+        case "$jpath" in
+            *IMAGE_PROVIDER*)     printf '%s' "${STUB_DESIGNS_PROVIDER:-}" ;;
+            *STORAGE_BACKEND*)    printf '%s' "${STUB_DESIGNS_BACKEND:-}" ;;
+            *DESIGNS_S3_BUCKET*)  printf '%s' "${STUB_DESIGNS_BUCKET:-}" ;;
+            *DESIGNS_S3_REGION*)  printf '%s' "${STUB_DESIGNS_REGION:-}" ;;
+            *serviceAccountName*) printf '%s' "${STUB_DESIGNS_SA:-}" ;;
         esac
         ;;
 esac
@@ -441,6 +450,38 @@ OUT=$(run_config payments postershop "FRONTEND_URL=http://a.example.com,b")
 assert_eq       "CFG-11 comma value not emitted" "" "$(config_args "$OUT")"
 assert_contains "CFG-11 comma value is reported" "skipping --set frontendUrl" "$OUT"
 
+# CFG-12: designs with full-deploy.sh's provider + S3/IRSA detection in the environment.
+OUT=$(run_config designs postershop \
+    "DESIGNS_IMAGE_PROVIDER=openai" "DESIGNS_STORAGE_BACKEND=s3" \
+    "DESIGNS_S3_BUCKET=postershop-designs-123" "DESIGNS_S3_REGION=eu-north-1" "DESIGNS_SA=designs")
+assert_eq "CFG-12 designs provider + S3 config from the environment" \
+    "--set provider.image=openai --set storage.backend=s3 --set storage.bucket=postershop-designs-123 --set storage.region=eu-north-1 --set serviceAccount.name=designs" \
+    "$(config_args "$OUT")"
+
+# CFG-13: the chart defaults (fake provider, local storage) are never echoed back.
+OUT=$(run_config designs postershop "DESIGNS_IMAGE_PROVIDER=fake" "DESIGNS_STORAGE_BACKEND=local")
+assert_eq "CFG-13 designs fake/local from the environment -> empty args" "" "$(config_args "$OUT")"
+
+# CFG-14: THE CI REGRESSION CASE for designs. No environment hints, a live pod
+# on openai + S3 -> all five --set flags reconstructed from the cluster.
+OUT=$(run_config designs postershop \
+    "STUB_DESIGNS_PROVIDER=openai" "STUB_DESIGNS_BACKEND=s3" "STUB_DESIGNS_BUCKET=b" \
+    "STUB_DESIGNS_REGION=eu-north-1" "STUB_DESIGNS_SA=designs")
+assert_eq "CFG-14 designs config reconstructed from the live cluster" \
+    "--set provider.image=openai --set storage.backend=s3 --set storage.bucket=b --set storage.region=eu-north-1 --set serviceAccount.name=designs" \
+    "$(config_args "$OUT")"
+
+# CFG-15: the materialised `default` ServiceAccount is ignored for designs too.
+OUT=$(run_config designs postershop \
+    "STUB_DESIGNS_PROVIDER=openai" "STUB_DESIGNS_BACKEND=s3" "STUB_DESIGNS_BUCKET=b" \
+    "STUB_DESIGNS_REGION=eu-north-1" "STUB_DESIGNS_SA=default")
+assert_contains     "CFG-15 S3 storage still carried" "storage.backend=s3" "$(config_args "$OUT")"
+assert_not_contains "CFG-15 literal 'default' ServiceAccount ignored" "serviceAccount.name" "$(config_args "$OUT")"
+
+# CFG-16: unreachable cluster -> empty args for designs as well.
+OUT=$(run_config designs postershop "STUB_KUBECTL_FAIL=1")
+assert_eq "CFG-16 unreachable cluster (designs) -> empty args" "" "$(config_args "$OUT")"
+
 # ------------------------------------------------------------
 # CHART-1/2: the payments chart renders FRONTEND_URL only when told to.
 # ------------------------------------------------------------
@@ -502,6 +543,11 @@ DEPLOY_OUT=$(
     STUB_NOTIF_FROM=live@example.com \
     STUB_NOTIF_REGION=eu-north-1 \
     STUB_NOTIF_SA=notifications \
+    STUB_DESIGNS_PROVIDER=openai \
+    STUB_DESIGNS_BACKEND=s3 \
+    STUB_DESIGNS_BUCKET=postershop-designs-123456789012 \
+    STUB_DESIGNS_REGION=eu-north-1 \
+    STUB_DESIGNS_SA=designs \
     AWS_ACCOUNT_ID=123456789012 \
     bash "$FAKE_ROOT/deploy/deploy.sh" postershop --dry-run 2>&1
 )
@@ -525,8 +571,19 @@ assert_not_contains "DEPLOY-4 orders gets no frontendUrl" \
     "frontendUrl" "$(helm_line_for orders)"
 assert_not_contains "DEPLOY-4 orders gets no email config" \
     "email.provider" "$(helm_line_for orders)"
+assert_contains "DEPLOY-3b designs keeps S3 + IRSA from the live cluster" \
+    "storage.bucket=postershop-designs-123456789012" "$(helm_line_for designs)"
+assert_contains "DEPLOY-3b designs keeps its IRSA ServiceAccount" \
+    "serviceAccount.name=designs" "$(helm_line_for designs)"
+assert_not_contains "DEPLOY-4 orders gets no designs config" \
+    "storage.backend" "$(helm_line_for orders)"
 assert_contains "DEPLOY-5 the SES decision is still echoed to the operator" \
     "real email via SES" "$DEPLOY_OUT"
+
+# DEPLOY-7: designs is upgraded after catalog and before orders, so the ORDER_PAID
+# subscriber exists before orders can fan an event out to it.
+assert_eq "DEPLOY-7 designs upgraded after catalog and before orders" "catalog designs orders" \
+    "$(grep -o -- '--install [a-z]* ' "$HELM_LOG" | awk '{print $2}' | grep -E '^(catalog|designs|orders)$' | tr '\n' ' ' | sed 's/ $//')"
 
 # Every chart must still be upgraded with its ECR image, untouched by this change.
 UPGRADES=$(grep -c -- "--install" "$HELM_LOG")

@@ -66,7 +66,7 @@ fi
 # Check if secrets exist
 echo ""
 echo "🔐 Checking secrets..."
-SECRETS=("postershop-db" "postershop-jwt" "postershop-stripe" "postershop-escrow")
+SECRETS=("postershop-db" "postershop-jwt" "postershop-stripe" "postershop-escrow" "postershop-designs")
 for secret in "${SECRETS[@]}"; do
     if kubectl get secret "$secret" -n "$NAMESPACE" &>/dev/null; then
         echo "   ✅ $secret exists"
@@ -85,6 +85,7 @@ SERVICES=(
     "notifications"  # No dependencies
     "users"          # No dependencies
     "catalog"        # Depends on inventory
+    "designs"        # Depends on catalog, inventory; must exist BEFORE orders starts fanning ORDER_PAID out to it
     "logistics"      # Depends on orders (but orders depends on others, so deploy logistics first)
     "production"     # Depends on orders, logistics
     "orders"         # Depends on inventory, production, payments
@@ -102,8 +103,9 @@ for service in "${SERVICES[@]}"; do
         echo "   🔄 Deploying: $service"
 
         # Config that is not committed to the chart's values — the notifications
-        # email transport that full-deploy.sh detects, and the payments
-        # FRONTEND_URL that only exists once the ALB does. Resolved from the
+        # email transport and the designs provider/storage that full-deploy.sh
+        # detects, and the payments FRONTEND_URL that only exists once the ALB
+        # does. Resolved from the
         # environment first, then from the live cluster, so a re-deploy carries
         # forward what is already running instead of reverting it. Empty for
         # every other service. Shared with the CI workflow via lib/live-config.sh.
@@ -112,6 +114,9 @@ for service in "${SERVICES[@]}"; do
         case "${HELM_CONFIG_ARGS[*]+${HELM_CONFIG_ARGS[*]}}" in
             *email.provider=ses*)
                 echo "   ✉  real email via SES as ${EMAIL_FROM:-<live>} (${SES_REGION:-<live>})"
+                ;;
+            *storage.backend=s3*)
+                echo "   🖼  designs images in S3 bucket ${DESIGNS_S3_BUCKET:-<live>} via IRSA"
                 ;;
         esac
 

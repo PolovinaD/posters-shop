@@ -13,6 +13,8 @@
 #     ServiceAccount, detected from the AWS account by full-deploy.sh;
 #   * payments FRONTEND_URL, patched with `kubectl set env` after the frontend
 #     ingress produced an ALB hostname.
+# The designs image provider / S3 storage (detected by full-deploy.sh the same
+# way as SES) joined the list when the service was added.
 # Anything applied outside the chart's own values is invisible to the next
 # `helm upgrade`. CI (.github/workflows/deploy.yaml) upgrades only the services
 # whose code changed and knew nothing about either setting, so a push touching
@@ -40,7 +42,7 @@
 # The `[@]+` form is required: on bash 3.2 an empty array expands to an unbound
 # variable error under `set -u`.
 #
-# Tested offline by deploy/lib/selftest.sh (cases CFG-1..10).
+# Tested offline by deploy/lib/selftest.sh (cases CFG-1..16).
 # ============================================================
 
 # Fallback log helpers so this lib is usable (and testable) standalone. When a
@@ -59,7 +61,7 @@ fi
 # Populates the global array HELM_CONFIG_ARGS with the `--set` flags that must
 # accompany a `helm upgrade` of $1 in namespace $2. The array is reset on every
 # call, and is EMPTY for any service that has no out-of-chart config — which is
-# the normal case for seven of the ten charts.
+# the normal case for nine of the twelve charts.
 #
 # An array rather than a string on stdout: both callers then splice it into
 # `helm upgrade` identically, with no quoting lost and no re-splitting.
@@ -76,6 +78,7 @@ build_helm_config_args() {
     case "$service" in
         payments)      _config_args_payments "$ns" ;;
         notifications) _config_args_notifications "$ns" ;;
+        designs)       _config_args_designs "$ns" ;;
         *)             : ;;   # every other chart is fully self-describing
     esac
 
@@ -144,6 +147,42 @@ _config_args_notifications() {
     [ -n "$from" ]   && _config_add email.from "$from"
     [ -n "$region" ] && _config_add email.sesRegion "$region"
     [ -n "$sa" ]     && _config_add serviceAccount.name "$sa"
+    return 0
+}
+
+# designs: image provider + image storage. full-deploy.sh exports DESIGNS_IMAGE_PROVIDER / DESIGNS_STORAGE_BACKEND /
+# DESIGNS_S3_BUCKET / DESIGNS_S3_REGION / DESIGNS_SA after detecting the bucket and the IRSA ServiceAccount; CI has
+# none of that and must carry the live configuration forward instead of resetting the pod to fake/local.
+_config_args_designs() {
+    local ns=$1
+    local provider="" backend="" bucket="" region="" sa=""
+
+    if [ -n "${DESIGNS_IMAGE_PROVIDER:-}" ] || [ -n "${DESIGNS_STORAGE_BACKEND:-}" ]; then
+        # full-deploy.sh decided both halves (Step 3 the provider from the key in
+        # postershop/designs, Step 9 the storage from bucket + IRSA detection).
+        provider="${DESIGNS_IMAGE_PROVIDER:-}"
+        backend="${DESIGNS_STORAGE_BACKEND:-}"
+        if [ "$backend" = "s3" ]; then
+            bucket="${DESIGNS_S3_BUCKET:-}"; region="${DESIGNS_S3_REGION:-}"; sa="${DESIGNS_SA:-}"
+        fi
+    else
+        provider=$(_live_deployment_env designs "$ns" IMAGE_PROVIDER)
+        backend=$(_live_deployment_env designs "$ns" STORAGE_BACKEND)
+        if [ "$backend" = "s3" ]; then
+            bucket=$(_live_deployment_env designs "$ns" DESIGNS_S3_BUCKET)
+            region=$(_live_deployment_env designs "$ns" DESIGNS_S3_REGION)
+            sa=$(_live_service_account designs "$ns")
+        fi
+    fi
+
+    # Chart defaults (fake / local) are never echoed back: an empty array lets the chart default apply.
+    [ -n "$provider" ] && [ "$provider" != "fake" ] && _config_add provider.image "$provider"
+    if [ "$backend" = "s3" ] && [ -n "$bucket" ]; then
+        _config_add storage.backend s3
+        _config_add storage.bucket "$bucket"
+        [ -n "$region" ] && _config_add storage.region "$region"
+        [ -n "$sa" ]     && _config_add serviceAccount.name "$sa"
+    fi
     return 0
 }
 
