@@ -282,6 +282,59 @@ services:
     ports:
       - "8009:8000"
 
+  # Designs - AI poster studio (async generation worker; images on the designs-data volume)
+  designs-migrate:
+    build: ./services/designs
+    container_name: designs-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Ddesigns_schema
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  designs:
+    build: ./services/designs
+    container_name: designs
+    environment:
+      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Ddesigns_schema
+      SERVICE_NAME: designs
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      IMAGE_PROVIDER: ${IMAGE_PROVIDER:-fake}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1.5}
+      OPENAI_IMAGE_QUALITY: ${OPENAI_IMAGE_QUALITY:-medium}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}
+      REPLICATE_MODEL: ${REPLICATE_MODEL:-black-forest-labs/flux-schnell}
+      STORAGE_BACKEND: local
+      DESIGNS_STORAGE_DIR: /data/images
+      DESIGNS_PUBLIC_URL_PREFIX: /api/designs/images
+      CATALOG_SERVICE_URL: http://catalog:8000
+      INVENTORY_SERVICE_URL: http://inventory:8000
+      AI_DAILY_QUOTA: ${AI_DAILY_QUOTA:-10}
+      AI_POSTER_BASE_PRICE: ${AI_POSTER_BASE_PRICE:-29.99}
+      AI_POSTER_STOCK: ${AI_POSTER_STOCK:-1000}
+      DESIGNS_WORKER_POLL_INTERVAL: ${DESIGNS_WORKER_POLL_INTERVAL:-1.0}
+      DESIGNS_MAX_ATTEMPTS: ${DESIGNS_MAX_ATTEMPTS:-3}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RECOVERY_TIMEOUT: ${CB_RECOVERY_TIMEOUT:-30}
+    volumes:
+      - designs-data:/data/images
+    depends_on:
+      designs-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      catalog:
+        condition: service_started
+      inventory:
+        condition: service_started
+    ports:
+      - "8010:8000"
+
   infra:
     build: ./services/infra
     container_name: infra
@@ -319,3 +372,4 @@ services:
 volumes:
   pgdata:
   ganache-data:
+  designs-data:
