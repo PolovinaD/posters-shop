@@ -7,6 +7,7 @@ already happened, so inventory failure is logged and the order is still
 honoured).
 """
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from models import Order, OrderStatus
 from outbox import emit_event
@@ -41,29 +42,37 @@ async def mark_order_paid(db: Session, order: Order, payment_ref: str | None = N
         # The payment already happened: honour it, and let operators see the gap.
         logger.warning("Failed to commit inventory, continuing with payment", order_id=order.id, error=str(e))
 
-    order.status = OrderStatus.PAID
-    if payment_ref:
-        order.payment_intent_id = payment_ref
+    # The whole write runs in the request threadpool: order.items is a lazy
+    # relationship and the commit expires every attribute, so nothing here may
+    # touch the event loop. The refresh lets the callers (escrow verify, the
+    # Stripe webhook, the reconciler) keep reading order.* afterwards.
+    def _paid() -> None:
+        order.status = OrderStatus.PAID
+        if payment_ref:
+            order.payment_intent_id = payment_ref
 
-    items = [
-        {"sku": item.sku, "name": item.name, "quantity": item.quantity}
-        for item in order.items
-    ]
-    emit_event(
-        db=db,
-        event_type="ORDER_PAID",
-        aggregate_type="order",
-        aggregate_id=str(order.id),
-        payload={
-            "order_id": order.id,
-            "customer_email": order.customer_email,
-            "total_amount": str(order.total_amount),
-            "payment_intent": payment_ref,
-            "items": items,
-        },
-    )
+        items = [
+            {"sku": item.sku, "name": item.name, "quantity": item.quantity}
+            for item in order.items
+        ]
+        emit_event(
+            db=db,
+            event_type="ORDER_PAID",
+            aggregate_type="order",
+            aggregate_id=str(order.id),
+            payload={
+                "order_id": order.id,
+                "customer_email": order.customer_email,
+                "total_amount": str(order.total_amount),
+                "payment_intent": payment_ref,
+                "items": items,
+            },
+        )
 
-    db.commit()
+        db.commit()
+        db.refresh(order)
+
+    await run_in_threadpool(_paid)
 
     logger.info("Order marked as paid", order_id=order.id, payment_ref=payment_ref)
     return True

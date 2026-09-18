@@ -20,6 +20,7 @@ import httpx
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Index, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
+from starlette.concurrency import run_in_threadpool
 
 from database import Base, SessionLocal
 from logger import get_logger, set_correlation_id
@@ -160,18 +161,22 @@ async def process_outbox_events(db: Session) -> int:
     # 1. Not yet delivered
     # 2. Ready for retry (retry_after is null or in the past)
     # 3. Haven't exceeded max retries
-    pending_events = db.execute(
-        select(OutboxEvent)
-        .where(OutboxEvent.delivered_at.is_(None))
-        .where(OutboxEvent.retry_count < MAX_RETRIES)
-        .where(
-            (OutboxEvent.retry_after.is_(None)) | 
-            (OutboxEvent.retry_after <= now)
-        )
-        .order_by(OutboxEvent.created_at)
-        .limit(10)
-        .with_for_update(skip_locked=True)
-    ).scalars().all()
+    # SQL runs in the threadpool, never on the event loop (see database.py).
+    def _fetch() -> list:
+        return db.execute(
+            select(OutboxEvent)
+            .where(OutboxEvent.delivered_at.is_(None))
+            .where(OutboxEvent.retry_count < MAX_RETRIES)
+            .where(
+                (OutboxEvent.retry_after.is_(None)) | 
+                (OutboxEvent.retry_after <= now)
+            )
+            .order_by(OutboxEvent.created_at)
+            .limit(10)
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+
+    pending_events = await run_in_threadpool(_fetch)
     
     processed = 0
     for event in pending_events:
@@ -194,7 +199,7 @@ async def process_outbox_events(db: Session) -> int:
         processed += 1
     
     if processed > 0:
-        db.commit()
+        await run_in_threadpool(db.commit)
     
     return processed
 
@@ -210,10 +215,14 @@ async def outbox_worker(poll_interval: float = 2.0):
     
     while True:
         try:
-            with SessionLocal() as db:
+            db = SessionLocal()  # no I/O until the first statement
+            try:
                 processed = await process_outbox_events(db)
                 if processed > 0:
                     logger.debug("Batch processed", events_count=processed)
+            finally:
+                # close() may ROLLBACK an open read transaction: keep it off the loop
+                await run_in_threadpool(db.close)
         except Exception as e:
             logger.error("Worker error", error=str(e), exc_info=True)
         

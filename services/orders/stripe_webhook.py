@@ -16,6 +16,7 @@ from typing import Optional
 import stripe
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from models import Order, OrderStatus
 from outbox import emit_event
@@ -68,7 +69,7 @@ async def handle_checkout_session_completed(
         raise WebhookError(f"Invalid order_id: {order_id_str}")
 
     # Get order
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise WebhookError(f"Order {order_id} not found")
 
@@ -115,7 +116,7 @@ async def handle_checkout_session_expired(
     except ValueError:
         raise WebhookError(f"Invalid order_id: {order_id_str}")
 
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise WebhookError(f"Order {order_id} not found")
 
@@ -126,26 +127,29 @@ async def handle_checkout_session_expired(
         except Exception as e:
             logger.warning("Failed to release inventory on checkout expiry", order_id=order_id, error=str(e))
 
-        order.status = OrderStatus.CANCELLED
+        def _cancel() -> None:
+            order.status = OrderStatus.CANCELLED
 
-        # Emit ORDER_CANCELLED (SAME TRANSACTION) so notifications sends a
-        # cancellation email — closes the checkout-expiry gap where no event
-        # was previously produced.
-        emit_event(
-            db=db,
-            event_type="ORDER_CANCELLED",
-            aggregate_type="order",
-            aggregate_id=str(order_id),
-            payload={
-                "order_id": order_id,
-                "customer_email": order.customer_email,
-                "previous_status": "reserved",
-                "reason": "checkout_expired",
-                "released_stock": True,
-            },
-        )
+            # Emit ORDER_CANCELLED (SAME TRANSACTION) so notifications sends a
+            # cancellation email — closes the checkout-expiry gap where no event
+            # was previously produced.
+            emit_event(
+                db=db,
+                event_type="ORDER_CANCELLED",
+                aggregate_type="order",
+                aggregate_id=str(order_id),
+                payload={
+                    "order_id": order_id,
+                    "customer_email": order.customer_email,
+                    "previous_status": "reserved",
+                    "reason": "checkout_expired",
+                    "released_stock": True,
+                },
+            )
 
-        db.commit()
+            db.commit()
+
+        await run_in_threadpool(_cancel)
 
         logger.info("Order cancelled due to expired checkout", order_id=order_id)
         return {"status": "cancelled", "order_id": order_id}

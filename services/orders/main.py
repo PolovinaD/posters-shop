@@ -6,9 +6,11 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from auth import get_current_user_claims
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -159,16 +161,24 @@ app.add_middleware(
 
 # ============== Health & Metrics ==============
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -218,41 +228,56 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
     # source to override it with, so it is validated by ShippingAddress instead.
     addr = payload.shipping_address
 
-    # Create order
-    order = Order(
-        customer_email=customer_email,
-        status=OrderStatus.CREATED,
-        total_amount=total,
-        shipping_recipient_name=addr.recipient_name,
-        shipping_street=addr.street,
-        shipping_city=addr.city,
-        shipping_postal_code=addr.postal_code,
-        shipping_country=addr.country,
-        shipping_phone=addr.phone,
-        payment_method=payload.payment_method,
-        customer_wallet=payload.customer_wallet,
-        escrow_status=(
-            EscrowStatus.AWAITING_PAYMENT
-            if payload.payment_method == PaymentMethod.ESCROW else None
-        ),
-    )
-    db.add(order)
-    db.flush()  # Get order ID
-    
-    # Add items, named and priced by the catalog
-    for item in payload.items:
-        resolved = priced[item.sku]
-        order_item = OrderItem(
-            order_id=order.id,
-            sku=item.sku,
-            name=resolved["name"],
-            quantity=item.quantity,
-            unit_price=resolved["price"],
+    # Every SQL statement runs in the request threadpool (run_in_threadpool):
+    # a sync Session call on the event loop blocks every other request and
+    # /healthz — the 2026-09-18 liveness-probe kills.
+    def _insert() -> Order:
+        # Create order
+        order = Order(
+            customer_email=customer_email,
+            status=OrderStatus.CREATED,
+            total_amount=total,
+            shipping_recipient_name=addr.recipient_name,
+            shipping_street=addr.street,
+            shipping_city=addr.city,
+            shipping_postal_code=addr.postal_code,
+            shipping_country=addr.country,
+            shipping_phone=addr.phone,
+            payment_method=payload.payment_method,
+            customer_wallet=payload.customer_wallet,
+            escrow_status=(
+                EscrowStatus.AWAITING_PAYMENT
+                if payload.payment_method == PaymentMethod.ESCROW else None
+            ),
         )
-        db.add(order_item)
-    
-    db.flush()
-    
+        db.add(order)
+        db.flush()  # Get order ID
+
+        # Add items, named and priced by the catalog
+        for item in payload.items:
+            resolved = priced[item.sku]
+            order_item = OrderItem(
+                order_id=order.id,
+                sku=item.sku,
+                name=resolved["name"],
+                quantity=item.quantity,
+                unit_price=resolved["price"],
+            )
+            db.add(order_item)
+
+        db.flush()
+        return order
+
+    order = await run_in_threadpool(_insert)
+
+    def _reserved() -> OrderOut:
+        # All reservations successful - transition to RESERVED. The response
+        # model is built here because it loads order.items (lazy relationship).
+        order.status = OrderStatus.RESERVED
+        db.commit()
+        db.refresh(order)
+        return OrderOut.model_validate(order)
+
     # Reserve stock for each item
     reserved_items = []
     try:
@@ -264,18 +289,15 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
                 ttl_minutes=15  # 15 minute reservation TTL
             )
             reserved_items.append(item.sku)
-        
-        # All reservations successful - transition to RESERVED
-        order.status = OrderStatus.RESERVED
-        db.commit()
-        db.refresh(order)
-        
+
+        result = await run_in_threadpool(_reserved)
+
         # Update metrics
         ORDERS_CREATED.inc()
         ORDER_TOTAL_AMOUNT.observe(float(total))
-        
-        return order
-        
+
+        return result
+
     except InsufficientStockError as e:
         # Release any reservations we made
         for sku in reserved_items:
@@ -283,14 +305,14 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
                 await inventory_client.release_stock(order.id, sku)
             except InventoryServiceError:
                 pass  # Best effort cleanup
-        
+
         INVENTORY_RESERVATION_FAILURES.labels(reason="insufficient_stock").inc()
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Insufficient stock for {e.sku}"
         )
-        
+
     except SkuNotFoundError as e:
         # Release any reservations we made
         for sku in reserved_items:
@@ -298,14 +320,14 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
                 await inventory_client.release_stock(order.id, sku)
             except InventoryServiceError:
                 pass
-        
+
         INVENTORY_RESERVATION_FAILURES.labels(reason="sku_not_found").inc()
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"SKU not found: {e.sku}"
         )
-        
+
     except CircuitOpenError:
         # Release any reservations we made
         for sku in reserved_items:
@@ -314,7 +336,7 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
             except Exception:
                 pass
         INVENTORY_RESERVATION_FAILURES.labels(reason="circuit_open").inc()
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="inventory service unavailable — circuit open"
@@ -329,7 +351,7 @@ async def create_order(payload: OrderCreate, db: Session = Depends(get_db), clai
                 pass
 
         INVENTORY_RESERVATION_FAILURES.labels(reason="service_error").inc()
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Inventory service unavailable: {e}"
@@ -415,23 +437,20 @@ async def pay_order(
     
     This ensures the event is never lost, even if production is down.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
     if not OrderStatus.can_transition(order.status, OrderStatus.PAID):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot pay order in status '{order.status}'. Order must be in 'reserved' status."
         )
-    
-    try:
-        # Commit stock reservations (permanent deduction)
-        await inventory_client.commit_stock(order_id)
-        
+
+    def _paid() -> OrderOut:
         # Update order status
         order.status = OrderStatus.PAID
-        
+
         # Emit ORDER_PAID event to outbox (SAME TRANSACTION!)
         # This guarantees the event is persisted if and only if the order update succeeds
         items = [
@@ -450,24 +469,31 @@ async def pay_order(
                 "items": items
             }
         )
-        
+
         # Commit both the order update AND the outbox event atomically
         db.commit()
         db.refresh(order)
-        
+        return OrderOut.model_validate(order)
+
+    try:
+        # Commit stock reservations (permanent deduction)
+        await inventory_client.commit_stock(order_id)
+
+        result = await run_in_threadpool(_paid)
+
         logger.info("Order paid - event emitted to outbox", order_id=order_id, event_type="ORDER_PAID")
-        
-        return order
-        
+
+        return result
+
     except CircuitOpenError:
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="inventory service unavailable — circuit open"
         )
 
     except InventoryServiceError as e:
-        db.rollback()
+        await run_in_threadpool(db.rollback)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Failed to commit inventory: {e}"
@@ -586,7 +612,7 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
 
     Can only cancel orders that haven't started production.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -629,31 +655,34 @@ async def cancel_order(order_id: int, db: Session = Depends(get_db), claims: dic
             # Best effort - continue with cancellation
             pass
 
-    order.status = OrderStatus.CANCELLED
+    def _cancel() -> CancelOrderResponse:
+        order.status = OrderStatus.CANCELLED
 
-    # Emit ORDER_CANCELLED event
-    emit_event(
-        db=db,
-        event_type="ORDER_CANCELLED",
-        aggregate_type="order",
-        aggregate_id=str(order_id),
-        payload={
-            "order_id": order_id,
-            "customer_email": order.customer_email,
-            "previous_status": previous_status,
-            "released_stock": released_stock,
-            "escrow_refunded": escrow_refunded,
-        }
-    )
+        # Emit ORDER_CANCELLED event
+        emit_event(
+            db=db,
+            event_type="ORDER_CANCELLED",
+            aggregate_type="order",
+            aggregate_id=str(order_id),
+            payload={
+                "order_id": order_id,
+                "customer_email": order.customer_email,
+                "previous_status": previous_status,
+                "released_stock": released_stock,
+                "escrow_refunded": escrow_refunded,
+            }
+        )
 
-    db.commit()
+        db.commit()
 
-    return CancelOrderResponse(
-        order_id=order.id,
-        status=order.status,
-        released_stock=released_stock,
-        message="Order cancelled successfully"
-    )
+        return CancelOrderResponse(
+            order_id=order.id,
+            status=order.status,
+            released_stock=released_stock,
+            message="Order cancelled successfully"
+        )
+
+    return await run_in_threadpool(_cancel)
 
 
 # ============== Payment / Checkout ==============
@@ -670,7 +699,7 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: 
     4. Stripe sends webhook to /webhooks/stripe
     5. Webhook handler marks order as paid
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -703,15 +732,18 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: 
         except PaymentServiceError:
             pass  # Session expired or invalid, create new one
     
-    # Create line items from order items
-    line_items = [
-        {
-            "name": item.name,
-            "quantity": item.quantity,
-            "unit_amount": int(item.unit_price * 100)  # Convert to cents
-        }
-        for item in order.items
-    ]
+    # Create line items from order items (order.items is a lazy relationship)
+    def _line_items() -> list:
+        return [
+            {
+                "name": item.name,
+                "quantity": item.quantity,
+                "unit_amount": int(item.unit_price * 100)  # Convert to cents
+            }
+            for item in order.items
+        ]
+
+    line_items = await run_in_threadpool(_line_items)
     
     try:
         session = await payment_client.create_checkout_session(
@@ -719,10 +751,13 @@ async def create_checkout(order_id: int, db: Session = Depends(get_db), claims: 
             customer_email=order.customer_email,
             line_items=line_items
         )
-        
+
         # Store session ID on order
-        order.checkout_session_id = session["id"]
-        db.commit()
+        def _store() -> None:
+            order.checkout_session_id = session["id"]
+            db.commit()
+
+        await run_in_threadpool(_store)
         
         logger.info("Checkout session created", order_id=order_id, session_id=session["id"])
         
@@ -757,7 +792,7 @@ async def get_checkout_status(
     Same visibility rule as GET /orders/{order_id}: owners and couriers may view
     any order, a customer only their own.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -841,7 +876,7 @@ async def create_escrow(order_id: int, db: Session = Depends(get_db), claims: di
     Mirrors POST /orders/{id}/checkout for card orders. Idempotent: a second
     call returns the stored contract without deploying again.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     _require_order_access(order, claims)
@@ -871,11 +906,15 @@ async def create_escrow(order_id: int, db: Session = Depends(get_db), claims: di
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Escrow unavailable: {e}"
             )
-        order.escrow_contract_address = deployed["contract_address"]
-        order.escrow_deploy_tx = deployed.get("deploy_tx_hash")
-        order.escrow_amount_wei = str(deployed["amount_wei"])
-        order.escrow_status = EscrowStatus.AWAITING_PAYMENT
-        db.commit()
+        def _store() -> None:
+            order.escrow_contract_address = deployed["contract_address"]
+            order.escrow_deploy_tx = deployed.get("deploy_tx_hash")
+            order.escrow_amount_wei = str(deployed["amount_wei"])
+            order.escrow_status = EscrowStatus.AWAITING_PAYMENT
+            db.commit()
+            db.refresh(order)  # the log and the response below read order.* after the commit
+
+        await run_in_threadpool(_store)
         logger.info(
             "Escrow contract deployed",
             order_id=order_id,
@@ -910,7 +949,7 @@ async def create_escrow(order_id: int, db: Session = Depends(get_db), claims: di
 @app.get("/orders/{order_id}/escrow", response_model=EscrowStateResponse)
 async def get_escrow(order_id: int, db: Session = Depends(get_db), claims: dict = Depends(get_current_user_claims)):
     """Stored escrow state plus the live chain state. Visibility like GET /orders/{id}."""
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     _require_order_access(order, claims, allow_courier=True)
@@ -943,7 +982,7 @@ async def verify_escrow(order_id: int, db: Session = Depends(get_db), claims: di
     Read the chain; when the contract is funded run the SAME mark_order_paid
     the Stripe webhook runs (commit stock, PAID, ORDER_PAID event). Idempotent.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     _require_order_access(order, claims)
@@ -967,8 +1006,12 @@ async def verify_escrow(order_id: int, db: Session = Depends(get_db), claims: di
     try:
         chain = await payment_client.get_escrow_state(order.escrow_contract_address)
     except EscrowContractMissingError:
-        order.escrow_status = EscrowStatus.FAILED
-        db.commit()
+        def _fail() -> None:
+            order.escrow_status = EscrowStatus.FAILED
+            db.commit()
+            db.refresh(order)  # the log below reads order.escrow_contract_address
+
+        await run_in_threadpool(_fail)
         logger.error(
             "Escrow contract missing on chain",
             order_id=order_id, contract_address=order.escrow_contract_address,
@@ -992,7 +1035,7 @@ async def verify_escrow(order_id: int, db: Session = Depends(get_db), claims: di
         try:
             await mark_order_paid(db, order, payment_ref=order.escrow_contract_address)
         except InvalidPaidTransition as e:
-            db.rollback()
+            await run_in_threadpool(db.rollback)
             raise HTTPException(status_code=400, detail=str(e))
         logger.info("Escrow payment verified", order_id=order_id, chain_state=chain_state)
         return {
@@ -1020,7 +1063,7 @@ async def confirm_escrow_delivery(order_id: int, db: Session = Depends(get_db), 
     Only for a DELIVERED order; the contract answers 409 "Delivery not
     complete." when no courier was ever bound.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     _require_order_access(order, claims)
@@ -1054,8 +1097,11 @@ async def confirm_escrow_delivery(order_id: int, db: Session = Depends(get_db), 
             detail=f"Escrow unavailable: {e}"
         )
 
-    order.escrow_status = EscrowStatus.RELEASED
-    db.commit()
+    def _released() -> None:
+        order.escrow_status = EscrowStatus.RELEASED
+        db.commit()
+
+    await run_in_threadpool(_released)
     logger.info("Escrow released", order_id=order_id, tx_hash=result.get("tx_hash"))
     return {
         "status": "released",
@@ -1085,7 +1131,7 @@ async def bind_order_courier(
     - deferred:      wallet saved but payments/chain unavailable or contract not
                      yet funded -> escrow_status unchanged; the reconciler retries
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if order is None:
         logger.info("Courier wallet for unknown order, no-op", order_id=order_id)
         return {"status": "not_found", "order_id": order_id, "escrow_status": None}
@@ -1093,16 +1139,17 @@ async def bind_order_courier(
     order.courier_wallet = payload.courier_wallet
 
     def _answer(status_word: str) -> dict:
+        # The commit step: order.escrow_status is re-read after the commit, in the threadpool.
         db.commit()
         return {"status": status_word, "order_id": order_id, "escrow_status": order.escrow_status}
 
     if order.payment_method != PaymentMethod.ESCROW or not order.escrow_contract_address:
-        return _answer("stored")
+        return await run_in_threadpool(_answer, "stored")
     if order.escrow_status in (EscrowStatus.IN_DELIVERY, EscrowStatus.RELEASED):
-        return _answer("already_bound")
+        return await run_in_threadpool(_answer, "already_bound")
     if order.escrow_status != EscrowStatus.FUNDED:
         # Not funded yet: the reconciler binds once the payment lands.
-        return _answer("deferred")
+        return await run_in_threadpool(_answer, "deferred")
 
     try:
         await payment_client.assign_escrow_courier(order.escrow_contract_address, payload.courier_wallet)
@@ -1111,13 +1158,16 @@ async def bind_order_courier(
         # logged. Either way the reconciler retries from the stored wallet.
         if e.reason != "Transfer not complete.":
             logger.warning("Courier binding rejected by contract", order_id=order_id, reason=e.reason)
-        return _answer("deferred")
+        return await run_in_threadpool(_answer, "deferred")
     except (CircuitOpenError, PaymentServiceError) as e:
         logger.warning("Courier binding deferred: payments unavailable", order_id=order_id, error=str(e))
-        return _answer("deferred")
+        return await run_in_threadpool(_answer, "deferred")
 
-    order.escrow_status = EscrowStatus.IN_DELIVERY
-    db.commit()
+    def _bound() -> None:
+        order.escrow_status = EscrowStatus.IN_DELIVERY
+        db.commit()
+
+    await run_in_threadpool(_bound)
     logger.info("Courier bound on chain", order_id=order_id, courier_wallet=payload.courier_wallet)
     return {"status": "bound", "order_id": order_id, "escrow_status": EscrowStatus.IN_DELIVERY}
 
@@ -1168,7 +1218,7 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db), clai
     responses for the duplicate / unknown / wrong-state cases — they are
     expected and not errors.
     """
-    order = db.get(Order, order_id)
+    order = await run_in_threadpool(db.get, Order, order_id)
     if order is None:
         logger.info("Reservation expired for unknown order, no-op", order_id=order_id)
         return {"status": "not_found", "order_id": order_id}
@@ -1198,22 +1248,25 @@ async def reservation_expired(order_id: int, db: Session = Depends(get_db), clai
             order_id=order_id, error=str(e),
         )
 
-    order.status = OrderStatus.CANCELLED
-    emit_event(
-        db=db,
-        event_type="ORDER_CANCELLED",
-        aggregate_type="order",
-        aggregate_id=str(order_id),
-        payload={
-            "order_id": order_id,
-            "customer_email": order.customer_email,
-            "previous_status": "reserved",
-            "reason": "reservation_expired",
-            "released_stock": True,
-            "escrow_refunded": escrow_refunded,
-        },
-    )
-    db.commit()
+    def _cancel() -> None:
+        order.status = OrderStatus.CANCELLED
+        emit_event(
+            db=db,
+            event_type="ORDER_CANCELLED",
+            aggregate_type="order",
+            aggregate_id=str(order_id),
+            payload={
+                "order_id": order_id,
+                "customer_email": order.customer_email,
+                "previous_status": "reserved",
+                "reason": "reservation_expired",
+                "released_stock": True,
+                "escrow_refunded": escrow_refunded,
+            },
+        )
+        db.commit()
+
+    await run_in_threadpool(_cancel)
     logger.info(
         "Order auto-cancelled after reservation expiry",
         order_id=order_id,

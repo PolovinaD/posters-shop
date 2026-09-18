@@ -16,6 +16,7 @@ import asyncio
 import os
 
 from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
 
 from database import SessionLocal
 from models import Order, OrderStatus, EscrowStatus, PaymentMethod
@@ -42,9 +43,20 @@ def open_escrow_orders_query():
 
 
 async def reconcile_once(db) -> dict:
-    """One pass over the open escrow orders. Returns a count per action."""
+    """One pass over the open escrow orders. Returns a count per action.
+
+    Every SQL statement runs through run_in_threadpool (see database.py). The
+    worker opens the session with expire_on_commit=False so the row reads after
+    each commit stay in memory; after the rare InvalidPaidTransition rollback the
+    next row's attributes reload on the loop once (a PK lookup) -- the tripwire
+    would log it.
+    """
     counts = {a: 0 for a in ACTIONS}
-    orders = db.execute(open_escrow_orders_query()).scalars().all()
+
+    def _fetch() -> list:
+        return db.execute(open_escrow_orders_query()).scalars().all()
+
+    orders = await run_in_threadpool(_fetch)
 
     for order in orders:
         try:
@@ -72,7 +84,7 @@ async def reconcile_once(db) -> dict:
                 await mark_order_paid(db, order, payment_ref=order.escrow_contract_address)
             except InvalidPaidTransition as e:
                 logger.warning("Reconciler could not mark order paid", order_id=order.id, error=str(e))
-                db.rollback()
+                await run_in_threadpool(db.rollback)
                 continue
             logger.info("Reconciler marked escrow order paid", order_id=order.id, chain_state=chain_state)
 
@@ -82,7 +94,7 @@ async def reconcile_once(db) -> dict:
                     order.escrow_contract_address, order.courier_wallet
                 )
                 order.escrow_status = EscrowStatus.IN_DELIVERY
-                db.commit()
+                await run_in_threadpool(db.commit)
                 logger.info(
                     "Reconciler bound courier on chain",
                     order_id=order.id, courier_wallet=order.courier_wallet,
@@ -94,7 +106,7 @@ async def reconcile_once(db) -> dict:
 
         elif action == "sync_in_delivery":
             order.escrow_status = EscrowStatus.IN_DELIVERY
-            db.commit()
+            await run_in_threadpool(db.commit)
             logger.info("Reconciler synced escrow_status from chain", order_id=order.id, escrow_status=EscrowStatus.IN_DELIVERY)
 
         elif action == "refund":
@@ -103,7 +115,7 @@ async def reconcile_once(db) -> dict:
             try:
                 await payment_client.cancel_escrow(order.escrow_contract_address)
                 order.escrow_status = EscrowStatus.CANCELLED
-                db.commit()
+                await run_in_threadpool(db.commit)
                 logger.info("Reconciler refunded escrow for closed order", order_id=order.id)
             except EscrowRejectedError as e:
                 logger.warning("Escrow refund rejected", order_id=order.id, reason=e.reason)
@@ -112,7 +124,7 @@ async def reconcile_once(db) -> dict:
 
         elif action == "mark_failed":
             order.escrow_status = EscrowStatus.FAILED
-            db.commit()
+            await run_in_threadpool(db.commit)
             logger.error(
                 "Escrow contract vanished (chain reset?)",
                 order_id=order.id, contract_address=order.escrow_contract_address,
@@ -127,10 +139,15 @@ async def escrow_reconciler_worker(interval: float = RECONCILE_INTERVAL_SECONDS)
 
     while True:
         try:
-            with SessionLocal() as db:
+            # expire_on_commit=False: the pass keeps reading rows it just committed
+            # (log lines and the next order) and reads no server-generated column.
+            db = SessionLocal(expire_on_commit=False)
+            try:
                 counts = await reconcile_once(db)
                 if any(counts[a] for a in ACTIONS if a != "noop"):
                     logger.info("Escrow reconcile actions", **counts)
+            finally:
+                await run_in_threadpool(db.close)
         except Exception as e:
             logger.error("Escrow reconcile failed", error=str(e), exc_info=True)
 

@@ -29,6 +29,7 @@ import asyncio
 
 from sqlalchemy import select, func as sql_func
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from database import SessionLocal
 from models import Order, OrderStatus
@@ -113,9 +114,15 @@ async def orders_by_status_worker(refresh_interval: float = REFRESH_INTERVAL_SEC
 
     while True:
         try:
-            with SessionLocal() as db:
-                refresh_orders_by_status(db)
+            await run_in_threadpool(_refresh_pass)
         except Exception as e:
             logger.error("Orders-by-status refresh failed", error=str(e), exc_info=True)
 
         await asyncio.sleep(refresh_interval)
+
+
+def _refresh_pass() -> dict[str, int]:
+    """One synchronous refresh on a threadpool thread (SQL never runs on the
+    event loop). SessionLocal is looked up at call time, module-global."""
+    with SessionLocal() as db:
+        return refresh_orders_by_status(db)
