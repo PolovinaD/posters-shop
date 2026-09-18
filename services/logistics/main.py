@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, Body, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ import orders_client
 logger = get_logger(__name__)
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 LOGISTICS_AUTO_ADVANCE_INTERVAL = int(os.getenv("LOGISTICS_AUTO_ADVANCE_INTERVAL", "120"))
 LOGISTICS_DEFAULT_COURIER_WALLET = os.getenv("LOGISTICS_DEFAULT_COURIER_WALLET") or None  # wallet the unattended worker binds on pick-up (compose: Ganache account[2])
 WORKER_POLL_INTERVAL = 30  # seconds; separate from advance interval
@@ -59,11 +61,19 @@ async def shipment_worker():
                 poll_interval=WORKER_POLL_INTERVAL)
     while True:
         try:
-            with SessionLocal() as db:
+            # expire_on_commit=False: the pass keeps reading rows it just committed
+            # (log lines and the next shipment) and reads no server-generated column.
+            # Every SQL statement runs via run_in_threadpool, never on the event loop.
+            db = SessionLocal(expire_on_commit=False)
+            try:
                 now = datetime.now(timezone.utc)
-                shipments = db.query(Shipment).filter(
-                    Shipment.status.in_(["dispatched", "in_transit"])
-                ).all()
+
+                def _fetch() -> list:
+                    return db.query(Shipment).filter(
+                        Shipment.status.in_(["dispatched", "in_transit"])
+                    ).all()
+
+                shipments = await run_in_threadpool(_fetch)
                 for s in shipments:
                     new_status = next_status(
                         s.status, s.updated_at, now, LOGISTICS_AUTO_ADVANCE_INTERVAL
@@ -79,7 +89,7 @@ async def shipment_worker():
                             s.courier_id = None
                             s.courier_wallet = wallet
                             s.courier_bound_at = datetime.utcnow()
-                        db.commit()
+                        await run_in_threadpool(db.commit)
                         logger.info("Auto-advanced shipment",
                                     shipment_id=s.id,
                                     from_status=old_status,
@@ -93,6 +103,8 @@ async def shipment_worker():
                             asyncio.create_task(
                                 orders_client.notify_order_delivered(s.order_id)
                             )
+            finally:
+                await run_in_threadpool(db.close)
         except Exception as e:
             logger.error("Shipment worker error", error=str(e))
         await asyncio.sleep(WORKER_POLL_INTERVAL)
@@ -133,16 +145,24 @@ app.add_middleware(
 )
 
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": "logistics"}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -164,8 +184,11 @@ async def create_shipment(order_id: int = Body(...), db: Session = Depends(get_d
     The delivery address is fetched from orders exactly here, once, and then
     copied into this schema — every later courier read is served locally.
     """
-    # Check if shipment already exists for this order
-    existing = db.query(Shipment).filter(Shipment.order_id == order_id).first()
+    # Check if shipment already exists for this order (SQL off the event loop)
+    def _existing():
+        return db.query(Shipment).filter(Shipment.order_id == order_id).first()
+
+    existing = await run_in_threadpool(_existing)
     if existing:
         return {"shipment_id": existing.id, "tracking": existing.tracking}
 
@@ -174,20 +197,24 @@ async def create_shipment(order_id: int = Body(...), db: Session = Depends(get_d
         logger.warning("Creating shipment without a delivery address", order_id=order_id)
         address = {}
 
-    s = Shipment(
-        order_id=order_id,
-        status="dispatched",
-        tracking=f"TRK-{order_id:06d}",
-        recipient_name=address.get("recipient_name"),
-        street=address.get("street"),
-        city=address.get("city"),
-        postal_code=address.get("postal_code"),
-        country=address.get("country"),
-        recipient_phone=address.get("phone"),
-    )
-    db.add(s)
-    db.commit()
-    db.refresh(s)
+    def _create() -> Shipment:
+        s = Shipment(
+            order_id=order_id,
+            status="dispatched",
+            tracking=f"TRK-{order_id:06d}",
+            recipient_name=address.get("recipient_name"),
+            street=address.get("street"),
+            city=address.get("city"),
+            postal_code=address.get("postal_code"),
+            country=address.get("country"),
+            recipient_phone=address.get("phone"),
+        )
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+        return s
+
+    s = await run_in_threadpool(_create)
     logger.info(f"Created shipment {s.id} for order {order_id}")
     return {"shipment_id": s.id, "tracking": s.tracking}
 
@@ -236,7 +263,7 @@ def get_shipment(
 
 
 @app.put("/shipments/{shipment_id}/status")
-async def update_shipment_status(
+def update_shipment_status(
     shipment_id: int,
     background_tasks: BackgroundTasks,
     status: str = Body(..., embed=True),
@@ -307,7 +334,7 @@ async def update_shipment_status(
 # --- External Integration Endpoints ---
 
 @app.post("/webhooks/delivery-update")
-async def external_delivery_webhook(
+def external_delivery_webhook(
     background_tasks: BackgroundTasks,
     tracking_number: str = Body(...),
     status: str = Body(...),
