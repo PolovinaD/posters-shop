@@ -1,9 +1,11 @@
+import asyncio
 import os
 import httpx
 from decimal import Decimal
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import (Column, Integer, String, Numeric, Boolean, Text, ForeignKey,
                         UniqueConstraint, select, text)
 from sqlalchemy.orm import Session, relationship
@@ -20,6 +22,7 @@ logger = get_logger(__name__)
 SERVICE_NAME = "catalog"
 INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://inventory:8000")
 ROOT_PATH = os.getenv("ROOT_PATH", "")
+READYZ_TIMEOUT_SECONDS = 2.0
 
 app = FastAPI(title=f"{SERVICE_NAME} service", root_path=ROOT_PATH)
 
@@ -43,16 +46,24 @@ def on_startup():
     logger.info("Catalog service started. Database migrations managed by Alembic.")
 
 
+def _db_ping() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Liveness. Pure: no database, no threadpool — a busy pod is still alive."""
     return {"status": "ok", "service": SERVICE_NAME}
 
 
 @app.get("/readyz")
-def readyz():
+async def readyz():
+    """Readiness: database reachable within READYZ_TIMEOUT_SECONDS. The ping runs on
+    the loop's default executor, not the request threadpool, so a saturated request
+    pool does not make the pod NotReady; a slow or unreachable database does."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=READYZ_TIMEOUT_SECONDS)
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -387,15 +398,22 @@ async def list_products(
     if listed_only:
         query = query.where(Product.listed == True)
     
-    products = db.execute(query.order_by(Product.id)).scalars().all()
+    # The query AND the variants load run in the threadpool: sync SQLAlchemy on
+    # the event loop blocks every other request and /healthz. The sku list is
+    # built even when include_stock is false — it is what loads the relationship,
+    # so _family_payload below does no SQL.
+    def _load() -> tuple[list, list[str]]:
+        products = db.execute(query.order_by(Product.id)).scalars().all()
+        skus = [v.sku for p in products for v in p.variants if v.active]
+        return products, skus
+
+    products, skus = await run_in_threadpool(_load)
 
     # Stock lives on the variant, not the family: a motif is orderable when at
     # least one of its formats is in stock.
     stock_levels = {}
     if include_stock and products:
-        stock_levels = await get_stock_levels(
-            [v.sku for p in products for v in p.variants if v.active]
-        )
+        stock_levels = await get_stock_levels(skus)
 
     return [_family_payload(p, stock_levels) for p in products]
 
@@ -403,18 +421,21 @@ async def list_products(
 @app.get("/products/{sku}", response_model=ProductOut)
 async def get_product(sku: str, include_stock: bool = True, db: Session = Depends(get_db)):
     """Get a single product by SKU."""
-    product = db.execute(
-        select(Product).where(Product.sku == sku)
-    ).scalar_one_or_none()
+    def _load() -> tuple:
+        product = db.execute(
+            select(Product).where(Product.sku == sku)
+        ).scalar_one_or_none()
+        skus = [v.sku for v in product.variants if v.active] if product else []
+        return product, skus
+
+    product, skus = await run_in_threadpool(_load)
     
     if not product:
         raise HTTPException(status_code=404, detail=f"Product '{sku}' not found")
     
     stock_levels = {}
     if include_stock:
-        stock_levels = await get_stock_levels(
-            [v.sku for v in product.variants if v.active]
-        )
+        stock_levels = await get_stock_levels(skus)
 
     return _family_payload(product, stock_levels)
 
@@ -505,16 +526,20 @@ async def list_frames(
     Pass `size` and each colour carries only that format's variant, priced for
     it — which is what the product page needs once a format has been chosen.
     """
-    frames = db.execute(select(FrameOption).order_by(FrameOption.id)).scalars().all()
+    def _load() -> list:
+        frames = db.execute(select(FrameOption).order_by(FrameOption.id)).scalars().all()
 
-    out = []
-    for frame in frames:
-        item = FrameOptionOut.model_validate(frame)
-        if size:
-            item.variants = [v for v in item.variants if v.size == size]
-        for variant in item.variants:
-            variant.frame_name = frame.name
-        out.append(item)
+        out = []
+        for frame in frames:
+            item = FrameOptionOut.model_validate(frame)  # loads frame.variants
+            if size:
+                item.variants = [v for v in item.variants if v.size == size]
+            for variant in item.variants:
+                variant.frame_name = frame.name
+            out.append(item)
+        return out
+
+    out = await run_in_threadpool(_load)
 
     if include_stock:
         stock_levels = await get_stock_levels(
