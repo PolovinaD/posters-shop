@@ -768,3 +768,234 @@ data:
       "uid": "postershop-orders",
       "version": 2
     }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-postershop-bulkhead
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "PosterShop"
+data:
+  postershop-bulkhead.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "orders – bulkhead: in flight vs queued (sum over pods)",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 9
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(bulkhead_in_flight{exported_service=\"orders\"})",
+              "legendFormat": "in flight"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(bulkhead_queued{exported_service=\"orders\"})",
+              "legendFormat": "queued"
+            },
+            {
+              "refId": "C",
+              "expr": "8 * kube_deployment_status_replicas_ready{namespace=\"postershop\",deployment=\"orders\"}",
+              "legendFormat": "limit (8 × replicas)"
+            }
+          ],
+          "description": "Requests inside the orders service's per-process bulkhead, summed over pods. `in flight` can never exceed the limit (pool_size + max_overflow = 8 per pod, so 8 × ready replicas); `queued` requests wait on the event loop for up to BULKHEAD_QUEUE_TIMEOUT (10 s) and cost no thread and no DB connection. Split by exported_service: the scrape attaches its own `service` label, so the application's label surfaces as `exported_service`."
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "catalog – bulkhead: in flight vs queued (sum over pods)",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 9
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(bulkhead_in_flight{exported_service=\"catalog\"})",
+              "legendFormat": "in flight"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(bulkhead_queued{exported_service=\"catalog\"})",
+              "legendFormat": "queued"
+            },
+            {
+              "refId": "C",
+              "expr": "10 * kube_deployment_status_replicas_ready{namespace=\"postershop\",deployment=\"catalog\"}",
+              "legendFormat": "limit (10 × replicas)"
+            }
+          ],
+          "description": "Same for catalog (limit 10 per pod). A flat `in flight` at the limit with a growing `queued` line is the signature of a CPU-bound service at capacity — the lever is replicas, not the bulkhead."
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "bulkhead rejections (503 + Retry-After) per second, by service",
+          "gridPos": {
+            "x": 0,
+            "y": 9,
+            "w": 12,
+            "h": 9
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (exported_service) (rate(bulkhead_rejected_total[1m]))",
+              "legendFormat": "{{exported_service}}"
+            }
+          ],
+          "description": "Requests the bulkhead answered with 503 + Retry-After because the queue wait exceeded BULKHEAD_QUEUE_TIMEOUT. Zero while the queue absorbs a burst; a plateau means sustained overload (2026-09-19: catalog ≈ 9/s at 200 clients with one replica, orders ≈ 7/s at 200 clients)."
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "orders – request rate (HPA signal) and ready replicas",
+          "gridPos": {
+            "x": 12,
+            "y": 9,
+            "w": 12,
+            "h": 9
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10
+              },
+              "unit": "reqps"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "ready replicas"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "short"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [
+                        10,
+                        10
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_requests_total{namespace=\"postershop\",exported_service=\"orders\"}[2m]))",
+              "legendFormat": "requests/s (all orders pods)"
+            },
+            {
+              "refId": "B",
+              "expr": "kube_deployment_status_replicas_ready{namespace=\"postershop\",deployment=\"orders\"}",
+              "legendFormat": "ready replicas"
+            }
+          ],
+          "description": "The orders HPA signal (http_requests_total rate, target 5 req/s per pod) against the ready replica count from kube-state-metrics; replicas lag the load by the HPA's sync period plus pod start-up."
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "tags": [
+        "postershop",
+        "bulkhead",
+        "load"
+      ],
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "timezone": "browser",
+      "title": "PosterShop Bulkhead",
+      "uid": "postershop-bulkhead",
+      "version": 1
+    }

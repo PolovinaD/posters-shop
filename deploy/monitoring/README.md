@@ -27,7 +27,7 @@ Prometheus + Grafana monitoring stack for the PosterShop platform.
    └────────┘ └───────┘ └─────┘ └─────┘ └────────┘
 ```
 
-The diagram shows the four primary dashboards; six ship in total — Overview, Orders, Inventory, HPA, HPA Comparison, and Circuit Breaker.
+The diagram shows the four primary dashboards; seven ship in total — Overview, Orders, Inventory, HPA, HPA Comparison, Circuit Breaker, and Bulkhead.
 
 ## Quick Start
 
@@ -76,6 +76,7 @@ kubectl apply -f servicemonitors.yaml -n postershop
 | `grafana-dashboard-hpa.json` | HPA autoscaling dashboard |
 | `grafana-dashboard-hpa-comparison.json` | CPU vs request-rate HPA comparison |
 | `grafana-dashboard-circuit-breaker.json` | Circuit breaker state and trips |
+| `grafana-dashboard-bulkhead.json` | Per-service bulkhead: in flight vs queued vs limit, rejections/s, orders request rate vs ready replicas |
 | `grafana-dashboards-configmap.yaml` | ConfigMap for auto-loading dashboards |
 
 ## Available Metrics
