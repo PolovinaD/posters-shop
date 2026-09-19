@@ -54,6 +54,10 @@ env:
     value: "1000"
   - name: DESIGNS_MAX_ATTEMPTS
     value: "3"
+  - name: DESIGNS_STALE_AFTER
+    value: "600"
+  - name: DESIGNS_SWEEP_INTERVAL
+    value: "60"
   - name: CB_FAILURE_THRESHOLD
     value: "5"
   - name: CB_RECOVERY_TIMEOUT

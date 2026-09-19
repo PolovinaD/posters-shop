@@ -2,6 +2,9 @@
 
 One loop per replica, started from main.py's lifespan. Each iteration:
 
+  sweep  -> every SWEEP_INTERVAL s, RECLAIM_SQL hands `generating` rows older than
+            STALE_AFTER back to `queued` (or `failed` once out of attempts): a
+            worker that died mid-call left them behind
   claim  -> one UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING flips the oldest
             due `queued` row to `generating` and bumps `attempts`; the session is
             committed and CLOSED before anything else happens
@@ -18,6 +21,9 @@ Error taxonomy -> outcome (outcome_for_error):
                       handed back (attempts - 1) because the provider was never called
   ProviderError / *   queued with backoff RETRY_BACKOFF[attempt - 1] (5 s, 30 s, ...)
                       until attempts >= DESIGNS_MAX_ATTEMPTS, then failed
+
+Crash recovery: the claim consumed the attempt before the worker died, and the sweep
+does not hand it back, so a poison row that crashes the pod fails after MAX_ATTEMPTS.
 
 Personalise (D-07/D-16): before the provider call, a row with `personalise` asks
 style_profile.ensure_summary for the customer's style summary (cached when fresh,
@@ -50,6 +56,12 @@ logger = get_logger(__name__)
 
 POLL_INTERVAL = float(os.getenv("DESIGNS_WORKER_POLL_INTERVAL", "1.0"))
 MAX_ATTEMPTS = int(os.getenv("DESIGNS_MAX_ATTEMPTS", "3"))
+# Seconds a `generating` row may sit before its claim is presumed dead (the worker died
+# mid-call): must exceed the longest provider call (OpenAI 180 s httpx timeout, Replicate
+# 90 s per call + 180 s poll deadline) plus the storage put, so 600 s is safe.
+STALE_AFTER = float(os.getenv("DESIGNS_STALE_AFTER", "600"))
+# Seconds between stale-claim sweeps.
+SWEEP_INTERVAL = float(os.getenv("DESIGNS_SWEEP_INTERVAL", "60"))
 RETRY_BACKOFF = [5, 30, 120]  # seconds to wait after attempt 1, 2, 3, ... (last value repeats)
 CB_FAILURE_THRESHOLD = int(os.getenv("CB_FAILURE_THRESHOLD", "5"))
 CB_RECOVERY_TIMEOUT = float(os.getenv("CB_RECOVERY_TIMEOUT", "30"))
@@ -76,6 +88,21 @@ CLAIM_SQL = text("""
  RETURNING id, customer_email, prompt, effective_prompt, personalise, attempts
 """)
 
+# Crash recovery: a worker that dies mid-call (provider call or storage put) leaves its
+# row `generating`, and nothing else ever selects that status. The sweep hands such rows
+# back once their claim is older than STALE_AFTER. The crashed attempt stays consumed
+# (the claim already incremented it), so a poison row that crashes the pod fails after
+# DESIGNS_MAX_ATTEMPTS instead of cycling forever.
+RECLAIM_SQL = text("""
+    UPDATE designs_schema.generations
+       SET status = CASE WHEN attempts >= :max_attempts THEN 'failed' ELSE 'queued' END,
+           failure_reason = CASE WHEN attempts >= :max_attempts THEN :reason ELSE failure_reason END,
+           finished_at = CASE WHEN attempts >= :max_attempts THEN now() ELSE finished_at END,
+           retry_after = NULL
+     WHERE status = 'generating' AND started_at < now() - make_interval(secs => :stale)
+ RETURNING id, attempts, status
+""")
+
 
 @dataclass
 class Outcome:
@@ -94,6 +121,24 @@ def claim_next(session_factory=SessionLocal) -> Optional[dict]:
         row = db.execute(CLAIM_SQL).mappings().first()
         db.commit()
     return dict(row) if row else None
+
+
+def reclaim_stale(session_factory=SessionLocal) -> list[dict]:
+    """Hand back `generating` rows whose claim is older than STALE_AFTER (their worker
+    died mid-call): back to queued, or failed when they are out of attempts. Returns
+    the reclaimed rows as plain dicts. The session is closed on return."""
+    with session_factory() as db:
+        rows = db.execute(
+            RECLAIM_SQL, {"stale": STALE_AFTER, "max_attempts": MAX_ATTEMPTS, "reason": UNAVAILABLE_REASON}
+        ).mappings().all()
+        db.commit()
+    reclaimed = [dict(r) for r in rows]
+    for r in reclaimed:
+        logger.warning(
+            "Reclaimed stale generation",
+            generation_id=r["id"], attempts=r["attempts"], status=r["status"], stale_after=STALE_AFTER,
+        )
+    return reclaimed
 
 
 def outcome_for_error(exc: Exception, attempts: int, now: datetime) -> Outcome:
@@ -196,10 +241,22 @@ async def worker_loop(get_provider, get_storage, session_factory=SessionLocal, s
     """Poll-claim-run forever (until cancelled or `stop` is set). `get_provider` /
     `get_storage` are main.py's lazy accessors, passed in so this module never imports
     main. The queue-depth gauge is refreshed only when the queue is drained, so a busy
-    replica never spends a session on bookkeeping between jobs."""
-    logger.info("Generation worker started", poll_interval=POLL_INTERVAL, max_attempts=MAX_ATTEMPTS)
+    replica never spends a session on bookkeeping between jobs. The stale-claim sweep
+    runs before the first claim and then at most once per SWEEP_INTERVAL, ahead of the
+    claim, so it fires on a busy replica too."""
+    logger.info(
+        "Generation worker started",
+        poll_interval=POLL_INTERVAL, max_attempts=MAX_ATTEMPTS,
+        stale_after=STALE_AFTER, sweep_interval=SWEEP_INTERVAL,
+    )
+    last_sweep: float | None = None
     while not (stop and stop.is_set()):
         try:
+            # Sweep BEFORE the claim: a replica whose queue never drains must still sweep, so the
+            # queue-drained branch below is the wrong place for it.
+            if last_sweep is None or time.monotonic() - last_sweep >= SWEEP_INTERVAL:
+                await asyncio.to_thread(reclaim_stale, session_factory)
+                last_sweep = time.monotonic()
             row = await asyncio.to_thread(claim_next, session_factory)
             if row:
                 await run_generation(row, provider=get_provider(), storage=get_storage(), session_factory=session_factory)

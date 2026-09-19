@@ -287,3 +287,83 @@ def test_run_generation_not_personalised_skips_profile(d, worker, tmp_path, monk
     assert status == "ready"
     assert provider.prompts == ["a poster"]
     ensure.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery (quick 260919-vlm): the periodic stale-claim sweep
+# ---------------------------------------------------------------------------
+
+def test_reclaim_sql_shape(worker):
+    sql = worker.RECLAIM_SQL.text
+    assert "status = 'generating'" in sql
+    assert "started_at" in sql
+    assert "make_interval" in sql
+    assert "CASE WHEN attempts >= :max_attempts THEN 'failed' ELSE 'queued' END" in sql
+    assert "retry_after = NULL" in sql
+    assert "RETURNING" in sql
+
+
+def test_reclaim_stale_returns_rows_and_warns(worker, monkeypatch):
+    log = MagicMock()
+    monkeypatch.setattr(worker, "logger", log)
+
+    # nothing stale: one commit, no warning
+    factory, session = _session_factory()
+    session.execute.return_value.mappings.return_value.all.return_value = []
+    assert worker.reclaim_stale(session_factory=factory) == []
+    session.commit.assert_called_once()
+    log.warning.assert_not_called()
+
+    # two stale rows: one re-queued, one out of attempts -> failed
+    rows = [
+        {"id": 7, "attempts": 1, "status": "queued"},
+        {"id": 8, "attempts": 3, "status": "failed"},
+    ]
+    factory, session = _session_factory()
+    session.execute.return_value.mappings.return_value.all.return_value = rows
+    assert worker.reclaim_stale(session_factory=factory) == rows
+    assert session.execute.call_args.args[1] == {
+        "stale": worker.STALE_AFTER,
+        "max_attempts": worker.MAX_ATTEMPTS,
+        "reason": worker.UNAVAILABLE_REASON,
+    }
+    session.commit.assert_called_once()
+    assert log.warning.call_count == 2
+    failed = log.warning.call_args_list[1].kwargs
+    assert failed["generation_id"] == 8
+    assert failed["status"] == "failed"
+    assert failed["attempts"] == 3
+    assert failed["stale_after"] == worker.STALE_AFTER
+
+
+def _loop_calls(worker, monkeypatch, sweep_interval, iterations=3):
+    """Run worker_loop with reclaim_stale / claim_next replaced by recorders; the loop stops
+    once `iterations` claims have happened. Returns the call sequence."""
+    calls = []
+    stop = asyncio.Event()
+
+    def sweep(session_factory):
+        calls.append("sweep")
+        return []
+
+    def claim(session_factory):
+        calls.append("claim")
+        if calls.count("claim") >= iterations:
+            stop.set()
+        return None
+
+    monkeypatch.setattr(worker, "reclaim_stale", sweep)
+    monkeypatch.setattr(worker, "claim_next", claim)
+    monkeypatch.setattr(worker, "POLL_INTERVAL", 0)
+    monkeypatch.setattr(worker, "SWEEP_INTERVAL", sweep_interval)
+    factory, session = _session_factory()
+    session.execute.return_value.scalar.return_value = 0  # the drained-queue depth query
+    asyncio.run(worker.worker_loop(lambda: None, lambda: None, session_factory=factory, stop=stop))
+    return calls
+
+
+def test_worker_loop_sweeps_before_the_first_claim_then_per_interval(worker, monkeypatch):
+    # a long interval: exactly one sweep, and it precedes the first claim
+    assert _loop_calls(worker, monkeypatch, sweep_interval=3600) == ["sweep", "claim", "claim", "claim"]
+    # interval elapsed every iteration: a sweep ahead of every claim
+    assert _loop_calls(worker, monkeypatch, sweep_interval=0) == ["sweep", "claim"] * 3
