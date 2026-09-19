@@ -7,10 +7,13 @@ BASE=$1; OUT=$2; DUR=${3:-90s}; VUS=${4:-"10 50 100 200"}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"
 export AWS_PAGER=""
-# owner token once (login is rate-limited 10/min per IP)
-TOKEN=$(curl -sS -X POST "$BASE/api/users/login" -H 'Content-Type: application/json' \
-  -d '{"email":"admin@postershop.com","password":"admin1234"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-[ -n "$TOKEN" ] || { echo "no token"; exit 1; }
+# owner token per step: access tokens live 15 min and a full 8-step run takes ~17 min,
+# so a single login expires mid-run (the 2026-09-19 write-200 row: 1306 x 401). One login
+# per step is 8 logins in ~17 min, well under the 10/min limiter.
+login() {
+  curl -sS -X POST "$BASE/api/users/login" -H 'Content-Type: application/json' \
+    -d '{"email":"admin@postershop.com","password":"admin1234"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'
+}
 # replica sampler
 ( while true; do
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -24,6 +27,7 @@ trap 'kill $SAMPLER 2>/dev/null || true' EXIT
 for kind in ${KINDS:-read write}; do
   for v in $VUS; do
     echo "=== $(date -u +%H:%M:%S) $kind vus=$v $DUR" | tee -a "$OUT/steps.log"
+    TOKEN=$(login); [ -n "$TOKEN" ] || { echo "no token"; exit 1; }
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$kind,$v,start" >> "$OUT/replicas.csv"
     k6 run --quiet -e BASE="$BASE" -e PATH_KIND="$kind" -e VUS="$v" -e DURATION="$DUR" -e TOKEN="$TOKEN" \
       --summary-export "$OUT/$kind-$v.json" "$HERE/step.js" 2>&1 | tail -n 25 | tee -a "$OUT/steps.log" || true
