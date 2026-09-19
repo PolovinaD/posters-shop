@@ -175,6 +175,8 @@ Accounts*), so there is no access key to store. See
 | `AI_POSTER_STOCK` | Virtual stock units created per variant at print time | `1000` | No |
 | `DESIGNS_WORKER_POLL_INTERVAL` | Seconds the worker sleeps when no row is due | `1.0` | No |
 | `DESIGNS_MAX_ATTEMPTS` | Provider attempts before a generation is `failed` (backoff 5 s / 30 s / 120 s) | `3` | No |
+| `DESIGNS_STALE_AFTER` | Seconds a `generating` row may sit before the sweep presumes its worker died and re-queues it (or fails it once out of attempts) | `600` | No |
+| `DESIGNS_SWEEP_INTERVAL` | Seconds between stale-claim sweeps | `60` | No |
 | `CB_FAILURE_THRESHOLD` | Consecutive failures that open the provider / catalog / inventory circuit breakers | `5` | No |
 | `CB_RECOVERY_TIMEOUT` | Seconds a breaker stays open before a trial call | `30` | No |
 

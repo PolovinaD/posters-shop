@@ -186,6 +186,10 @@ Three prompt hooks exist on the fake provider only, so every path is demoable of
 - `[fail] anything` → a simulated transport failure on every attempt: re-queued after 5 s and
   30 s, `failed` after the third attempt (`DESIGNS_MAX_ATTEMPTS`)
 - `[slow] anything` → the render takes 3 s, long enough to watch **Generating**
+- kill the designs container (`docker compose kill designs`) while a `[slow]` render is in
+  flight and the row is re-queued by the stale sweep after `DESIGNS_STALE_AFTER` (600 s);
+  export `DESIGNS_STALE_AFTER=5 DESIGNS_SWEEP_INTERVAL=5` before `docker compose up -d designs`
+  to watch it happen in seconds
 
 To generate real posters, add `IMAGE_PROVIDER=openai` to the gitignored `.env` next to your
 `OPENAI_API_KEY` (optionally `OPENAI_IMAGE_QUALITY=low`), then recreate only the designs

@@ -112,6 +112,8 @@ notifications too) on any non-2xx.
 | AI_POSTER_STOCK | Virtual stock created per variant at print time | `1000` |
 | DESIGNS_WORKER_POLL_INTERVAL | Seconds between worker polls when the queue is empty | `1.0` |
 | DESIGNS_MAX_ATTEMPTS | Provider attempts before a generation is `failed` | `3` |
+| DESIGNS_STALE_AFTER | Seconds a `generating` row may sit before the sweep presumes its worker died and re-queues it (or fails it once out of attempts) | `600` |
+| DESIGNS_SWEEP_INTERVAL | Seconds between stale-claim sweeps | `60` |
 | CB_FAILURE_THRESHOLD | Circuit-breaker failures before it opens (provider, catalog, inventory) | `5` |
 | CB_RECOVERY_TIMEOUT | Seconds an open breaker waits before a trial call | `30` |
 | SERVICE_NAME | Service name used in logs and metrics labels | `designs` |
@@ -218,7 +220,10 @@ Retries: `DESIGNS_MAX_ATTEMPTS` (3) attempts, waiting 5 s / 30 s / 120 s after
 attempts 1 / 2 / 3. An **open circuit** hands the attempt back (`attempts − 1`) and
 re-queues the row at `now + CB_RECOVERY_TIMEOUT`, so an outage can never burn a
 generation's last attempt into a failure; `POST /generations` keeps accepting — the
-queue is the buffer (D-04). The breaker is `services/orders/circuit_breaker.py` copied
+queue is the buffer (D-04). A worker that dies mid-call leaves its row `generating`;
+the next sweep (every `DESIGNS_SWEEP_INTERVAL`) re-queues rows older than
+`DESIGNS_STALE_AFTER` with the crashed attempt still consumed, so a poison row fails
+after `DESIGNS_MAX_ATTEMPTS` rather than cycling. The breaker is `services/orders/circuit_breaker.py` copied
 with `PromptRejected`, `ProviderConfigError`, `CatalogRejectedError` and
 `InventoryRejectedError` whitelisted as business errors.
 
