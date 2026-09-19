@@ -33,6 +33,10 @@ from bulkhead import BulkheadMiddleware, bulkhead_limit, bulkhead_queue_timeout
 from service_auth import internal_headers, require_service_or_owner
 from auth import require_owner
 
+# Expiry sweep bounds (2026-09-19 OOM): rows per pass and concurrent orders notifications.
+EXPIRE_BATCH_SIZE = int(os.getenv("EXPIRE_BATCH_SIZE", "500"))
+EXPIRE_NOTIFY_CONCURRENCY = int(os.getenv("EXPIRE_NOTIFY_CONCURRENCY", "8"))
+
 logger = get_logger(__name__)
 
 SERVICE_NAME = "inventory"
@@ -73,20 +77,25 @@ async def notify_order_reservation_expired(order_id: int) -> None:
         )
 
 
-def _expire_pass() -> set[int]:
+def _expire_pass(batch_size: int = EXPIRE_BATCH_SIZE) -> set[int]:
     """One synchronous expiry sweep on a threadpool thread (SQL never runs on the
-    event loop). Returns the order ids whose reservations expired."""
+    event loop). Returns the order ids whose reservations expired.
+
+    Bounded to ``batch_size`` rows per pass: after a load test thousands of
+    reservations expire in the same 30 s window, and loading them all as ORM
+    objects in one transaction OOM-killed the pod at its 384Mi limit
+    (2026-09-19). The worker loops until a pass comes back short."""
     with SessionLocal() as db:
         now = datetime.now(timezone.utc)
 
-        # Find and process expired reservations atomically
+        # Find and process expired reservations atomically, oldest first
         expired = db.execute(
             select(Reservation).where(
                 and_(
                     Reservation.status == "active",
                     Reservation.expires_at < now
                 )
-            ).with_for_update(skip_locked=True)
+            ).order_by(Reservation.expires_at).limit(batch_size).with_for_update(skip_locked=True)
         ).scalars().all()
 
         expired_count = 0
@@ -119,17 +128,34 @@ def _expire_pass() -> set[int]:
         return order_ids_to_notify
 
 
+async def _notify_expired_batch(order_ids: set[int]) -> None:
+    """Notify orders about a batch of expired reservations, at most
+    EXPIRE_NOTIFY_CONCURRENCY calls in flight: one task + one HTTP client per
+    order id for thousands of ids at once was the other half of the OOM."""
+    sem = asyncio.Semaphore(EXPIRE_NOTIFY_CONCURRENCY)
+
+    async def one(order_id: int) -> None:
+        async with sem:
+            await notify_order_reservation_expired(order_id)
+
+    await asyncio.gather(*(one(oid) for oid in order_ids))
+
+
 async def expire_reservations_worker():
     """Background worker that releases expired reservations every 30 seconds."""
     while True:
         try:
-            order_ids = await run_in_threadpool(_expire_pass)
-
-            # Fire-and-forget notify orders service per unique order_id.
-            # Tasks run on the running event loop; they do not block the
-            # 30-second sleep below. notify_* swallows all exceptions.
-            for order_id in order_ids:
-                asyncio.create_task(notify_order_reservation_expired(order_id))
+            # Drain in batches: keep sweeping while a pass comes back full, so a
+            # backlog clears in seconds without ever holding more than one batch
+            # of ORM rows in memory.
+            while True:
+                order_ids = await run_in_threadpool(_expire_pass)
+                if order_ids:
+                    # Fire-and-forget: runs on the loop, does not block the
+                    # 30-second cadence; notify_* swallows all exceptions.
+                    asyncio.create_task(_notify_expired_batch(order_ids))
+                if len(order_ids) < EXPIRE_BATCH_SIZE:
+                    break
 
         except Exception as e:
             logger.error("Error in expire_reservations_worker", error=str(e))
