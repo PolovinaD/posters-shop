@@ -263,7 +263,11 @@ class ReplicateProvider(ImageProvider):
                 if "nsfw" in err.lower():
                     raise PromptRejected(REPLICATE_REFUSAL_REASON)
                 raise ProviderError(f"replicate: {err}")
-            url = (pred.get("output") or [None])[0]
+            # `output` is a list of URLs for flux-schnell but a single URL string for
+            # flux-1.1-pro (seen live 2026-09-20: `[0]` on the string took the letter
+            # "h" and the download 404ed). Accept both.
+            out = pred.get("output")
+            url = out[0] if isinstance(out, list) and out else out if isinstance(out, str) else None
             if not url:
                 raise ProviderError("replicate: no output URL")
             # An absolute URL overrides base_url; download NOW (replicate.delivery expires in ~1 h).

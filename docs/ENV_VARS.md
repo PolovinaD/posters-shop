@@ -160,7 +160,7 @@ Accounts*), so there is no access key to store. See
 | `OPENAI_IMAGE_QUALITY` | Images API quality (`low` / `medium` / `high`) | `medium` | No |
 | `OPENAI_CHAT_MODEL` | Chat model that writes the style-profile summary | `gpt-4o-mini` | No |
 | `OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | No |
-| `REPLICATE_API_TOKEN` | Replicate token (provider is unit-tested only — no token in this project) | - | Yes (when `IMAGE_PROVIDER=replicate`) |
+| `REPLICATE_API_TOKEN` | Replicate token. Exercised live 2026-09-20 with `black-forest-labs/flux-1.1-pro` (free-trial model; `flux-schnell` needs credit on the account → 402 → `ProviderConfigError`) | - | Yes (when `IMAGE_PROVIDER=replicate`) |
 | `REPLICATE_MODEL` | Replicate model, called at `/models/{model}/predictions` | `black-forest-labs/flux-schnell` | No |
 | `REPLICATE_BASE_URL` | Replicate API base URL | `https://api.replicate.com/v1` | No |
 | `STORAGE_BACKEND` | Where PNGs live: `local` (directory / volume) or `s3` | `local` | No |

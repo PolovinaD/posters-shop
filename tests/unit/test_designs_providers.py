@@ -239,6 +239,28 @@ def test_replicate_create_wait_succeeded_downloads_output(providers):
     }
 
 
+def test_replicate_output_as_plain_string_is_downloaded(providers):
+    """flux-1.1-pro returns `output` as one URL string, not a list (live, 2026-09-20)."""
+    png = _png(providers)
+
+    def handler(request):
+        if request.url.path == CREATE_PATH:
+            return httpx.Response(201, json={"id": "p1", "status": "succeeded", "output": OUTPUT_URL})
+        if request.url.host == "replicate.delivery.test" and request.url.path == "/out.png":
+            return httpx.Response(200, content=png, headers={"content-type": "image/png"})
+        return httpx.Response(500, text="unexpected " + str(request.url))
+
+    assert asyncio.run(_replicate(providers, handler).generate("a poster", "u1")) == png
+
+
+def test_replicate_empty_output_is_provider_error(providers):
+    def handler(request):
+        return httpx.Response(201, json={"id": "p1", "status": "succeeded", "output": []})
+
+    with pytest.raises(providers.ProviderError, match="no output URL"):
+        asyncio.run(_replicate(providers, handler).generate("a poster", "u1"))
+
+
 def test_replicate_polls_until_succeeded(providers):
     polls = {"n": 0}
     png = _png(providers)
