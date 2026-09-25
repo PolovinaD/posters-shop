@@ -120,6 +120,25 @@ helm upgrade --install designs    deploy/charts/designs    -n postershop
 helm upgrade --install frontend   deploy/charts/frontend   -n postershop
 ```
 
+## Running Tests
+
+The suite lives in `tests/` at the repo root: 307 unit tests in 26 files and 7 integration
+tests in 4 files.
+
+```bash
+pip install -r tests/requirements.txt
+
+# Unit tests: no running services needed
+pytest tests/unit -q
+
+# Integration tests: need the compose stack, including a healthy ganache
+# and designs with IMAGE_PROVIDER=fake (the compose default)
+docker compose up -d
+pytest tests/integration -q
+```
+
+See [tests/README.md](tests/README.md) for what each test file covers.
+
 ## Database Configuration
 
 The eight database-backed services use PostgreSQL with **schema-per-service** isolation via `search_path`; `payments` (checkout sessions live at Stripe; escrow state on chain and on the orders row) and `infra` (reads live Kubernetes state) are stateless and own no schema:
@@ -154,13 +173,16 @@ shop-platform/
 │   │   └── contracts/      # OrderEscrow.sol + compiled artifact
 │   ├── notifications/
 │   ├── designs/
-│   └── infra/
+│   ├── infra/
+│   └── shared/             # Canonical copies: logger, bulkhead, service auth
 ├── frontend/               # React SPA
 ├── deploy/                 # Deployment resources
 │   ├── charts/             # Helm charts
 │   ├── infrastructure/     # EKS/RDS configs
 │   ├── secrets/            # AWS Secrets Manager
 │   └── monitoring/         # Prometheus/Grafana
+├── db/                     # PostgreSQL init script (schemas, per-service users)
+├── tests/                  # Unit + integration test suite
 ├── .github/workflows/      # CI/CD pipelines
 └── docs/                   # Additional documentation
 ```
@@ -179,6 +201,7 @@ shop-platform/
 - [Development Guide](docs/DEVELOPMENT.md) - Local setup, commands, debugging
 - [Environment Variables](docs/ENV_VARS.md) - All configuration options
 - [Database Migrations](docs/MIGRATIONS.md) - Alembic migration workflow
+- [Tests](tests/README.md) - Unit and integration suite, what each file covers
 - [Backlog](docs/BACKLOG.md) - Planned improvements and known issues
 
 ### Deployment
@@ -224,7 +247,3 @@ http://<ALB_HOST>/shop          # Customer shop
 http://<ALB_HOST>/shop/studio   # AI poster studio
 http://<ALB_HOST>/              # Admin panel
 ```
-
-## License
-
-MIT

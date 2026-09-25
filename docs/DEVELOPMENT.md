@@ -154,14 +154,14 @@ stale sidecar runs the old alembic tree, applies nothing and exits 0. Phase 9 ad
 
 ### Running Tests
 
-The suite lives in `tests/` at the repo root, not per service: 24 unit files in
-`tests/unit` and 4 integration files in `tests/integration` (283 tests: 276 unit + 7
+The suite lives in `tests/` at the repo root, not per service: 26 unit files in
+`tests/unit` and 4 integration files in `tests/integration` (314 tests: 307 unit + 7
 integration; see `tests/README.md`).
 
 ```bash
 pip install -r tests/requirements.txt
 
-# Unit tests — 276 tests, no services needed (the designs tests load services/designs
+# Unit tests — 307 tests, no services needed (the designs tests load services/designs
 # through tests/unit/designs_testkit.py with the database and metrics stubbed)
 pytest tests/unit -q
 
