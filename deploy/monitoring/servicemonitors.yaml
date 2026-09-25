@@ -8,9 +8,9 @@
 # ============================================================
 # ServiceMonitor Coverage Status (MON-01) — COMPLETE
 # ============================================================
-# Monitors defined (9 of 9 backend services):
+# Monitors defined (10 of 10 backend services):
 #   users, catalog, orders, production, logistics, inventory, payments,
-#   notifications, infra
+#   notifications, infra, designs
 #
 # Coverage is complete: every backend service that exposes /metrics is scraped.
 #
