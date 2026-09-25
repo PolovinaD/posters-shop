@@ -1354,6 +1354,7 @@ def orders_by_status(
     global database state and is owned by status_metrics.orders_by_status_worker,
     which runs on every replica. Writing it from a request handler is what left
     the metric absent (rendering as "No data") on any pod that had never served
-    this endpoint. See .planning/quick/260817-orders-status-gauge/.
+    this endpoint. A single owner also keeps every replica's value a function of
+    the database alone, never of which pod happened to serve a request.
     """
     return compute_orders_by_status(db)

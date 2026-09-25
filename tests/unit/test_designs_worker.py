@@ -290,7 +290,7 @@ def test_run_generation_not_personalised_skips_profile(d, worker, tmp_path, monk
 
 
 # ---------------------------------------------------------------------------
-# Crash recovery (quick 260919-vlm): the periodic stale-claim sweep
+# Crash recovery: the periodic stale-claim sweep
 # ---------------------------------------------------------------------------
 
 def test_reclaim_sql_shape(worker):

@@ -23,7 +23,11 @@ WHY this module exists:
    alert aggregate with `max by (status)` -- never `sum`, which would multiply
    the count by the replica count.
 
-See .planning/quick/260817-orders-status-gauge/ for the full rationale.
+4. The refresh runs every 15 s, matching the Prometheus scrape interval, so no
+   scrape reads a value older than one refresh period; the GROUP BY hits an
+   indexed column, so the cost is negligible even at the HPA ceiling. Errors are
+   logged and the loop continues, like outbox_worker: a worker that died on the
+   first database blip would freeze the gauge at a plausible but stale value.
 """
 import asyncio
 

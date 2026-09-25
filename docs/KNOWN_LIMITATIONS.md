@@ -28,7 +28,7 @@ That conditional wording only became *effective* in `40d8486`. Before it, the br
 
 ## 3. Notifications idempotency — RESOLVED (durable `processed_events`)
 
-**Resolved** (quick task 260815-m0m): notifications now owns `notifications_schema` with a `processed_events(event_id PK)` table and dedups durably (`SELECT` by `event_id`, then `INSERT ... ON CONFLICT DO NOTHING` after a successful send). A re-delivered event no longer sends a duplicate email across a pod restart or with `replicaCount > 1` (verified end-to-end incl. a real container restart). The only residual is the narrow send→record crash window — a rare duplicate, deliberately biased over a dropped email, since email is not an idempotent sink. The historical description below is kept for context.
+**Resolved** (2026-08-15): notifications now owns `notifications_schema` with a `processed_events(event_id PK)` table and dedups durably (`SELECT` by `event_id`, then `INSERT ... ON CONFLICT DO NOTHING` after a successful send). A re-delivered event no longer sends a duplicate email across a pod restart or with `replicaCount > 1` (verified end-to-end incl. a real container restart). The only residual is the narrow send→record crash window — a rare duplicate, deliberately biased over a dropped email, since email is not an idempotent sink. The historical description below is kept for context.
 
 **Symptom (historical)**: A customer could receive a duplicate email for the same order event after a notifications pod restart, or when `replicaCount > 1`.
 
@@ -50,7 +50,7 @@ That conditional wording only became *effective* in `40d8486`. Before it, the br
 
 ## 5. CI redeploy reverting out-of-chart runtime config — RESOLVED (live-derived Helm values)
 
-**Resolved** (quick task 260817): both `deploy/deploy.sh` and
+**Resolved** (2026-08-17): both `deploy/deploy.sh` and
 `.github/workflows/deploy.yaml` now call `build_helm_config_args` from the shared
 `deploy/lib/live-config.sh` before every `helm upgrade`. The helper resolves each
 out-of-chart setting with the precedence **explicit environment > live cluster >
@@ -193,7 +193,7 @@ defence in depth.
 
 **Symptom**: An escrow order's price in Ether never tracks the market. The contract is deployed for `round(total_amount_usd * WEI_PER_USD)` wei, and that is the exact amount `pay()` demands, whatever ETH is worth that day.
 
-**Why it persists**: `services/payments/escrow.py` converts with the fixed `WEI_PER_USD` (default `1000000000000000`, i.e. `10**15` = 0.001 ETH per dollar) and consults no price oracle — Phase 8 decision 4 (`.planning/phases/08-ethereum-escrow-payment/08-CONTEXT.md`). On a simulator whose Ether has no market value, a rate is all the conversion needs; the number is exposed to the SPA through `GET /v1/escrow/config` so the two sides always agree.
+**Why it persists**: `services/payments/escrow.py` converts with the fixed `WEI_PER_USD` (default `1000000000000000`, i.e. `10**15` = 0.001 ETH per dollar) and consults no price oracle — a deliberate design decision, not an oversight. On a simulator whose Ether has no market value, a rate is all the conversion needs; the number is exposed to the SPA through `GET /v1/escrow/config` so the two sides always agree.
 
 **Real-world impact**: none on Ganache; on a public network the shop would be under- or over-charging by whatever the market moved since the rate was set.
 
@@ -205,7 +205,7 @@ defence in depth.
 
 **Why it persists**: three deliberate simulator-only shortcuts. `GET /v1/escrow/demo-accounts` serves the ten deterministic Ganache accounts **with private keys**, so the checkout page can offer a "use demo account" picker; the customer pastes a private key and the browser signs `pay()` with ethers (`frontend/src/lib/escrow.js`), a signer model that is only acceptable when the key is worthless; and `/rpc` (`frontend/nginx.conf`, `frontend/vite.config.js`) is an unauthenticated proxy to the node. Each is double-gated to the simulator where it matters — demo accounts answer `404` unless `ESCROW_EXPOSE_DEMO_ACCOUNTS` is true **and** the node identifies as Ganache — but none of it belongs in front of a network whose Ether is real.
 
-**Real-world impact**: none for the thesis demo; it is the scope. Sepolia (public testnet) and MetaMask signing are recorded as deferred in the Phase 8 context.
+**Real-world impact**: none for the thesis demo; it is the scope. Sepolia (public testnet) and MetaMask signing were deliberately deferred as future work.
 
 **Fix shape**: a browser wallet as the signer (ethers already abstracts it — a one-file change), `ESCROW_RPC_URL` pointed at a public node with the top-up and demo-account code paths disabled by their existing gates, and the `/rpc` proxy removed.
 
@@ -221,9 +221,9 @@ defence in depth.
 
 ## 14. Escrow has not been exercised on EKS
 
-**Symptom**: Everything Phase 8 added for the cluster — `deploy/charts/ganache` (Recreate Deployment, ClusterIP 8545, 1Gi PVC), the `postershop-escrow` ExternalSecret, the payments chart's escrow env, `deploy/deploy.sh` installing `ganache` before `payments` — exists but has never run against a live cluster.
+**Symptom**: Everything the escrow feature added for the cluster — `deploy/charts/ganache` (Recreate Deployment, ClusterIP 8545, 1Gi PVC), the `postershop-escrow` ExternalSecret, the payments chart's escrow env, `deploy/deploy.sh` installing `ganache` before `payments` — exists but has never run against a live cluster.
 
-**Why it persists**: the feature was verified end-to-end on docker-compose (contract rules, deploy → pay → verify → courier → confirm-delivery → payout, refund on cancel) and the chart was checked with `helm template` only (Phase 8 plan 05 summary). No cluster was up while the phase was executed, and this project tears its cluster down between sessions.
+**Why it persists**: the feature was verified end-to-end on docker-compose (contract rules, deploy → pay → verify → courier → confirm-delivery → payout, refund on cancel) and the chart was checked with `helm template` only. No cluster was up while the feature was built, and this project tears its cluster down between sessions.
 
 **Real-world impact**: the first EKS deploy of the escrow path is an untested path. The likely trouble spots are the ones compose does not have: the PVC storage class for the chain, the owner-key top-up racing a not-yet-Ready node (the deploy order guards this), and `/rpc` reaching the node through the frontend pod's nginx since the Ingress has no rule for it.
 
@@ -253,31 +253,31 @@ defence in depth.
 
 **Symptom**: A printed design is exactly the PNG the provider returned: `1024x1536` from OpenAI and the fake provider, about 832x1216 from flux-schnell on Replicate (`2:3` at 1 MP). At A1 (594 × 841 mm) that is roughly 45 dpi.
 
-**Why it persists**: D-08 chose native resolution deliberately. Upscaling (a second model call, or a local ESRGAN-style pass) adds cost, latency and a GPU dependency for a thesis demo whose point is the pipeline, not print quality; the catalog's four sizes exist so the checkout path is identical to an ordinary poster, not because the image is print-ready at every size.
+**Why it persists**: native resolution was chosen deliberately. Upscaling (a second model call, or a local ESRGAN-style pass) adds cost, latency and a GPU dependency for a thesis demo whose point is the pipeline, not print quality; the catalog's four sizes exist so the checkout path is identical to an ordinary poster, not because the image is print-ready at every size.
 
 **Real-world impact**: a real print shop would need a larger source for A2/A1. The generation row keeps `params` (model, size, quality), so a later upscale step knows what it starts from.
 
-**Fix shape**: an `upscale` stage after the provider call in `services/designs/worker.py` (a second `ImageProvider`-like seam), writing a second storage key and leaving the preview at native size. Recorded as future work in the Phase 9 context.
+**Fix shape**: an `upscale` stage after the provider call in `services/designs/worker.py` (a second `ImageProvider`-like seam), writing a second storage key and leaving the preview at native size. Recorded as future work.
 
 ## 18. The Replicate provider is verified against mocked HTTP only
 
 **Symptom**: `ReplicateProvider` (`services/designs/providers.py`) is implemented — create prediction with `Prefer: wait=60`, poll to a 180 s deadline, download `output[0]`, `NSFW` → `PromptRejected` — and covered by unit tests on `httpx.MockTransport`, but it has never sent a request to `api.replicate.com`.
 
-**Why it persists**: the project has an OpenAI key and no Replicate token (Phase 9 decision D-10). The provider exists so the thesis comparison between a hosted image API and serverless GPU inference is made against real code behind the same seam, not a hypothetical.
+**Why it persists**: the project has an OpenAI key and no Replicate token. The provider exists so the thesis comparison between a hosted image API and serverless GPU inference is made against real code behind the same seam, not a hypothetical.
 
 **Real-world impact**: `IMAGE_PROVIDER=replicate` with a real token may need adjustment on first contact — a changed response envelope or model name would surface as `ProviderConfigError` (generic `failed` reason, detail in the log), never as a crash and never as a refusal. Without a token the service logs a warning and runs the fake provider.
 
-**Fix shape**: one token in `.env` (compose) or `postershop/designs` (EKS), one generation, and the same live-check routine used for OpenAI in the 09-03 summary.
+**Fix shape**: one token in `.env` (compose) or `postershop/designs` (EKS), one generation, and the same live-check routine already used for OpenAI (one real generation, inspected end to end).
 
 ## 19. Reference-image conditioning is deferred
 
 **Symptom**: The style profile personalises by **text only** (`Style notes:` appended to the prompt). A customer cannot say "like this poster I bought" by image, and a generated design cannot be edited into a variant.
 
-**Why it persists**: D-07 tier 3 allowed reference-image conditioning only if a provider exposed it as a simple flag. Neither does: OpenAI's image-to-image path is the separate multipart `images/edits` endpoint with different parameters, and flux-schnell on Replicate takes no image input at all. Building it would have meant a second request shape per provider for a feature the mentor's brief lists as optional.
+**Why it persists**: the design allowed reference-image conditioning only if a provider exposed it as a simple flag. Neither does: OpenAI's image-to-image path is the separate multipart `images/edits` endpoint with different parameters, and flux-schnell on Replicate takes no image input at all. Building it would have meant a second request shape per provider for a feature the mentor's brief lists as optional.
 
 **Real-world impact**: none for the demo — the "memory" the brief asks for is delivered through history, saved prompts and the summarised style profile. Purchases still influence generations through the summary's purchase names.
 
-**Fix shape**: a `reference_image_key` on `generations`, an `edit(prompt, image_bytes)` method on `ImageProvider` implemented for OpenAI (`images/edits`) and a Replicate model that accepts an `image` input; the fake provider can composite the reference into its placeholder. Listed under Deferred Ideas in the Phase 9 context.
+**Fix shape**: a `reference_image_key` on `generations`, an `edit(prompt, image_bytes)` method on `ImageProvider` implemented for OpenAI (`images/edits`) and a Replicate model that accepts an `image` input; the fake provider can composite the reference into its placeholder. Deferred as future work.
 
 ## 20. Catalog `POST /seed?force=true` deletes every custom AI product
 
@@ -293,7 +293,7 @@ defence in depth.
 
 **Symptom**: `AI_DAILY_QUOTA` (default 10) resets at **00:00 UTC**, not at local midnight — the `Retry-After` on the 429 and `resets_at` in `GET /me/quota` count to UTC midnight (`services/designs/quota.py`). A customer in Belgrade sees the quota reset at 02:00 in summer.
 
-**Why it persists**: D-14 chose a UTC day because the service has no notion of the customer's time zone, and a rolling 24 h window would need per-request arithmetic over the history instead of one `COUNT(*) WHERE created_at >= utc_day_start`. The count is a live query over `generations` (indexed by `ix_generations_customer_created`) rather than a counter, so it is correct across replicas without shared state — the same shape as the reservation TTL, not the per-process breaker of limitation 9. Failed rows are excluded on purpose (a refusal or an outage is not the customer's fault), and the owner role is exempt so demos and the integration test never hit it.
+**Why it persists**: a UTC day was chosen because the service has no notion of the customer's time zone, and a rolling 24 h window would need per-request arithmetic over the history instead of one `COUNT(*) WHERE created_at >= utc_day_start`. The count is a live query over `generations` (indexed by `ix_generations_customer_created`) rather than a counter, so it is correct across replicas without shared state — the same shape as the reservation TTL, not the per-process breaker of limitation 9. Failed rows are excluded on purpose (a refusal or an outage is not the customer's fault), and the owner role is exempt so demos and the integration test never hit it.
 
 **Real-world impact**: cosmetic — the reset time is not the one a customer would guess. Two concurrent requests from the same customer at exactly the limit can both pass the check (read-then-insert, no lock), so the quota is "about 10", which is adequate for cost control against a paid provider.
 

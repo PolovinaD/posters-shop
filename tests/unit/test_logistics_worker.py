@@ -1,7 +1,7 @@
 """Unit tests for SHOP-03: the logistics shipment auto-advance rule.
 
 These tests import the PRODUCTION function services/logistics/worker_rules.py::
-next_status. Until quick task 260913-u90 this file restated the rule inline and
+next_status. Until 2026-09-13 this file restated the rule inline and
 so passed regardless of what the worker actually did — thesis §7.1 documents
 that as a limitation, and it was demonstrated real when Shipment gained six
 address columns and these tests never noticed.

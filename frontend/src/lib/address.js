@@ -7,7 +7,7 @@
  *
  * The null guard and the blank filter are not defensive padding. Logistics'
  * `shipment_to_dict` emits `shipping_address: null` for every shipment created
- * before 260912-n7c's migration added the columns — at the time of writing that
+ * before the 2026-09-12 migration added the columns — at the time of writing that
  * is the majority of the rows in the local database, order 1 among them — so the
  * null path is the COMMON case here, not an edge case. Any field that is missing
  * or blank is dropped rather than stringified, which is what keeps "undefined",

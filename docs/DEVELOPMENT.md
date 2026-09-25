@@ -148,7 +148,7 @@ logistics, notifications, designs) has a `<service>-migrate` sidecar that runs
 `alembic upgrade head` before the service starts. The sidecar is a **separate image** from
 `<service>` (same build context, no shared `image:`), so after adding a migration rebuild
 both — `docker compose build designs-migrate` and then `docker compose build designs` — or a
-stale sidecar runs the old alembic tree, applies nothing and exits 0. Phase 9 added
+stale sidecar runs the old alembic tree, applies nothing and exits 0. The AI poster studio added
 `services/catalog/alembic/versions/003_product_listed.py` and
 `services/designs/alembic/versions/001_initial_schema.py` this way.
 

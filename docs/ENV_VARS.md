@@ -152,7 +152,7 @@ chain and on the orders row. Defaults above are the `os.getenv` values in
 | `SES_REGION` | Region holding the verified SES sender identity | `eu-central-1` | No |
 | `JWT_SECRET` | Signs and verifies service-to-service tokens (`service_auth.py`) | `change_me` | Yes |
 
-**Note:** Notifications service is now DB-backed (`notifications_schema`, one `processed_events` table for durable idempotency) — set `DATABASE_URL` and run its Alembic migration like the other DB services (quick-260815-m0m).
+**Note:** Notifications service is now DB-backed (`notifications_schema`, one `processed_events` table for durable idempotency) — set `DATABASE_URL` and run its Alembic migration like the other DB services (since 2026-08-15).
 
 **On `SES_REGION` vs `AWS_REGION`:** these are deliberately independent. `AWS_REGION`
 (`eu-north-1`) is where the EKS cluster runs; `SES_REGION` is where the sender identity

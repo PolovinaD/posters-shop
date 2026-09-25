@@ -27,7 +27,7 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 ---
 
 ### 2. Event Idempotency
-**Status:** production: durable (existing job by order_id); notifications: durable — `processed_events(event_id)` table in `notifications_schema` (quick-260815-m0m). Remaining: a *unified* idempotency layer across all consumers.  
+**Status:** production: durable (existing job by order_id); notifications: durable — `processed_events(event_id)` table in `notifications_schema` (since 2026-08-15). Remaining: a *unified* idempotency layer across all consumers.  
 **Effort:** Low for database-backed consumers (1-2 hours); higher for stateless ones  
 **Description:** Add standardized idempotency mechanism for event handlers.
 
@@ -37,7 +37,7 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 - [ ] Add index on event_id for fast lookups
 - [ ] Decide on a mechanism for **stateless** consumers
 
-**UPDATE (quick-260815-m0m):** notifications was given a small database (`notifications_schema`, one `processed_events` table) for exactly this — the durable-idempotency fix now applies to it too. The historical caveat below is superseded.
+**UPDATE (2026-08-15):** notifications was given a small database (`notifications_schema`, one `processed_events` table) for exactly this — the durable-idempotency fix now applies to it too. The historical caveat below is superseded.
 
 **Caveat (historical) — the proposed fix does not generalize.** A `processed_events` table assumes the
 consumer owns a database. `notifications` originally did not: it was stateless, with no

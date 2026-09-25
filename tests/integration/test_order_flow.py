@@ -215,10 +215,10 @@ def test_full_order_flow(http, catalog_url, inventory_url, orders_url, users_url
     )
     print(f"  delivery copy confirmed: shipment for order {order_id} carries the address")
 
-    # Step 8: regression lock for the 260912-rnl customer-PII disclosure.
+    # Step 8: regression lock for the customer-PII disclosure fixed on 2026-09-12.
     # These three GET routes carried no authorization at all (pre-existing --
     # `git show 23f6972:services/logistics/main.py` shows only Depends(get_db)).
-    # That was latent until 260912-n7c enriched the payload with shipping_address,
+    # That was latent until the payload was enriched with shipping_address,
     # at which point `curl :3000/api/logistics/shipments` returned every customer's
     # name, street, city, postal code and phone in ONE unauthenticated request.
     # `anon_http` is defined in tests/conftest.py and has shipped unused until now;

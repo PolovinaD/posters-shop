@@ -14,8 +14,8 @@
 #
 # Coverage is complete: every backend service that exposes /metrics is scraped.
 #
-# History: infra's ServiceMonitor was originally deferred to the phase 6 deployment
-# to keep phase 4 scope focused. Phase 6 is now complete, so that deferral is
+# History: infra's ServiceMonitor was originally deferred until the EKS deployment
+# work, to keep the monitoring work focused. That work is now complete, so the deferral is
 # RESOLVED here rather than overridden — this is the follow-through the original
 # note asked for. notifications was added at the same time, having shipped as the
 # 9th backend service after this file was first written.

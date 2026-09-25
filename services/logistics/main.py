@@ -230,10 +230,10 @@ async def create_shipment(order_id: int = Body(...), db: Session = Depends(get_d
 
 
 # The three shipment reads below are guarded by require_courier_or_admin. They
-# never carried any authorization (pre-existing, not introduced by 260912-n7c --
+# never carried any authorization (pre-existing, older than the shipping address --
 # `git show 23f6972:services/logistics/main.py` shows only Depends(get_db)). That
-# was a latent missing-authorization defect until 260912-n7c added shipping_address
-# to shipment_to_dict, which turned it into a live customer-PII disclosure: one
+# was a latent missing-authorization defect until 2026-09-12, when shipping_address
+# was added to shipment_to_dict, which turned it into a live customer-PII disclosure: one
 # unauthenticated GET through the public nginx proxy returned every customer's
 # name, street, city, postal code and phone.
 @app.get("/shipments")

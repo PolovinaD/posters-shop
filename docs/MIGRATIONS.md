@@ -268,9 +268,9 @@ services are stateless and deliberately have no migrations:
 |---------|-------|
 | payments | None — checkout sessions live at Stripe, escrow state on chain and on the orders row |
 | infra | None — reads live Kubernetes state |
-| ~~notifications~~ | No longer applies — now DB-backed (`notifications_schema`, `processed_events`); has a migration job (quick-260815-m0m) |
+| ~~notifications~~ | No longer applies — now DB-backed (`notifications_schema`, `processed_events`); has a migration job (since 2026-08-15) |
 
-The newest DB-backed service, `designs` (Phase 9), is the reference for the full checklist:
+The newest DB-backed service, `designs` (the AI poster studio), is the reference for the full checklist:
 `services/designs/alembic/` (env.py with `version_table_schema=designs_schema`, one
 revision), `designs_schema` / `designs_svc` in `db/init.sql` and in `full-deploy.sh`'s RDS
 SQL, the `designs-migrate` compose sidecar, `DATABASE_URL_DESIGNS` in the `postershop-db`

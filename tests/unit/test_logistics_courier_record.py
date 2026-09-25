@@ -1,4 +1,4 @@
-"""Unit tests for quick 260917-jrx: recording who bound the courier wallet on a shipment.
+"""Unit tests for recording who bound the courier wallet on a shipment.
 
 - services/logistics/worker_rules.py::courier_id_from_claims -- the pure rule deciding
   what `courier_id` records. `sub` is the user's EMAIL (users/main.py:94 mints
