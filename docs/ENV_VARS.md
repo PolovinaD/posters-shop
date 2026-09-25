@@ -14,6 +14,22 @@ This document lists all environment variables used by each service.
 | `ROOT_PATH` | API path prefix (for ALB routing) | `""` | No |
 | `CORS_ORIGINS` | Comma-separated list of allowed browser origins | `http://localhost:3000` | No |
 
+### Bulkhead (the eight DB-backed services)
+
+Read by `bulkhead.py` in users, catalog, inventory, orders, production, logistics,
+notifications and designs (not payments or infra, which own no connection pool). At most
+`BULKHEAD_LIMIT` requests are inside a service process at once; a request that cannot get a
+slot within `BULKHEAD_QUEUE_TIMEOUT` seconds is answered with a fast
+`503 {"detail": "Service busy, retry shortly"}` and `Retry-After: 1`. An invalid value
+raises `ValueError` and the service fails at startup. Neither `docker-compose.yaml` nor the
+Helm charts set them, so the defaults apply unless you add them to a container's environment.
+Design and metrics: `services/shared/README.md`.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `BULKHEAD_LIMIT` | Concurrent requests admitted per process; must be >= 1 | `engine.pool.size() + engine.pool._max_overflow` (8 for orders, 10 elsewhere) | No |
+| `BULKHEAD_QUEUE_TIMEOUT` | Seconds a request may wait for a slot before the 503; must be > 0 | `10` | No |
+
 ---
 
 ## Users Service
@@ -40,6 +56,8 @@ This document lists all environment variables used by each service.
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `DATABASE_URL` | PostgreSQL connection string | - | Yes |
+| `EXPIRE_BATCH_SIZE` | Max expired reservations released per pass of the 30 s expiry sweep; the worker keeps sweeping while a pass comes back full | `500` | No |
+| `EXPIRE_NOTIFY_CONCURRENCY` | Max concurrent reservation-expired calls to orders in flight during the sweep's fan-out | `8` | No |
 
 ---
 
