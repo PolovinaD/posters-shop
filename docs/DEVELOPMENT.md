@@ -3,9 +3,9 @@
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 20+
 - Docker & Docker Compose
-- PostgreSQL 15+ (local or Docker)
+- PostgreSQL 16 (local or Docker)
 - kubectl (for Kubernetes deployment)
 - AWS CLI (for EKS deployment)
 
@@ -31,7 +31,7 @@ docker run -d \
   -e POSTGRES_DB=postershop \
   -e POSTGRES_PASSWORD=devpassword \
   -p 5432:5432 \
-  postgres:15
+  postgres:16
 
 export DATABASE_URL="postgresql://postgres:devpassword@localhost:5432/postershop"
 ```
@@ -114,13 +114,25 @@ npm run dev
 
 ### 3. Seed Data
 
+Both `/seed` endpoints require the owner role. The owner account
+(`admin@postershop.com` / `admin1234`) is created by the users service on first start.
+
 ```bash
-# Seed catalog (products, sizes, frames)
-curl -X POST http://localhost:8002/seed
+# Log in as the owner
+TOKEN=$(curl -s -X POST http://localhost:8001/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@postershop.com","password":"admin1234"}' \
+  | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 
 # Seed inventory (stock for products)
-curl -X POST http://localhost:8003/seed
+curl -X POST http://localhost:8006/seed -H "Authorization: Bearer $TOKEN"
+
+# Seed catalog (products, sizes, frames)
+curl -X POST http://localhost:8002/seed -H "Authorization: Bearer $TOKEN"
 ```
+
+With the compose stack running, `make dev-seed` does the same and also sets the demo
+courier's wallet.
 
 ---
 
