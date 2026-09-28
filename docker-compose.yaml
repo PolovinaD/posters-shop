@@ -23,7 +23,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dusers_schema
+      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dusers_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,7 +32,7 @@ services:
     build: ./services/users
     container_name: users
     environment:
-      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dusers_schema
+      DATABASE_URL: postgresql://users_svc:users_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dusers_schema
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: users
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -50,7 +50,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dcatalog_schema
+      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dcatalog_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,7 +59,7 @@ services:
     build: ./services/catalog
     container_name: catalog
     environment:
-      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dcatalog_schema
+      DATABASE_URL: postgresql://catalog_svc:catalog_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dcatalog_schema
       INVENTORY_SERVICE_URL: http://inventory:8000
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: catalog
@@ -80,7 +80,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dorders_schema
+      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dorders_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,7 +89,7 @@ services:
     build: ./services/orders
     container_name: orders
     environment:
-      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dorders_schema
+      DATABASE_URL: postgresql://orders_svc:orders_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dorders_schema
       INVENTORY_SERVICE_URL: http://inventory:8000
       CATALOG_SERVICE_URL: http://catalog:8000
       PRODUCTION_SERVICE_URL: http://production:8000
@@ -124,7 +124,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dproduction_schema
+      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dproduction_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,7 +133,7 @@ services:
     build: ./services/production
     container_name: production
     environment:
-      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dproduction_schema
+      DATABASE_URL: postgresql://production_svc:production_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dproduction_schema
       ORDERS_SERVICE_URL: http://orders:8000
       LOGISTICS_SERVICE_URL: http://logistics:8000
       SERVICE_NAME: production
@@ -155,7 +155,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dlogistics_schema
+      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dlogistics_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,7 +164,7 @@ services:
     build: ./services/logistics
     container_name: logistics
     environment:
-      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dlogistics_schema
+      DATABASE_URL: postgresql://logistics_svc:logistics_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dlogistics_schema
       ORDERS_SERVICE_URL: http://orders:8000
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: logistics
@@ -184,7 +184,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory_schema
+      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dinventory_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -193,7 +193,7 @@ services:
     build: ./services/inventory
     container_name: inventory
     environment:
-      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dinventory_schema
+      DATABASE_URL: postgresql://inventory_svc:inventory_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dinventory_schema
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       SERVICE_NAME: inventory
       ORDERS_SERVICE_URL: http://orders:8000
@@ -259,7 +259,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://notifications_svc:notifications_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dnotifications_schema
+      DATABASE_URL: postgresql://notifications_svc:notifications_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dnotifications_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -268,7 +268,7 @@ services:
     build: ./services/notifications
     container_name: notifications
     environment:
-      DATABASE_URL: postgresql://notifications_svc:notifications_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Dnotifications_schema
+      DATABASE_URL: postgresql://notifications_svc:notifications_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Dnotifications_schema
       SERVICE_NAME: notifications
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-logging}
@@ -290,7 +290,7 @@ services:
     command: alembic upgrade head
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Ddesigns_schema
+      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Ddesigns_schema
     depends_on:
       postgres:
         condition: service_healthy
@@ -299,7 +299,7 @@ services:
     build: ./services/designs
     container_name: designs
     environment:
-      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3Ddesigns_schema
+      DATABASE_URL: postgresql://designs_svc:designs_pass@postgres:5432/${POSTGRES_DB:-postershop}?options=-csearch_path%3Ddesigns_schema
       SERVICE_NAME: designs
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
