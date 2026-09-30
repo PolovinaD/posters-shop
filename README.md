@@ -2,6 +2,8 @@
 
 A microservices-based e-commerce platform for art prints, deployed on AWS EKS.
 
+Built as a bachelor thesis project at the School of Electrical Engineering, University of Belgrade (defended September 2026).
+
 ## Architecture
 
 ```

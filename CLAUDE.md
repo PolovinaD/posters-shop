@@ -9,7 +9,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 
 ### Constraints
 
-- **Timeline**: Implementation complete by mid-May 2026 — thesis writing needs 1-2 weeks after
+- **Status**: Finished — the thesis was defended at ETF Belgrade on 2026-09-29 (bachelor degree obtained). No thesis or defence work is pending; the platform is kept runnable locally (`docker compose up -d`) for demos
 - **Budget**: Minimize AWS costs — cluster should be tear-down-able when not actively testing
 - **Tech stack**: Python/FastAPI backend, React frontend, PostgreSQL, AWS EKS — no stack changes
 - **Complexity**: Production-worthy but not over-engineered. Every addition must justify its thesis value.
@@ -40,7 +40,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - SQLAlchemy 2.0+ - ORM for all database-backed services (users, catalog, orders, production, logistics, inventory, notifications, designs)
 - Alembic >= 1.13.0 - Database migrations for all database-backed services
 - psycopg2-binary - PostgreSQL driver
-- pytest 8.3.4 - Test framework; the suite lives in `tests/` (24 unit files + 4 integration, 283 tests: 276 unit + 7 integration), not per-service (`tests/requirements.txt`)
+- pytest 8.3.4 - Test framework; the suite lives in `tests/` (26 unit files + 4 integration, 314 tests: 307 unit + 7 integration), not per-service (`tests/requirements.txt`)
 - Docker / Docker Compose - Local development and container builds (`docker-compose.yaml`)
 - Make - Build automation (`Makefile`)
 - Helm 3.19.0 - Kubernetes package management (`deploy/charts/`); nothing in the repo pins it — CI uses `azure/setup-helm@v3` with no `version:`

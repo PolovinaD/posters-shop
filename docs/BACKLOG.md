@@ -22,7 +22,6 @@ See also: [Known Limitations](KNOWN_LIMITATIONS.md) — gaps deliberately kept o
 - [ ] Update frontend AuthContext with token refresh interceptor
 - [ ] Create Alembic migration
 
-**See:** THESIS_SNAPSHOT.md > Security Improvement 1
 
 ---
 
