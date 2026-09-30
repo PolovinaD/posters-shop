@@ -44,7 +44,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Docker / Docker Compose - Local development and container builds (`docker-compose.yaml`)
 - Make - Build automation (`Makefile`)
 - Helm 3.19.0 - Kubernetes package management (`deploy/charts/`); nothing in the repo pins it — CI uses `azure/setup-helm@v3` with no `version:`
-- eksctl 0.215.0 - EKS cluster management (recorded by eksctl itself in `cluster.yaml:48`)
+- eksctl 0.215.0 - EKS cluster management (`deploy/infrastructure/eksctl-cluster.yaml`)
 ## Key Dependencies
 | Dependency | Version | Purpose | Risk Level |
 |-----------|---------|---------|------------|
@@ -93,7 +93,7 @@ A microservices-based e-commerce platform for selling custom posters, deployed o
 - Make
 - Python 3.11+ (if running services locally outside Docker)
 - Node.js 20+ (if running frontend locally outside Docker)
-- AWS EKS (Kubernetes 1.32) - `cluster.yaml`, `deploy/infrastructure/eksctl-cluster.yaml`
+- AWS EKS (Kubernetes 1.32) - `deploy/infrastructure/eksctl-cluster.yaml`
 - AWS RDS PostgreSQL - `deploy/infrastructure/rds.yaml` (CloudFormation)
 - AWS ECR - Container image registry
 - AWS Secrets Manager - Secret storage with ExternalSecrets operator
